@@ -1,0 +1,1 @@
+<template><div class="card" style="text-align:center;padding:64px"><div class="t-title">页面不存在</div><p class="muted" style="margin:8px 0 16px">请检查地址，或返回工作台。</p><RouterLink class="btn filled" to="/">返回工作台</RouterLink></div></template>

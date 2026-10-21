@@ -1,0 +1,126 @@
+{
+  "generated": "2026-10-21",
+  "files": [
+    {
+      "file": "财务部_2026年3月报销申请.docx",
+      "department": "财务部",
+      "type": "申请",
+      "date": "2026-03-15",
+      "keywords": [
+        "费用报销申请单",
+        "3280.00"
+      ]
+    },
+    {
+      "file": "关于2026年国庆节放假安排的通知.docx",
+      "department": "行政部",
+      "type": "通知",
+      "date": "2026-09-28",
+      "keywords": [
+        "国庆节放假安排",
+        "放假调休",
+        "行政部文件"
+      ]
+    },
+    {
+      "file": "采购部_2026年Q1设备采购报表.xlsx",
+      "department": "采购部",
+      "type": "报表",
+      "date": "2026-03-31",
+      "keywords": [
+        "采购明细",
+        "联想科技",
+        "汇总"
+      ]
+    },
+    {
+      "file": "2026年2月考勤汇总报表.xlsx",
+      "department": "人事部",
+      "type": "报表",
+      "date": "2026-02-28",
+      "keywords": [
+        "考勤",
+        "王芳",
+        "迟到次数"
+      ]
+    },
+    {
+      "file": "办公电脑采购合同.pdf",
+      "department": "采购部",
+      "type": "合同",
+      "date": "2026-03-15",
+      "keywords": [
+        "办公电脑采购合同",
+        "联想科技有限公司"
+      ]
+    },
+    {
+      "file": "行政部_会议室使用申请.pdf",
+      "department": "行政部",
+      "type": "申请",
+      "date": "2026-04-02",
+      "keywords": [
+        "会议室使用申请",
+        "季度工作例会"
+      ]
+    },
+    {
+      "file": "劳动合同续签_扫描件.pdf",
+      "department": "人事部",
+      "type": "合同",
+      "date": "2026-01-05",
+      "keywords": [
+        "劳动合同续签协议",
+        "张伟"
+      ],
+      "scanned": true
+    },
+    {
+      "file": "scan_20260520_001.pdf",
+      "department": "财务部",
+      "type": "通知",
+      "date": "2026-05-20",
+      "keywords": [
+        "调整报销流程",
+        "部门负责人"
+      ],
+      "scanned": true
+    },
+    {
+      "file": "采购申请单_拍照.png",
+      "department": "采购部",
+      "type": "申请",
+      "date": "2026-06-08",
+      "keywords": [
+        "采购申请单",
+        "打印机"
+      ],
+      "scanned": true
+    },
+    {
+      "file": "人事部_入职培训通知.jpg",
+      "department": "人事部",
+      "type": "通知",
+      "date": "2026-07-01",
+      "keywords": [
+        "入职培训通知",
+        "培训室"
+      ],
+      "scanned": true
+    },
+    {
+      "file": "财务部_损坏的报表.docx",
+      "department": "财务部",
+      "type": "报表",
+      "date": null,
+      "expected_error": "UNREADABLE_FILE"
+    },
+    {
+      "file": "加密合同.pdf",
+      "department": null,
+      "type": "合同",
+      "date": "2026-08-01",
+      "expected_error": "ENCRYPTED"
+    }
+  ]
+}

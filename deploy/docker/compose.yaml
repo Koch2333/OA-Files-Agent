@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: oa
+      POSTGRES_USER: oa
+      POSTGRES_PASSWORD: ${OA_POSTGRES_PASSWORD:?Set OA_POSTGRES_PASSWORD before starting}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - oa_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oa -d oa"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  oa_postgres:

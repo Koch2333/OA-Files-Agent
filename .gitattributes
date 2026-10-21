@@ -1,0 +1,7 @@
+# Keep document fixtures and screenshots byte-for-byte intact.
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.png binary
+*.jpg binary
+*.jpeg binary

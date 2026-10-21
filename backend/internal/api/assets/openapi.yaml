@@ -1,0 +1,777 @@
+openapi: 3.1.0
+info:
+  title: OA Agent API
+  version: 1.0.0
+  description: |
+    企业 OA 文件智能归档智能体后端接口（唯一编辑源：本文件；运行 `python scripts/sync_contract.py` 同步 Go 内嵌副本）。
+    成功响应统一包裹为 `{"data": ...}`；列表为 `{"data": {"items", "total", "page", "page_size"}}`；错误为 `{"error": {code, message, request_id, details?}}`。
+    审批与执行是两个独立步骤；执行必须带 `Idempotency-Key`。认证为占位（当前单机本地用户）。
+servers:
+  - url: http://127.0.0.1:8080
+tags:
+  - {name: system}
+  - {name: imports}
+  - {name: files}
+  - {name: plans}
+  - {name: ledger}
+  - {name: templates}
+  - {name: admin}
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      operationId: health
+      responses:
+        '200':
+          description: API process is alive
+          headers: {X-Request-ID: {schema: {type: string}}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status]
+                    properties:
+                      status: {const: ok}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /readyz:
+    get:
+      tags: [system]
+      operationId: readiness
+      responses:
+        '200':
+          description: Database and worker are healthy
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Readiness'
+                  - properties: {data: {properties: {status: {const: ready}}}}
+        '503':
+          description: One or more dependencies are not ready
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Readiness'
+                  - properties: {data: {properties: {status: {const: not_ready}}}}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /v1/providers:
+    get:
+      tags: [admin]
+      operationId: listProviders
+      summary: 模型 Provider 状态（不含密钥）
+      responses:
+        '200': {$ref: '#/components/responses/ProviderList'}
+  /v1/imports:
+    post:
+      tags: [imports]
+      operationId: createImport
+      summary: 批量上传文件/文件夹并创建任务
+      description: |
+        multipart/form-data。**`paths` 字段必须最先出现且仅一次**，值为 JSON 数组，按顺序给出每个文件的相对路径（保留子目录，如 `财务/a.docx`）；
+        随后按相同顺序重复 `files` 字段。每批最多 100 个文件、单文件 20 MiB、整批 128 MiB。
+        格式不支持/空文件/过大文件作为失败项计入任务，不会让整批失败。可选 `Idempotency-Key`：相同键+相同内容返回同一任务，内容不同返回 409。
+        可选查询参数 `template_id` 指定 OA 模板，否则按优先级自动匹配。
+      parameters:
+        - {name: template_id, in: query, schema: {type: string, format: uuid}}
+        - {name: Idempotency-Key, in: header, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [paths, files]
+              properties:
+                paths: {type: string, description: 'JSON 数组字符串，如 ["a/b.docx"]'}
+                files: {type: array, items: {type: string, format: binary}}
+      responses:
+        '202': {$ref: '#/components/responses/Job'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /v1/tasks:
+    get:
+      tags: [imports]
+      operationId: listTasks
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/TaskStatus'}}
+      responses:
+        '200':
+          description: Task page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobPageEnvelope'}
+        '400': {$ref: '#/components/responses/Error'}
+  /v1/tasks/{id}:
+    get:
+      tags: [imports]
+      operationId: getTask
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {$ref: '#/components/responses/Job'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/tasks/{id}/events:
+    get:
+      tags: [imports]
+      operationId: taskEvents
+      summary: SSE 事件流
+      description: |
+        `text/event-stream`。每条事件 `id:` 为任务内单调递增整数，`data:` 为 AgentEvent JSON；支持 `Last-Event-ID` 续传（非法值 400）。
+        心跳为注释行。事件只含脱敏摘要，不含文档正文、路径或提示词。
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: Last-Event-ID, in: header, schema: {type: integer, minimum: 0}}
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/tasks/{id}/cancel:
+    post:
+      tags: [imports]
+      operationId: cancelTask
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {$ref: '#/components/responses/Job'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/tasks/{id}/retry:
+    post:
+      tags: [imports]
+      operationId: retryTask
+      summary: 重试失败/已取消的任务（已归档文件保持不变）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {$ref: '#/components/responses/Job'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/files:
+    get:
+      tags: [files]
+      operationId: listFiles
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - {name: q, in: query, schema: {type: string}}
+        - {name: department, in: query, schema: {type: string}}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: date_from, in: query, schema: {type: string, format: date}}
+        - {name: date_to, in: query, schema: {type: string, format: date}}
+        - {name: archive_status, in: query, schema: {type: string, enum: [pending, archived, failed]}}
+        - {name: review_required, in: query, schema: {type: boolean}}
+        - {name: task_id, in: query, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: File page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FilePageEnvelope'}
+        '400': {$ref: '#/components/responses/Error'}
+  /v1/files/{id}:
+    get:
+      tags: [files]
+      operationId: getFile
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: File record
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/FileRecord'}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/files/{id}/correction-proposals:
+    post:
+      tags: [files]
+      operationId: proposeCorrection
+      summary: 自然语言单文件纠错建议（只生成前后对比，不应用）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instruction]
+              additionalProperties: false
+              properties: {instruction: {type: string, minLength: 1, maxLength: 500}}
+      responses:
+        '201': {$ref: '#/components/responses/Correction'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/correction-proposals/{id}/approve:
+    post:
+      tags: [files]
+      operationId: approveCorrection
+      summary: 确认并应用纠错；若文件在已批准计划中，计划退回待审批
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {$ref: '#/components/responses/Correction'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/archive-plans/{id}:
+    get:
+      tags: [plans]
+      operationId: getPlan
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {$ref: '#/components/responses/Plan'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [plans]
+      operationId: patchPlan
+      summary: 人工修订计划条目（乐观锁 version）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, items]
+              additionalProperties: false
+              properties:
+                version: {type: integer, minimum: 1}
+                items: {type: array, minItems: 1, maxItems: 500, items: {$ref: '#/components/schemas/PlanPatch'}}
+      responses:
+        '200': {$ref: '#/components/responses/Plan'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/archive-plans/{id}/approve:
+    post:
+      tags: [plans]
+      operationId: approvePlan
+      summary: 批准计划（仍有待人工确认条目时 409 REVIEW_REQUIRED）；不执行任何文件操作
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              additionalProperties: false
+              properties: {version: {type: integer, minimum: 1}}
+      responses:
+        '200': {$ref: '#/components/responses/Plan'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/archive-plans/{id}/execute:
+    post:
+      tags: [plans]
+      operationId: executePlan
+      summary: 执行已批准的计划（幂等）
+      description: 必须带 Idempotency-Key。相同键重复请求返回同一结果；计划已执行时直接返回当前计划。原件只复制不移动，不覆盖已有文件，重名自动追加序号。
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 128}}
+      responses:
+        '200': {$ref: '#/components/responses/Plan'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/archive-operations/{id}/rollback:
+    post:
+      tags: [plans]
+      operationId: rollbackOperation
+      summary: 恢复一次归档操作（只删除本次发布且未被改动的文件）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Rolled back
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: object, required: [status], properties: {status: {const: rolled_back}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/ledger:
+    get:
+      tags: [ledger]
+      operationId: listLedger
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - {name: q, in: query, description: 关键词（文件名/部门/类型/路径/日期，不区分大小写，`%` `_` 按字面匹配）, schema: {type: string}}
+        - {name: department, in: query, schema: {type: string}}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: date_from, in: query, schema: {type: string}}
+        - {name: date_to, in: query, schema: {type: string}}
+        - {name: sort, in: query, schema: {type: string, enum: [original_name, canonical_name, department, document_type, document_date, archive_path, executed_at]}}
+        - {name: order, in: query, schema: {type: string, enum: [asc, desc]}}
+      responses:
+        '200':
+          description: Ledger page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LedgerPageEnvelope'}
+  /v1/ledger/export:
+    get:
+      tags: [ledger]
+      operationId: exportLedger
+      summary: 导出 Excel（支持与 /v1/ledger 相同的筛选参数，不分页，最多 100000 行）
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: department, in: query, schema: {type: string}}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: date_from, in: query, schema: {type: string}}
+        - {name: date_to, in: query, schema: {type: string}}
+        - {name: sort, in: query, schema: {type: string}}
+        - {name: order, in: query, schema: {type: string, enum: [asc, desc]}}
+      responses:
+        '200':
+          description: xlsx 文件，工作表“归档台账”
+          headers:
+            Content-Disposition: {schema: {type: string}}
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: {type: string, format: binary}
+  /v1/oa-templates:
+    get:
+      tags: [templates]
+      operationId: listTemplates
+      responses:
+        '200':
+          description: Templates ordered by priority
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/OATemplate'}}}}
+    post:
+      tags: [templates]
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TemplateInput'}
+      responses:
+        '201': {$ref: '#/components/responses/Template'}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/oa-templates/{id}:
+    get:
+      tags: [templates]
+      operationId: getTemplate
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {$ref: '#/components/responses/Template'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [templates]
+      operationId: updateTemplate
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TemplateInput'}
+      responses:
+        '200': {$ref: '#/components/responses/Template'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [templates]
+      operationId: deleteTemplate
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/oa-templates/{id}/test:
+    post:
+      tags: [templates]
+      operationId: testTemplate
+      summary: 用样本文件测试模板（不归档）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties: {file: {type: string, format: binary}}
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/TemplateTestResult'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/archive-rules:
+    get:
+      tags: [templates]
+      operationId: listRules
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/ArchiveRule'}}}}
+    post:
+      tags: [templates]
+      operationId: createRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, naming_pattern, directory_pattern]
+              additionalProperties: false
+              properties:
+                name: {type: string, minLength: 1, maxLength: 120}
+                naming_pattern: {type: string, description: '占位符 {date}{year}{month}{day}{department}{type}{original}{stem}{ext}'}
+                directory_pattern: {type: string}
+                enabled: {type: boolean}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/ArchiveRule'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/audit-logs:
+    get:
+      tags: [admin]
+      operationId: listAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Audit page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuditPageEnvelope'}
+components:
+  parameters:
+    Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    Page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+    PageSize: {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 20}}
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    MethodNotAllowed:
+      description: Method not allowed
+      headers: {Allow: {schema: {type: string}}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Job:
+      description: Task
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/ImportJob'}}}
+    Plan:
+      description: Archive plan
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/ArchivePlan'}}}
+    Template:
+      description: Template
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/OATemplate'}}}
+    Correction:
+      description: Correction proposal
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/CorrectionProposal'}}}
+    ProviderList:
+      description: Providers
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/ProviderStatus'}}}}
+  schemas:
+    Readiness:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [status, dependencies]
+          properties:
+            status: {type: string, enum: [ready, not_ready]}
+            dependencies:
+              type: object
+              required: [database, worker]
+              properties:
+                database: {type: string, enum: [not_configured, unavailable, migration_required, ok, timeout]}
+                worker: {type: string, enum: [not_configured, unavailable, unauthorized, invalid_response, timeout, ok]}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            request_id: {type: string}
+            details: {type: object, additionalProperties: true}
+    TaskStatus:
+      type: string
+      enum: [queued, scanning, extracting, analyzing, planning, awaiting_review, approved, archiving, completed, partial_failure, failed, cancelled]
+    ImportJob:
+      type: object
+      required: [id, status, total_files, processed_files, success_count, failure_count, plan_id, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/TaskStatus'}
+        total_files: {type: integer, minimum: 0}
+        processed_files: {type: integer, minimum: 0}
+        success_count: {type: integer, minimum: 0}
+        failure_count: {type: integer, minimum: 0}
+        plan_id: {type: [string, 'null'], format: uuid}
+        template_id: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    FileRecord:
+      type: object
+      required: [id, task_id, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, detected_date, evidence, review_required, archive_status, error, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        task_id: {type: string, format: uuid}
+        source_name: {type: string}
+        source_path: {type: string, description: 导入时的相对路径（不是服务器绝对路径）}
+        mime_type: {type: string}
+        sha256: {type: string, pattern: '^[a-f0-9]{64}$', description: 接收时即被拒绝且无法计算的文件为全 0}
+        size_bytes: {type: integer, minimum: 0}
+        detected_department: {type: [string, 'null']}
+        detected_type: {type: [string, 'null']}
+        detected_date: {type: [string, 'null'], format: date}
+        evidence: {type: array, items: {type: string}}
+        review_required: {type: boolean}
+        archive_status: {type: string, enum: [pending, archived, failed]}
+        error: {type: [string, 'null'], description: '失败原因，形如 “[UNSUPPORTED_FORMAT] …” 或中文说明'}
+        created_at: {type: string, format: date-time}
+    PlanItem:
+      type: object
+      required: [file_id, original_name, suggested_name, source_path, destination_path, department, document_type, document_date, warnings, review_required]
+      properties:
+        file_id: {type: string, format: uuid}
+        original_name: {type: string}
+        suggested_name: {type: string}
+        source_path: {type: string}
+        destination_path: {type: string, description: 相对归档根目录的路径，不含 ..}
+        department: {type: [string, 'null']}
+        document_type: {type: [string, 'null']}
+        document_date: {type: [string, 'null'], format: date}
+        warnings: {type: array, items: {type: string}}
+        review_required: {type: boolean}
+    ArchivePlan:
+      type: object
+      required: [id, task_id, items, status, version, requires_approval, approved_by, approved_at, operation_id]
+      properties:
+        id: {type: string, format: uuid}
+        task_id: {type: string, format: uuid}
+        items: {type: array, items: {$ref: '#/components/schemas/PlanItem'}}
+        status: {type: string, enum: [draft, awaiting_review, approved, executing, executed, failed]}
+        version: {type: integer, minimum: 1}
+        requires_approval: {type: boolean}
+        approved_by: {type: [string, 'null']}
+        approved_at: {type: [string, 'null'], format: date-time}
+        operation_id: {type: [string, 'null'], format: uuid, description: 最近一次已完成的归档操作，可用于回滚}
+    PlanPatch:
+      type: object
+      required: [file_id]
+      additionalProperties: false
+      description: 未给出的字段不变；department/document_type/document_date 传空串表示清空。未显式给 suggested_name/destination_path 时由后端按规则重算。
+      properties:
+        file_id: {type: string, format: uuid}
+        department: {type: [string, 'null'], maxLength: 60}
+        document_type: {type: [string, 'null'], maxLength: 60}
+        document_date: {type: [string, 'null']}
+        suggested_name: {type: [string, 'null']}
+        destination_path: {type: [string, 'null']}
+    LedgerEntry:
+      type: object
+      required: [id, original_name, canonical_name, department, document_type, document_date, archive_path, sha256, task_id, status, executed_at]
+      properties:
+        id: {type: string, format: uuid}
+        original_name: {type: string}
+        canonical_name: {type: string}
+        department: {type: string}
+        document_type: {type: string}
+        document_date: {type: string}
+        archive_path: {type: string}
+        sha256: {type: string}
+        task_id: {type: string, format: uuid}
+        status: {type: string, enum: [archived]}
+        executed_at: {type: string, format: date-time}
+    TemplateInput:
+      type: object
+      additionalProperties: false
+      description: 创建时 name 必填、至少一个关键词；PATCH 时所有字段可选。
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0, maximum: 10000, description: 数字越小优先级越高}
+        match_rules:
+          type: object
+          additionalProperties: false
+          properties:
+            filename_keywords: {type: array, maxItems: 50, items: {type: string, minLength: 1, maxLength: 60}}
+            text_keywords: {type: array, maxItems: 50, items: {type: string, minLength: 1, maxLength: 60}}
+        field_mappings:
+          type: object
+          additionalProperties: false
+          properties:
+            department: {type: string, maxLength: 60}
+            document_type: {type: string, maxLength: 60}
+            date_source: {type: string, enum: [ocr_text, filename, file_metadata]}
+    OATemplate:
+      type: object
+      required: [id, name, enabled, priority, created_at, match_rules, field_mappings]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        enabled: {type: boolean}
+        priority: {type: integer}
+        created_at: {type: string, format: date-time}
+        match_rules: {type: object}
+        field_mappings: {type: object}
+    TemplateTestResult:
+      type: object
+      required: [matched, department, document_type, document_date, evidence]
+      properties:
+        matched: {type: boolean}
+        department: {type: [string, 'null']}
+        document_type: {type: [string, 'null']}
+        document_date: {type: [string, 'null']}
+        evidence: {type: array, items: {type: string}}
+    ArchiveRule:
+      type: object
+      required: [id, name, naming_pattern, directory_pattern, enabled]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        naming_pattern: {type: string}
+        directory_pattern: {type: string}
+        enabled: {type: boolean}
+    AuditLog:
+      type: object
+      required: [id, timestamp, actor, action, target, summary]
+      properties:
+        id: {type: string, format: uuid}
+        timestamp: {type: string, format: date-time}
+        actor: {type: string}
+        action: {type: string}
+        target: {type: string}
+        summary: {type: string}
+    AgentEvent:
+      type: object
+      required: [id, task_id, timestamp, phase, event_type, summary]
+      properties:
+        id: {type: integer, minimum: 1}
+        task_id: {type: string, format: uuid}
+        timestamp: {type: string, format: date-time}
+        phase: {type: string}
+        event_type: {type: string}
+        file_id: {type: string, format: uuid}
+        summary: {type: string}
+        details: {type: object, additionalProperties: true}
+    CorrectionProposal:
+      type: object
+      required: [id, file_id, instruction, status, changes, impact]
+      properties:
+        id: {type: string, format: uuid}
+        file_id: {type: string, format: uuid}
+        instruction: {type: string}
+        status: {type: string, enum: [proposed, approved, rejected]}
+        changes:
+          type: array
+          items:
+            type: object
+            required: [field, label, before, after]
+            properties:
+              field: {type: string, enum: [department, document_type, document_date]}
+              label: {type: string}
+              before: {type: [string, 'null']}
+              after: {type: [string, 'null']}
+        impact:
+          type: object
+          required: [affected_files, scope, rule_changes]
+          properties:
+            affected_files: {type: integer}
+            scope: {const: single_file}
+            rule_changes: {const: false}
+    ProviderStatus:
+      type: object
+      required: [name, model, state]
+      properties:
+        name: {type: string}
+        model: {type: string}
+        state: {type: string, enum: [ok, unconfigured, unavailable]}
+    JobPageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: {$ref: '#/components/schemas/JobPage'}
+    JobPage:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ImportJob'}}
+        total: {type: integer}
+        page: {type: integer}
+        page_size: {type: integer}
+    FilePageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, page_size]
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/FileRecord'}}
+            total: {type: integer}
+            page: {type: integer}
+            page_size: {type: integer}
+    LedgerPageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, page_size]
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/LedgerEntry'}}
+            total: {type: integer}
+            page: {type: integer}
+            page_size: {type: integer}
+    AuditPageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, page_size]
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/AuditLog'}}
+            total: {type: integer}
+            page: {type: integer}
+            page_size: {type: integer}

@@ -1,0 +1,31 @@
+{
+  "name": "oa-agent-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "gen:api": "openapi-typescript ../contracts/openapi.yaml -o src/api/schema.d.ts"
+  },
+  "dependencies": {
+    "@material-symbols/font-400": "^0.48.1",
+    "@material/material-color-utilities": "^0.4.0",
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44",
+    "vue-router": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "openapi-typescript": "^7.13.0",
+    "puppeteer-core": "^25.15.0",
+    "typescript": "~5.9",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "vue-tsc": "^3.3.13"
+  }
+}
