@@ -3,6 +3,12 @@
  * 此处只做别名与少量前端专用类型。契约变更后先重新生成，再由 vue-tsc 指出需要适配的位置。
  */
 import type { components } from './schema'
+import type {
+  AdminUser, AdminUserCreate, AdminUserCreated, AdminUserPatch, AdminUserQuery, Invitation, InviteCreated, LoginResult, Me, MfaEnrolled, Passkey,
+  SecuritySettings, SecuritySettingsPatch, SecuritySummary, SessionInfo, SetupRequest, SetupStatus, TotpEnrollment, WebAuthnBegin, WebAuthnJSON,
+} from './authTypes'
+
+export * from './authTypes'
 
 type S = components['schemas']
 
@@ -22,6 +28,40 @@ export type AgentEvent = Omit<S['AgentEvent'], 'file_id' | 'details'> & { file_i
 export type AuditLog = S['AuditLog']
 export type CorrectionProposal = S['CorrectionProposal']
 export type ProviderStatus = S['ProviderStatus']
+export type LlmPreset = S['LlmPreset']
+export type LlmConfig = S['LlmConfig']
+export type LlmConfigInput = S['LlmConfigInput']
+export type LlmTestInput = S['LlmTestInput']
+export type LlmTestResult = S['LlmTestResult']
+export type LlmStatus = S['LlmStatus']
+export type AiPolicy = S['AiPolicy']
+export type AiPolicyPatch = S['AiPolicyPatch']
+/** 契约里 automation / llm_source 带默认值，生成类型会标为必填；实际都是可选。 */
+export type ImportOptions = Partial<S['ImportOptions']>
+export type ErrorReport = S['ErrorReport']
+export type ErrorReportDetail = S['ErrorReportDetail']
+export type ClientErrorInput = S['ClientErrorInput']
+export type SystemInfo = S['SystemInfo']
+export type ErrorSource = ErrorReport['source']
+export type ErrorSeverity = ErrorReport['severity']
+export type FsEntry = S['FsEntry']
+export type FolderListing = S['FolderListing']
+export type TrashItem = S['TrashItem']
+export type Preview = S['Preview']
+export type StorageKind = S['StorageKind']
+export type StorageField = S['StorageField']
+export type StorageConnection = S['StorageConnection']
+export type StorageConnectionInput = S['StorageConnectionInput']
+export type StorageConnectionPatch = S['StorageConnectionPatch']
+export type StorageTestInput = S['StorageTestInput']
+export type StorageTestResult = S['StorageTestResult']
+export type StorageListing = S['StorageListing']
+export type StorageEntry = S['StorageEntry']
+export type Replication = S['Replication']
+export type ReplicationStatus = Replication['status']
+export type ReplicatePolicy = StorageConnection['replicate']
+/** 预览来源：导入时保存的原件副本（文件 ID），或归档目录中的文件（相对路径）。 */
+export type PreviewSource = { kind: 'file'; id: string } | { kind: 'archived'; path: string }
 
 export interface TemplateMatchRules { filename_keywords: string[]; text_keywords: string[] }
 export interface TemplateFieldMappings { department: string; document_type: string; date_source: 'ocr_text' | 'filename' | 'file_metadata' }
@@ -36,8 +76,10 @@ export interface Page<T> { items: T[]; total: number; page: number; page_size: n
 
 export interface ListQuery { page?: number; page_size?: number }
 export interface FileQuery extends ListQuery { q?: string; department?: string; type?: string; date_from?: string; date_to?: string; archive_status?: ArchiveStatus; review_required?: boolean }
-export interface LedgerQuery extends ListQuery { q?: string; department?: string; type?: string; date_from?: string; date_to?: string; sort?: string; order?: 'asc' | 'desc' }
+export interface LedgerQuery extends ListQuery { decision?: 'manual' | 'ai_auto'; q?: string; department?: string; type?: string; date_from?: string; date_to?: string; sort?: string; order?: 'asc' | 'desc' }
+export interface ReplicationQuery extends ListQuery { connection_id?: string; status?: ReplicationStatus }
 export interface TaskQuery extends ListQuery { status?: TaskStatus }
+export interface ErrorReportQuery extends ListQuery { source?: ErrorSource; severity?: ErrorSeverity; resolved?: boolean; q?: string }
 
 export interface ReadinessInfo {
   alive: boolean
@@ -52,19 +94,21 @@ export interface PickedFile { file: File; relativePath: string }
 export interface ApiErrorBody { error: { code: string; message: string; request_id?: string; details?: Record<string, unknown> } }
 
 export class ApiError extends Error {
+  /** Retry-After（秒），仅 429 等限速响应 */
+  retryAfter?: number
   constructor(public status: number, public code: string, message: string, public requestId?: string, public details?: Record<string, unknown>) {
     super(message)
   }
 }
 
 /** 后端能力开关：契约没有对应接口时前端诚实地禁用，而不是做假交互。 */
-export interface Capabilities { retryTask: boolean; providerStatus: boolean; rollback: boolean }
+export interface Capabilities { retryTask: boolean; providerStatus: boolean; rollback: boolean; /** 浏览器 WebAuthn 是否真实可用（演示模式为 false，改用模拟） */ webauthn: boolean }
 
 export interface Api {
   readonly mode: 'mock' | 'real'
   readonly capabilities: Capabilities
   readiness(): Promise<ReadinessInfo>
-  createImport(files: PickedFile[], opts: { templateId?: string | null; idempotencyKey?: string }): Promise<ImportJob>
+  createImport(files: PickedFile[], opts: { templateId?: string | null; idempotencyKey?: string; options?: ImportOptions }): Promise<ImportJob>
   listTasks(q?: TaskQuery): Promise<Page<ImportJob>>
   getTask(id: string): Promise<ImportJob>
   cancelTask(id: string): Promise<ImportJob>
@@ -92,4 +136,112 @@ export interface Api {
   proposeCorrection(fileId: string, instruction: string): Promise<CorrectionProposal>
   approveCorrection(id: string): Promise<CorrectionProposal>
   providerStatus(): Promise<ProviderStatus[]>
+  /** 识别引擎（模型）配置：预设、读取、保存即生效、测试连接、获取模型列表；密钥永不返回。 */
+  listLlmPresets(): Promise<LlmPreset[]>
+  getLlmConfig(): Promise<LlmConfig>
+  saveLlmConfig(input: LlmConfigInput): Promise<LlmConfig>
+  testLlm(input: LlmTestInput): Promise<LlmTestResult>
+  listLlmModels(input: { base_url: string; api_key?: string }): Promise<string[]>
+  /** 文件管理：路径均相对归档根目录（空串 = 根）。 */
+  listFolder(path: string): Promise<FolderListing>
+  /** 纯 URL 构造（预览/下载）；演示模式返回 '#'，调用方需提示不可预览。 */
+  contentUrl(path: string, download?: boolean): string
+  /** 结构化预览（pdf/image 只返回页数，页图见 previewPageUrl）。 */
+  previewFile(id: string): Promise<Preview>
+  previewArchived(path: string): Promise<Preview>
+  /** 纯 URL 构造：第 page 页的 PNG；演示模式返回内联 SVG。 */
+  previewPageUrl(source: PreviewSource, page: number, maxSide: number): string
+  createFolder(path: string): Promise<FsEntry>
+  moveEntry(from: string, to: string): Promise<{ entry: FsEntry; ledger_updated: number }>
+  trashEntry(path: string): Promise<TrashItem>
+  listTrash(): Promise<TrashItem[]>
+  restoreTrash(id: string): Promise<{ path: string; ledger_updated: number }>
+  revealInExplorer(path: string): Promise<void>
+  /** 存储连接（可选功能）：kinds 返回 404 表示后端未启用该功能。 */
+  listStorageKinds(): Promise<StorageKind[]>
+  listStorageConnections(): Promise<StorageConnection[]>
+  getStorageConnection(id: string): Promise<StorageConnection>
+  createStorageConnection(input: StorageConnectionInput): Promise<StorageConnection>
+  updateStorageConnection(id: string, patch: StorageConnectionPatch): Promise<StorageConnection>
+  deleteStorageConnection(id: string): Promise<void>
+  testStorageDraft(input: StorageTestInput): Promise<StorageTestResult>
+  testStorageConnection(id: string, opts?: { check_write?: boolean; accept_host_key?: string }): Promise<StorageTestResult>
+  browseStorage(id: string, path?: string): Promise<StorageListing>
+  replicateToStorage(id: string, opts?: { path_prefix?: string }): Promise<{ queued: number }>
+  listReplications(q?: ReplicationQuery): Promise<Page<Replication>>
+  retryReplication(id: string): Promise<Replication>
+  createRemoteImport(connectionId: string, paths: string[], opts: { templateId?: string | null; idempotencyKey?: string; options?: ImportOptions }): Promise<ImportJob>
+
+  /* ===== AI 工作台 / 个人大模型 / 管理员策略（契约 tag ai、admin） ===== */
+  getLlmStatus(): Promise<LlmStatus>
+  getPersonalLlm(): Promise<LlmConfig>
+  savePersonalLlm(input: LlmConfigInput): Promise<LlmConfig>
+  deletePersonalLlm(): Promise<void>
+  testPersonalLlm(input: LlmTestInput): Promise<LlmTestResult>
+  listPersonalLlmModels(input: { base_url: string; api_key?: string }): Promise<string[]>
+  getAiPolicy(): Promise<AiPolicy>
+  updateAiPolicy(patch: AiPolicyPatch): Promise<AiPolicy>
+
+  /* ===== 运行诊断（契约 tag diagnostics） ===== */
+  getSystemInfo(): Promise<SystemInfo>
+  listErrorReports(q?: ErrorReportQuery): Promise<Page<ErrorReport>>
+  getErrorReport(id: string): Promise<ErrorReportDetail>
+  updateErrorReport(id: string, resolved: boolean): Promise<ErrorReportDetail>
+  deleteErrorReport(id: string): Promise<void>
+  downloadDiagnosticBundle(): Promise<{ blob: Blob; filename: string }>
+  reportClientError(input: ClientErrorInput): Promise<{ report_id: string }>
+
+  /* ===== 初始化向导（公开） ===== */
+  getSetupStatus(): Promise<SetupStatus>
+  verifySetupToken(token: string): Promise<boolean>
+  completeSetup(req: SetupRequest): Promise<LoginResult>
+  /** 完成向导（解除服务端闸门）；需要管理员完整会话。返回最新的公开状态 */
+  finishSetup(): Promise<SetupStatus>
+  /* ===== 登录 / 会话 ===== */
+  login(username: string, password: string): Promise<LoginResult>
+  logout(): Promise<void>
+  /** 当前会话；返回的 csrf_token 由实现保存在内存中。silent=true 时 401 不触发全局“登录过期”处理。 */
+  getMe(opts?: { silent?: boolean }): Promise<Me>
+  mfaTotp(mfaToken: string, code: string): Promise<LoginResult>
+  mfaRecovery(mfaToken: string, code: string): Promise<LoginResult>
+  mfaPasskeyBegin(mfaToken: string): Promise<WebAuthnBegin>
+  mfaPasskeyFinish(mfaToken: string, challengeId: string, credential: WebAuthnJSON): Promise<LoginResult>
+  passkeyLoginBegin(): Promise<WebAuthnBegin>
+  passkeyLoginFinish(challengeId: string, credential: WebAuthnJSON): Promise<LoginResult>
+  /* ===== 近期认证 ===== */
+  reauth(password: string): Promise<Me>
+  reauthPasskeyBegin(): Promise<WebAuthnBegin>
+  reauthPasskeyFinish(challengeId: string, credential: WebAuthnJSON): Promise<Me>
+  /* ===== 账号安全（自助） ===== */
+  changePassword(current: string, next: string): Promise<void>
+  getMySecurity(): Promise<SecuritySummary>
+  totpBegin(): Promise<TotpEnrollment>
+  totpConfirm(challengeId: string, code: string): Promise<MfaEnrolled>
+  totpDisable(): Promise<void>
+  passkeyRegisterBegin(): Promise<WebAuthnBegin>
+  passkeyRegisterFinish(challengeId: string, credential: WebAuthnJSON, name?: string): Promise<MfaEnrolled>
+  renamePasskey(id: string, name: string): Promise<Passkey>
+  deletePasskey(id: string): Promise<void>
+  regenerateRecoveryCodes(): Promise<string[]>
+  listMySessions(): Promise<SessionInfo[]>
+  revokeMySession(id: string): Promise<void>
+  /* ===== 邀请（公开） ===== */
+  getInvitation(token: string): Promise<Invitation>
+  invitationPasskeyBegin(token: string): Promise<WebAuthnBegin>
+  invitationPasskeyFinish(token: string, challengeId: string, credential: WebAuthnJSON, name?: string): Promise<LoginResult>
+  /* ===== 管理员 ===== */
+  adminListUsers(q?: AdminUserQuery): Promise<Page<AdminUser>>
+  adminCreateUser(input: AdminUserCreate): Promise<AdminUserCreated>
+  adminGetUser(id: string): Promise<AdminUser>
+  adminUpdateUser(id: string, patch: AdminUserPatch): Promise<AdminUser>
+  adminDeleteUser(id: string): Promise<void>
+  adminResetPassword(id: string): Promise<string>
+  adminResetMfa(id: string): Promise<AdminUser>
+  adminUnlockUser(id: string): Promise<AdminUser>
+  adminRevokeSessions(id: string): Promise<number>
+  adminCreateInvite(id: string): Promise<InviteCreated>
+  adminListSessions(userId?: string): Promise<SessionInfo[]>
+  adminRevokeSession(id: string): Promise<void>
+  adminGetSecuritySettings(): Promise<SecuritySettings>
+  adminUpdateSecuritySettings(patch: SecuritySettingsPatch): Promise<SecuritySettings>
 }

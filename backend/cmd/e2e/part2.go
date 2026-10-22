@@ -184,7 +184,7 @@ func part3() {
 	println("--- part 3: admin endpoints, validation, template delete ---")
 	st, d, _ := call("GET", "/v1/providers", nil, nil)
 	check("providers lists a provider without secrets", st == 200 && strings.Contains(string(d), "state") && !strings.Contains(strings.ToLower(string(d)), "key"), st, string(d))
-	st, d, _ = call("GET", "/v1/audit-logs?page_size=5", nil, nil)
+	st, d, _ = call("GET", "/v1/audit-logs?page_size=100", nil, nil)
 	check("audit logs recorded (200)", st == 200 && strings.Contains(string(d), "plan.execute"), st, string(d))
 	st, d, _ = call("GET", "/v1/archive-rules", nil, nil)
 	check("default archive rule present", st == 200 && strings.Contains(string(d), "{department}/{year}/{type}"), st, string(d))

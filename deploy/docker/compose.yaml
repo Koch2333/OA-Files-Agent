@@ -1,3 +1,5 @@
+# DEVELOPMENT ONLY: a PostgreSQL for local development (published on 127.0.0.1:5432).
+# For servers use deploy/linux/ (docker-compose.yml + install.sh).
 services:
   postgres:
     image: postgres:17

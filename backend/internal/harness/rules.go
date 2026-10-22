@@ -162,7 +162,7 @@ func (e *engine) department(filename, text string) (*string, []string, string) {
 	prefix := false
 	// OA file-name convention "部门_标题_日期.ext": a literal organisation name as the first segment is
 	// the strongest signal and is kept verbatim (人力资源部 stays 人力资源部, 法务部 needs no vocabulary entry).
-	if m := reFilenameDept.FindStringSubmatch(stem(filename)); m != nil {
+	if m := reFilenameDept.FindStringSubmatch(stem(filename)); m != nil && plausibleOrg(m[1]) {
 		explicit = append(explicit, signal{name: m[1], weight: 4, strong: true, ev: fmt.Sprintf("文件名开头为“%s”", m[1])})
 		prefix = true
 	}
@@ -172,7 +172,7 @@ func (e *engine) department(filename, text string) (*string, []string, string) {
 	sigs := append(fs, bs...)
 	for _, m := range reDeptLabel.FindAllStringSubmatch(text, -1) {
 		val := m[1]
-		name, ok := val, reRawDept.MatchString(val)
+		name, ok := val, reRawDept.MatchString(val) && plausibleOrg(val)
 		if !ok {
 			name, ok = resolveVocab(e.departments, val)
 		}
@@ -251,16 +251,16 @@ func (e *engine) textDate(text string) *dateRes {
 	}
 	if d := distinct(labeled); len(d) == 1 {
 		h := labeled[0]
-		return &dateRes{iso: d[0], ev: fmt.Sprintf("正文含“%s：%s”", h.label, h.raw)}
+		return &dateRes{iso: d[0], ev: fmt.Sprintf("正文含“%s：%s”", h.label, h.disp())}
 	} else if len(d) > 1 {
 		return &dateRes{warn: "日期：正文含多个不同的带标签日期，无法确定"}
 	}
 	if len(alone) > 0 {
 		h := alone[len(alone)-1]
-		return &dateRes{iso: h.iso(), ev: fmt.Sprintf("正文落款日期“%s”", h.raw)}
+		return &dateRes{iso: h.iso(), ev: fmt.Sprintf("正文落款日期“%s”", h.disp())}
 	}
 	if d := distinct(all); len(d) == 1 {
-		return &dateRes{iso: d[0], ev: fmt.Sprintf("正文唯一日期“%s”", all[0].raw)}
+		return &dateRes{iso: d[0], ev: fmt.Sprintf("正文唯一日期“%s”", all[0].disp())}
 	} else if len(d) > 1 {
 		return &dateRes{warn: "日期：正文含多个无标签日期，无法确定生成日期"}
 	}
@@ -270,7 +270,7 @@ func (e *engine) textDate(text string) *dateRes {
 func (e *engine) filenameDate(filename string) *dateRes {
 	hs := findDates(stem(filename), e.now)
 	if d := distinct(hs); len(d) == 1 {
-		return &dateRes{iso: d[0], ev: fmt.Sprintf("文件名含“%s”", hs[0].raw)}
+		return &dateRes{iso: d[0], ev: fmt.Sprintf("文件名含“%s”", hs[0].disp())}
 	} else if len(d) > 1 {
 		return &dateRes{warn: "日期：文件名含多个不同日期，无法确定"}
 	}
@@ -398,7 +398,7 @@ func letterheadLines(text string) []string {
 	}
 	pick := func(ls []string) (out []string) {
 		for _, l := range ls {
-			if m := reLetterhead.FindStringSubmatch(l); m != nil {
+			if m := reLetterhead.FindStringSubmatch(l); m != nil && plausibleOrg(m[1]) {
 				out = append(out, m[1])
 			}
 		}
@@ -441,4 +441,20 @@ func weakCheck(field string, sigs []signal, pick func(string, []signal) (*string
 		}
 	}
 	return v, ev, field + "：仅凭正文关键词推断，证据较弱，需人工确认"
+}
+
+// orgLabelWords are words of form labels, not of organisation names. OCR often drops the colon after a label
+// ("用人部门：人事部" → "用人部门人事部"), and a merged label+value line must never be read as a department name.
+var orgLabelWords = []string{"部门", "单位", "人员", "负责", "经办", "申请", "编制", "拟稿", "发文", "签订", "合同", "日期", "时间"}
+
+func plausibleOrg(s string) bool {
+	if utf8.RuneCountInString(s) > 10 {
+		return false
+	}
+	for _, w := range orgLabelWords {
+		if strings.Contains(s, w) {
+			return false
+		}
+	}
+	return true
 }

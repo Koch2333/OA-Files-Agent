@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>选择工作目录</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7fb; --fg:#1b1f2a; --muted:#5c6475; --card:#fff; --pri:#2757d4; --bd:#d8dce6; --err:#c4352b; --warn:#a15c00; --ok:#1c7c4d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161a23; --fg:#e8eaf0; --muted:#9aa3b5; --card:#1d2230; --pri:#7ea2ff; --bd:#2c3342; --err:#ff8a80; --warn:#ffc266; --ok:#6fd6a0; } }
+  html,body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.55 "Segoe UI","Microsoft YaHei UI",sans-serif; }
+  .wrap { padding:22px 26px; }
+  h1 { font-size:18px; margin:0 0 4px; } p.lead { margin:0 0 14px; color:var(--muted); }
+  label { display:block; font-weight:600; margin:12px 0 4px; }
+  .row { display:flex; gap:8px; } input[type=text] { flex:1; padding:7px 10px; border-radius:8px; border:1px solid var(--bd); background:var(--card); color:var(--fg); font:inherit; }
+  button { font:inherit; padding:7px 16px; border-radius:999px; border:1px solid var(--bd); background:transparent; color:var(--fg); cursor:pointer; }
+  button.pri { background:var(--pri); border-color:var(--pri); color:#fff; } button:disabled { opacity:.45; cursor:default; }
+  .msg { min-height:20px; font-size:13px; margin-top:4px; } .err { color:var(--err); } .warn { color:var(--warn); } .ok { color:var(--ok); } .muted { color:var(--muted); }
+  details { margin-top:14px; } summary { cursor:pointer; color:var(--pri); }
+  .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:18px; }
+  .modes { display:none; margin-top:12px; padding:10px 12px; border:1px solid var(--bd); border-radius:10px; background:var(--card); font-size:13px; }
+  .modes label { font-weight:400; margin:6px 0; display:flex; gap:8px; align-items:flex-start; } .modes b { font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">选择归档文件夹</h1>
+  <p class="lead" id="lead"></p>
+  <label for="arch">归档文件夹（归档后的文件存放在这里）</label>
+  <div class="row"><input type="text" id="arch" spellcheck="false"><button id="b-arch">浏览…</button></div>
+  <div class="msg" id="m-arch"></div>
+  <div class="modes" id="modes">
+    <label><input type="radio" name="mode" value="migrate" checked><span><b>迁移</b>：把现有归档复制到新位置，逐文件校验大小，全部成功后才切换；旧文件夹会保留，完成后再询问是否删除。</span></label>
+    <label><input type="radio" name="mode" value="use"><span><b>直接使用新位置</b>：不复制文件。台账中在新位置找不到的文件会显示为“缺失”。适用于新位置已有归档副本的情况。</span></label>
+  </div>
+  <details id="adv"><summary>高级：数据目录（数据库与临时文件）</summary>
+    <label for="data">数据目录</label>
+    <div class="row"><input type="text" id="data" spellcheck="false"><button id="b-data">浏览…</button></div>
+    <div class="msg" id="m-data"></div>
+    <div class="msg muted">数据目录保存内置数据库、设置与日志。通常无需修改；修改后应用会自动重启。</div>
+  </details>
+  <div class="actions">
+    <button id="b-def">使用默认位置</button>
+    <button id="b-cancel">取消</button>
+    <button class="pri" id="b-ok" disabled>确定</button>
+  </div>
+</div>
+<script src="setup.js"></script>
+</body>
+</html>

@@ -16,9 +16,24 @@ import (
 
 const maxExportRows = 100000
 
-var excelHeaders = []string{"序号", "原文件名", "规范文件名", "所属部门", "文件类型", "生成日期", "归档路径", "SHA-256", "任务 ID", "归档时间"}
+var excelHeaders = []string{"序号", "原文件名", "规范文件名", "所属部门", "文件类型", "生成日期", "归档路径", "SHA-256", "任务 ID", "归档时间", "决策方式"}
+
+// decisionLabel is the "决策方式" column: who decided the archive location.
+func decisionLabel(e store.LedgerEntry) string {
+	if e.Decision == store.DecisionAIAuto {
+		if e.DecisionModel != "" {
+			return "全自动（模型：" + e.DecisionModel + "）"
+		}
+		return "全自动"
+	}
+	return "人工审核"
+}
 
 func (s *Server) exportLedger(w http.ResponseWriter, r *http.Request) {
+	if !validDecision(r) {
+		s.fail(w, r, 400, "INVALID_ARGUMENT", "decision 须为 manual 或 ai_auto", nil)
+		return
+	}
 	rows, err := s.d.Store.LedgerAll(r.Context(), ledgerFilter(r), maxExportRows)
 	if err != nil {
 		s.storeErr(w, r, err, "台账")
@@ -34,7 +49,7 @@ func (s *Server) exportLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hdr, _ := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true}, Fill: excelize.Fill{Type: "pattern", Color: []string{"#E8DEF8"}, Pattern: 1}})
-	for i, w := range []float64{6, 34, 48, 12, 12, 12, 64, 66, 38, 20} {
+	for i, w := range []float64{6, 34, 48, 12, 12, 12, 64, 66, 38, 20, 30} {
 		_ = sw.SetColWidth(i+1, i+1, w)
 	}
 	_ = sw.SetPanes(&excelize.Panes{Freeze: true, Split: false, XSplit: 0, YSplit: 1, TopLeftCell: "A2", ActivePane: "bottomLeft"})
@@ -46,13 +61,13 @@ func (s *Server) exportLedger(w http.ResponseWriter, r *http.Request) {
 	loc := time.Local
 	for i, e := range rows {
 		cell, _ := excelize.CoordinatesToCellName(1, i+2)
-		_ = sw.SetRow(cell, []any{i + 1, e.OriginalName, e.CanonicalName, e.Department, e.DocumentType, e.DocumentDate, e.ArchivePath, e.SHA256, e.TaskID, e.ExecutedAt.In(loc).Format("2006-01-02 15:04:05")})
+		_ = sw.SetRow(cell, []any{i + 1, e.OriginalName, e.CanonicalName, e.Department, e.DocumentType, e.DocumentDate, e.ArchivePath, e.SHA256, e.TaskID, e.ExecutedAt.In(loc).Format("2006-01-02 15:04:05"), decisionLabel(e)})
 	}
 	if err = sw.Flush(); err != nil {
 		s.fail(w, r, 500, "INTERNAL", "导出失败", nil)
 		return
 	}
-	_ = f.AutoFilter(sheet, fmt.Sprintf("A1:J%d", len(rows)+1), nil)
+	_ = f.AutoFilter(sheet, fmt.Sprintf("A1:K%d", len(rows)+1), nil)
 	var buf bytes.Buffer
 	if err = f.Write(&buf); err != nil {
 		s.fail(w, r, 500, "INTERNAL", "导出失败", nil)

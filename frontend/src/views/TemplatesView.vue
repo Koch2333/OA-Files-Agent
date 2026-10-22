@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAuth } from '../stores/auth'
 import { onMounted, reactive, ref } from 'vue'
 import { api, type OATemplate, type TemplateTestResult } from '../api'
 import { errMsg, useAsync } from '../utils/useAsync'
@@ -8,6 +9,7 @@ import StateView from '../components/StateView.vue'
 import Dialog from '../components/Dialog.vue'
 import Icon from '../components/Icon.vue'
 
+const auth = useAuth()
 const ui = useUi()
 const tab = ref<'templates' | 'rules'>('templates')
 const tpls = useAsync(() => api.listTemplates())
@@ -69,8 +71,8 @@ const TOKENS = ['{date}', '{year}', '{month}', '{department}', '{type}', '{origi
   <PageHeader title="OA 模板与规则" subtitle="自定义企业 OA 模板决定如何识别文件；命名与归档规则决定新文件名和目标目录。">
     <template #actions>
       <div class="seg" role="tablist"><button role="tab" :aria-selected="tab === 'templates'" :aria-pressed="tab === 'templates'" @click="tab = 'templates'">OA 模板</button><button role="tab" :aria-selected="tab === 'rules'" :aria-pressed="tab === 'rules'" @click="tab = 'rules'">命名与归档规则</button></div>
-      <button v-if="tab === 'templates'" class="btn filled has-icon" @click="openNew"><Icon name="add" sm />新建模板</button>
-      <button v-else class="btn filled has-icon" @click="ruleOpen = true; ruleErr = null"><Icon name="add" sm />新增规则</button>
+      <button v-if="auth.canWrite && tab === 'templates'" class="btn filled has-icon" @click="openNew"><Icon name="add" sm />新建模板</button>
+      <button v-else-if="auth.canWrite" class="btn filled has-icon" @click="ruleOpen = true; ruleErr = null"><Icon name="add" sm />新增规则</button>
     </template>
   </PageHeader>
 
@@ -81,10 +83,10 @@ const TOKENS = ['{date}', '{year}', '{month}', '{department}', '{type}', '{origi
           <div class="grow"><div class="t-title-m">{{ t.name }} <span class="chip" style="margin-left: 8px">优先级 {{ t.priority }}</span></div>
             <div class="muted">文件名关键词：{{ t.match_rules.filename_keywords.join('、') || '—' }}　正文关键词：{{ t.match_rules.text_keywords.join('、') || '—' }}</div>
             <div class="muted">映射：部门←{{ t.field_mappings.department || '—' }}，类型←{{ t.field_mappings.document_type || '—' }}，日期来源：{{ { ocr_text: 'OCR/正文', filename: '文件名', file_metadata: '文件属性' }[t.field_mappings.date_source] }}</div></div>
-          <label class="switch" :title="t.enabled ? '点击停用' : '点击启用'"><input type="checkbox" role="switch" :checked="t.enabled" :aria-label="`启用 ${t.name}`" @change="toggle(t)" /><span>{{ t.enabled ? '启用' : '停用' }}</span></label>
-          <button class="btn sm tonal has-icon" @click="testing = t; testRes = null; testErr = null"><Icon name="science" sm />测试</button>
-          <button class="btn icon-only sm" :aria-label="`编辑 ${t.name}`" @click="openEdit(t)"><Icon name="edit" sm /></button>
-          <button class="btn icon-only sm danger" :aria-label="`删除 ${t.name}`" @click="del = t"><Icon name="delete" sm /></button>
+          <label class="switch" :title="t.enabled ? '点击停用' : '点击启用'"><input type="checkbox" role="switch" :disabled="!auth.canWrite" :checked="t.enabled" :aria-label="`启用 ${t.name}`" @change="toggle(t)" /><span>{{ t.enabled ? '启用' : '停用' }}</span></label>
+          <button v-if="auth.canWrite" class="btn sm tonal has-icon" @click="testing = t; testRes = null; testErr = null"><Icon name="science" sm />测试</button>
+          <button v-if="auth.canWrite" class="btn icon-only sm" :aria-label="`编辑 ${t.name}`" @click="openEdit(t)"><Icon name="edit" sm /></button>
+          <button v-if="auth.canWrite" class="btn icon-only sm danger" :aria-label="`删除 ${t.name}`" @click="del = t"><Icon name="delete" sm /></button>
         </li>
       </ul>
     </StateView>

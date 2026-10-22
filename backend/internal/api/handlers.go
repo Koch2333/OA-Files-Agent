@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -69,7 +68,12 @@ func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, 400, "INVALID_MULTIPART", "请使用 multipart/form-data 上传", nil)
 		return
 	}
-	batch, err := s.d.Imports.Import(r.Context(), reader, key, templateID)
+	ictx, oerr := s.withImportAI(r.Context(), r)
+	if oerr != nil {
+		s.fail(w, r, oerr.status, oerr.code, oerr.msg, nil)
+		return
+	}
+	batch, err := s.d.Imports.Import(ictx, reader, key, templateID)
 	if err != nil {
 		var ie *imports.Error
 		var mbe *http.MaxBytesError
@@ -81,13 +85,13 @@ func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrConflict):
 			s.fail(w, r, 409, "IDEMPOTENCY_CONFLICT", "相同 Idempotency-Key 对应了不同的上传内容", nil)
 		default:
-			log.Printf("import failed (request %s): %v", requestID(r), err)
-			s.fail(w, r, 500, "INTERNAL", "导入失败", nil)
+			s.internal(w, r, "导入失败", err)
 		}
 		return
 	}
 	s.d.Store.Audit(r.Context(), actorOf(r), "import.create", batch.Job.ID, fmt.Sprintf("导入 %d 个文件，其中 %d 个在接收时被拒绝", batch.Job.TotalFiles, batch.Job.FailureCount))
-	_ = s.d.Store.AppendEvent(r.Context(), batch.Job.ID, "queued", "task_created", nil, fmt.Sprintf("任务已创建，共 %d 个文件", batch.Job.TotalFiles), nil)
+	s.auditAutoAccepted(r.Context(), r, batch.Job, batch.Replay)
+	_ = s.d.Store.AppendEvent(r.Context(), batch.Job.ID, "queued", "task_created", nil, createdSummary(batch.Job), createdDetails(batch.Job))
 	s.ok(w, 202, batch.Job)
 }
 
@@ -384,11 +388,21 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 
 func ledgerFilter(r *http.Request) store.LedgerFilter {
 	q := r.URL.Query()
-	return store.LedgerFilter{Q: q.Get("q"), Department: q.Get("department"), Type: q.Get("type"), DateFrom: q.Get("date_from"), DateTo: q.Get("date_to"), Sort: q.Get("sort"), Order: q.Get("order")}
+	return store.LedgerFilter{Q: q.Get("q"), Department: q.Get("department"), Type: q.Get("type"), DateFrom: q.Get("date_from"), DateTo: q.Get("date_to"), Sort: q.Get("sort"), Order: q.Get("order"), Decision: q.Get("decision")}
+}
+
+// validDecision accepts an empty filter or manual|ai_auto.
+func validDecision(r *http.Request) bool {
+	d := r.URL.Query().Get("decision")
+	return d == "" || d == store.DecisionManual || d == store.DecisionAIAuto
 }
 
 func (s *Server) ledger(w http.ResponseWriter, r *http.Request) {
 	page, size := pageParams(r)
+	if !validDecision(r) {
+		s.fail(w, r, 400, "INVALID_ARGUMENT", "decision 须为 manual 或 ai_auto", nil)
+		return
+	}
 	f := ledgerFilter(r)
 	items, total, err := s.d.Store.Ledger(r.Context(), store.Page{Page: page, Size: size}, f)
 	if err != nil {
@@ -584,8 +598,7 @@ func (s *Server) testTemplate(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, ee.Status, ee.Code, ee.Msg, nil)
 			return
 		}
-		log.Printf("template test failed (request %s): %v", requestID(r), err)
-		s.fail(w, r, 500, "INTERNAL", "模板测试失败", nil)
+		s.internal(w, r, "模板测试失败", err)
 		return
 	}
 	s.ok(w, 200, res)

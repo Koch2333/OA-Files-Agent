@@ -5,9 +5,18 @@ info:
   description: |
     企业 OA 文件智能归档智能体后端接口（唯一编辑源：本文件；运行 `python scripts/sync_contract.py` 同步 Go 内嵌副本）。
     成功响应统一包裹为 `{"data": ...}`；列表为 `{"data": {"items", "total", "page", "page_size"}}`；错误为 `{"error": {code, message, request_id, details?}}`。
-    审批与执行是两个独立步骤；执行必须带 `Idempotency-Key`。认证为占位（当前单机本地用户）。
+    审批与执行是两个独立步骤；执行必须带 `Idempotency-Key`。认证：`enterprise` 模式需登录（Cookie 会话 + CSRF，见 docs/auth-design.md），`local` 模式为本机单用户免登录；未初始化时除 /v1/setup/*、/healthz、/readyz 外返回 503 `SETUP_REQUIRED`；未登录 401 `UNAUTHENTICATED`；角色不足 403 `FORBIDDEN`；CSRF 失败 403 `CSRF_INVALID`。
+    跨站的写请求（Origin/Sec-Fetch-Site 不是同源）返回 403 `CROSS_ORIGIN`；服务仅监听本机时，Host 不是 localhost/127.0.0.1/::1 的请求返回 403 `HOST_NOT_ALLOWED`（防 DNS 重绑定）。
+security:
+  - cookieAuth: []
 servers:
   - url: http://127.0.0.1:8080
+x-global-errors:
+  description: 任何路由都可能返回的横切错误（浏览器安全防护），体裁同 Error。
+  "401": [UNAUTHENTICATED]
+  "403": [CROSS_ORIGIN, HOST_NOT_ALLOWED, FORBIDDEN, CSRF_INVALID]
+  "409": [WIZARD_REQUIRED]
+  "503": [SETUP_REQUIRED]
 tags:
   - {name: system}
   - {name: imports}
@@ -16,6 +25,13 @@ tags:
   - {name: ledger}
   - {name: templates}
   - {name: admin}
+  - {name: fs}
+  - {name: storage}
+  - {name: setup}
+  - {name: auth}
+  - {name: admin-users}
+  - {name: ai}
+  - {name: diagnostics}
 paths:
   /healthz:
     get:
@@ -88,12 +104,15 @@ paths:
               required: [paths, files]
               properties:
                 paths: {type: string, description: 'JSON 数组字符串，如 ["a/b.docx"]'}
+                options: {type: string, description: 'JSON 字符串（ImportOptions：instruction/automation/llm_source/auto_ack），可选；若出现必须紧跟在 paths 之后、第一个 files 之前，且仅一次'}
                 files: {type: array, items: {type: string, format: binary}}
       responses:
         '202': {$ref: '#/components/responses/Job'}
         '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '413': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
   /v1/tasks:
     get:
@@ -313,6 +332,7 @@ paths:
         - {name: date_to, in: query, schema: {type: string}}
         - {name: sort, in: query, schema: {type: string, enum: [original_name, canonical_name, department, document_type, document_date, archive_path, executed_at]}}
         - {name: order, in: query, schema: {type: string, enum: [asc, desc]}}
+        - {name: decision, in: query, description: 按决策方式筛选（manual=人工审批；ai_auto=全自动）, schema: {type: string, enum: [manual, ai_auto]}}
       responses:
         '200':
           description: Ledger page
@@ -332,6 +352,7 @@ paths:
         - {name: date_to, in: query, schema: {type: string}}
         - {name: sort, in: query, schema: {type: string}}
         - {name: order, in: query, schema: {type: string, enum: [asc, desc]}}
+        - {name: decision, in: query, description: 按决策方式筛选（manual=人工审批；ai_auto=全自动）, schema: {type: string, enum: [manual, ai_auto]}}
       responses:
         '200':
           description: xlsx 文件，工作表“归档台账”
@@ -462,12 +483,1179 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AuditPageEnvelope'}
+  /v1/fs:
+    get:
+      tags: [fs]
+      operationId: listFolder
+      summary: 浏览归档根目录下的文件夹
+      description: |
+        `path` 为相对归档根目录的路径（空 = 根）。只列出非隐藏项（以 `.` 开头的内部目录如 .staging/.journal/.trash 不可见）。
+        台账管理的文件带 `ledger` 信息。目录在前、按名称排序。
+      parameters:
+        - {name: path, in: query, schema: {type: string, default: ''}}
+      responses:
+        '200':
+          description: Folder listing
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/FolderListing'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/fs/content:
+    get:
+      tags: [fs]
+      operationId: getFileContent
+      summary: 预览或下载归档文件
+      description: pdf/png/jpg 默认内联预览，其余及 `download=1` 作为附件下载；总是带 `nosniff` 并禁止缓存；除 pdf/png/jpg 外一律强制下载。
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+        - {name: download, in: query, schema: {type: string, enum: ['1']}}
+      responses:
+        '200':
+          description: File bytes (supports Range)
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/fs/folders:
+    post:
+      tags: [fs]
+      operationId: createFolder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              additionalProperties: false
+              properties: {path: {type: string, description: 新文件夹的完整相对路径}}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/FsEntry'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/fs/move:
+    post:
+      tags: [fs]
+      operationId: moveEntry
+      summary: 重命名或移动文件/文件夹（不覆盖；台账同步）
+      description: |
+        `to` 是目标的完整相对路径（重命名＝同目录换名，移动＝换目录）。目标已存在返回 409，不会覆盖；不能把文件夹移入自身。
+        台账中受影响的记录（路径、规范文件名）同步更新。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              additionalProperties: false
+              properties: {from: {type: string}, to: {type: string}}
+      responses:
+        '200':
+          description: Moved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [entry, ledger_updated]
+                    properties:
+                      entry: {$ref: '#/components/schemas/FsEntry'}
+                      ledger_updated: {type: integer, minimum: 0}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/fs/trash:
+    get:
+      tags: [fs]
+      operationId: listTrash
+      responses:
+        '200':
+          description: Items in the trash, newest first
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/TrashItem'}}}}
+    post:
+      tags: [fs]
+      operationId: trashEntry
+      summary: 删除到回收站（可恢复；台账记录标记为已移除）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              additionalProperties: false
+              properties: {path: {type: string}}
+      responses:
+        '201':
+          description: Moved to trash
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/TrashItem'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/fs/trash/{id}/restore:
+    post:
+      tags: [fs]
+      operationId: restoreTrash
+      summary: 从回收站恢复到原位置（原位置被占用则自动加序号）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [path, ledger_updated]
+                    properties:
+                      path: {type: string}
+                      ledger_updated: {type: integer, minimum: 0}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/fs/reveal:
+    post:
+      tags: [fs]
+      operationId: revealInExplorer
+      summary: 在 Windows 资源管理器中显示（仅本机、仅 Windows）
+      description: |
+        文件 → 打开其所在文件夹并选中；文件夹 → 打开该文件夹；空路径 → 归档根目录。
+        只有当 API 运行在 Windows 上、请求来自本机回环地址且未被 `OA_ALLOW_REVEAL=0` 关闭时可用；否则 403（非本机）或 501（不支持）。
+        路径必须位于归档根目录内；不会执行或打开文件本身。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {path: {type: string, default: ''}}
+      responses:
+        '200':
+          description: Explorer was launched
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: object, required: [revealed], properties: {revealed: {type: string}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '501': {$ref: '#/components/responses/Error'}
+
+  /v1/llm/presets:
+    get:
+      tags: [admin]
+      operationId: listLlmPresets
+      summary: 模型预设（DeepSeek、通义千问等）；用户仍可自由改 Base URL 与模型名
+      responses:
+        '200':
+          description: Presets, recommended first
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/LlmPreset'}}}}
+  /v1/llm/config:
+    get:
+      tags: [admin]
+      operationId: getLlmConfig
+      summary: 当前识别引擎配置（API Key 永不返回，只返回是否已保存与尾号提示）
+      responses:
+        '200':
+          description: Current configuration
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmConfig'}}}
+    put:
+      tags: [admin]
+      operationId: saveLlmConfig
+      summary: 保存并立即生效（无需重启）
+      description: |
+        `mode=heuristic` 使用离线规则识别（不联网）。`mode=llm` 使用 OpenAI 兼容接口：`base_url` 必填且为 https（本机/内网地址允许 http），
+        `model` 必填，需要密钥的预设必须已保存或随本次提交 `api_key`。`api_key` 省略 = 保持已保存的密钥；`clear_api_key=true` 清除。
+        密钥在服务器端加密保存，不写入日志与审计。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlmConfigInput'}
+      responses:
+        '200':
+          description: Saved and active
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmConfig'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/llm/test:
+    post:
+      tags: [admin]
+      operationId: testLlm
+      summary: 测试连接（用提交的参数发一次极小请求，不保存）
+      description: 始终返回 200；`ok=false` 时 `message` 给出可读原因（密钥错误/模型不存在/网络不通…）。`tool_calling` 表示模型是否能发起工具调用（识别流程需要）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlmTestInput'}
+      responses:
+        '200':
+          description: Test outcome
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmTestResult'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/llm/models:
+    post:
+      tags: [admin]
+      operationId: listLlmModels
+      summary: 从服务商的 /models 接口获取可用模型列表（便于自由选择）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [base_url]
+              additionalProperties: false
+              properties:
+                base_url: {type: string}
+                api_key: {type: string, description: 省略则使用已保存的密钥}
+      responses:
+        '200':
+          description: Model ids
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: object, required: [models], properties: {models: {type: array, items: {type: string}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+
+  /v1/files/{id}/preview:
+    get:
+      tags: [files]
+      operationId: previewFile
+      summary: 预览导入时保存的原件（PDF/图片按页，Word/Excel 结构化）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Preview
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Preview'}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/files/{id}/preview/page:
+    get:
+      tags: [files]
+      operationId: previewFilePage
+      summary: 原件第 N 页的 PNG 图片
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: max_side, in: query, schema: {type: integer, minimum: 256, maximum: 2000, default: 1400}}
+      responses:
+        '200':
+          description: PNG image
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/fs/preview:
+    get:
+      tags: [fs]
+      operationId: previewArchived
+      summary: 预览归档目录中的文件
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Preview
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Preview'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/fs/preview/page:
+    get:
+      tags: [fs]
+      operationId: previewArchivedPage
+      summary: 归档文件第 N 页的 PNG 图片
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: max_side, in: query, schema: {type: integer, minimum: 256, maximum: 2000, default: 1400}}
+      responses:
+        '200':
+          description: PNG image
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+
+  /v1/storage/kinds:
+    get:
+      tags: [storage]
+      operationId: listStorageKinds
+      summary: 可用的存储类型及其表单字段（前端据此动态生成表单）
+      responses:
+        '200':
+          description: Kinds
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/StorageKind'}}}}
+  /v1/storage/connections:
+    get:
+      tags: [storage]
+      operationId: listStorageConnections
+      responses:
+        '200':
+          description: Connections (credentials never returned)
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/StorageConnection'}}}}
+    post:
+      tags: [storage]
+      operationId: createStorageConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageConnectionInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/StorageConnection'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/storage/connections/test:
+    post:
+      tags: [storage]
+      operationId: testStorageDraft
+      summary: 测试尚未保存的连接参数
+      description: |
+        `connection_id` 可选：提供时，未重新填写的凭据沿用该连接已保存的凭据（仅当目标主机相同）。`check_write` 为 true 时额外写入并删除一个测试标记文件。
+        SFTP 首次连接会返回 `host_key`（指纹）等待确认；用户核对后把同一指纹放进 `accept_host_key` 重新测试。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageTestInput'}
+      responses:
+        '200':
+          description: Test report (ok=false carries readable steps)
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/StorageTestResult'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/storage/connections/{id}:
+    get:
+      tags: [storage]
+      operationId: getStorageConnection
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Connection
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/StorageConnection'}}}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [storage]
+      operationId: updateStorageConnection
+      summary: 部分更新；secrets 中给出的键会替换，`clear_secrets` 清除指定凭据
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageConnectionPatch'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/StorageConnection'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [storage]
+      operationId: deleteStorageConnection
+      summary: 删除连接（远端文件不受影响；该连接的同步记录一并删除）
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/storage/connections/{id}/test:
+    post:
+      tags: [storage]
+      operationId: testStorageConnection
+      summary: 测试已保存的连接
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                check_write: {type: boolean}
+                accept_host_key: {type: string, description: 首次连接 SFTP 时确认的主机密钥指纹；服务器据此固定信任}
+      responses:
+        '200':
+          description: Test report
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/StorageTestResult'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/storage/connections/{id}/browse:
+    get:
+      tags: [storage]
+      operationId: browseStorage
+      summary: 浏览远端目录（限定在连接的起始目录内）
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: path, in: query, schema: {type: string, default: ''}}
+      responses:
+        '200':
+          description: One level of the remote folder
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/StorageListing'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /v1/storage/connections/{id}/replicate:
+    post:
+      tags: [storage]
+      operationId: replicateToStorage
+      summary: 把尚未同步的已归档文件加入同步队列（手动）
+      description: 只增不改不删：远端已有同名且大小一致的文件视为已存在；大小不同则追加序号另存。
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                path_prefix: {type: string, description: 仅同步归档路径以该前缀开头的文件（空 = 全部）}
+      responses:
+        '202':
+          description: Queued
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: object, required: [queued], properties: {queued: {type: integer, minimum: 0}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/storage/replications:
+    get:
+      tags: [storage]
+      operationId: listReplications
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - {name: connection_id, in: query, schema: {type: string, format: uuid}}
+        - {name: status, in: query, schema: {type: string, enum: [queued, running, done, skipped, failed]}}
+      responses:
+        '200':
+          description: Replication page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReplicationPageEnvelope'}
+        '400': {$ref: '#/components/responses/Error'}
+  /v1/storage/replications/{id}/retry:
+    post:
+      tags: [storage]
+      operationId: retryReplication
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Re-queued
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Replication'}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/imports/remote:
+    post:
+      tags: [imports]
+      operationId: createRemoteImport
+      summary: 从远端存储导入文件/文件夹并创建任务
+      description: |
+        `items` 的每一项是远端相对路径（文件或文件夹，文件夹递归）。限制与本机上传一致：每批最多 100 个文件、单文件 20 MiB；格式不支持/过大/空文件作为失败项计入，不让整批失败。
+        文件按相对路径保留目录层级（相对于所选项目的上级）。支持 `Idempotency-Key`。
+      parameters:
+        - {name: Idempotency-Key, in: header, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [connection_id, items]
+              additionalProperties: false
+              properties:
+                connection_id: {type: string, format: uuid}
+                items: {type: array, minItems: 1, maxItems: 100, items: {type: object, required: [path], additionalProperties: false, properties: {path: {type: string}}}}
+                template_id: {type: string, format: uuid}
+                options: {$ref: '#/components/schemas/ImportOptions'}
+      responses:
+        '202': {$ref: '#/components/responses/Job'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+
+  /v1/setup/status:
+    get:
+      tags: [setup]
+      operationId: getSetupStatus
+      summary: 初始化状态与环境检查（公开）
+      security: []
+      responses:
+        '200': {description: Status, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/SetupStatus'}}}}}}
+  /v1/setup/verify-token:
+    post:
+      tags: [setup]
+      operationId: verifySetupToken
+      summary: 校验初始化令牌（公开，限速）
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [token], additionalProperties: false, properties: {token: {type: string}}}}}}
+      responses:
+        '200': {description: Token valid, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [valid], properties: {valid: {type: boolean}}}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/setup/complete:
+    post:
+      tags: [setup]
+      operationId: completeSetup
+      summary: 完成初始化：创建管理员、写入安全策略并登录
+      description: 原子操作；并发只有一个成功，其余 409 `ALREADY_SETUP`。`local` 模式只接受来自本机回环地址的请求；`enterprise` 模式必须带正确的初始化令牌（回环请求的 local 模式可免令牌）。
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SetupRequest'}}}}
+      responses:
+        '201': {$ref: '#/components/responses/LoginResult'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/setup/finish:
+    post:
+      tags: [setup]
+      operationId: finishSetup
+      summary: 完成初始化向导（解除服务端向导闸门）
+      description: |
+        `POST /v1/setup/complete` 之后向导还有后续步骤（首次 MFA 绑定、恢复码、全局 LLM）。`wizard_finished=false` 期间，除 `/v1/auth/*`、`/v1/setup/*`、`/v1/llm/*`、`/v1/admin/ai-policy`、`/v1/client-errors` 外的所有已认证请求一律返回 409 `WIZARD_REQUIRED`。
+        本接口要求管理员的完整会话（受限的 `enroll_mfa` 会话得到 403）；策略要求 MFA 而管理员尚未绑定 → 409 `MFA_REQUIRED_BY_POLICY`。幂等；成功写审计 `setup.finished`，返回最新的 SetupStatus。`local` 模式与升级前已初始化的安装视为已完成。
+      responses:
+        '200': {description: Status, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/SetupStatus'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: 用户名+密码登录（第一因素）
+      description: |
+        未知用户与错误密码同样返回 401 `INVALID_CREDENTIALS`。已绑定 MFA → `status=mfa_required`（带 `mfa_token`，5 分钟一次性）；策略要求 MFA 但未绑定 → `status=enroll_mfa`（受限会话）；否则 `status=ok`。
+        连续失败达阈值 → 423 `ACCOUNT_LOCKED`；超过速率限制 → 429 `RATE_LIMITED`（带 Retry-After）；管理员禁用密码登录且用户无密码 → 401。
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [username, password], additionalProperties: false, properties: {username: {type: string}, password: {type: string}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/LoginResult'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '423': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      responses:
+        '204': {description: Logged out}
+        '401': {$ref: '#/components/responses/Error'}
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: 当前会话（含 csrf_token）
+      responses:
+        '200': {description: Me, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Me'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /v1/auth/mfa/totp:
+    post:
+      tags: [auth]
+      operationId: mfaTotp
+      summary: 用 TOTP 完成第二因素
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [mfa_token, code], additionalProperties: false, properties: {mfa_token: {type: string}, code: {type: string}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/LoginResult'}
+        '401': {$ref: '#/components/responses/Error'}
+        '423': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/mfa/recovery:
+    post:
+      tags: [auth]
+      operationId: mfaRecovery
+      summary: 用恢复码完成第二因素（一次性）
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [mfa_token, code], additionalProperties: false, properties: {mfa_token: {type: string}, code: {type: string}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/LoginResult'}
+        '401': {$ref: '#/components/responses/Error'}
+        '423': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/mfa/passkey/begin:
+    post:
+      tags: [auth]
+      operationId: mfaPasskeyBegin
+      summary: 用 Passkey 完成第二因素：取得断言选项
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [mfa_token], additionalProperties: false, properties: {mfa_token: {type: string}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/WebAuthnOptions'}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/mfa/passkey/finish:
+    post:
+      tags: [auth]
+      operationId: mfaPasskeyFinish
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [mfa_token, challenge_id, credential], additionalProperties: false, properties: {mfa_token: {type: string}, challenge_id: {type: string}, credential: {$ref: '#/components/schemas/WebAuthnJSON'}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/LoginResult'}
+        '401': {$ref: '#/components/responses/Error'}
+        '423': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/passkey/login/begin:
+    post:
+      tags: [auth]
+      operationId: passkeyLoginBegin
+      summary: Passkey 无密码登录：取得断言选项（可发现凭据，不需要用户名）
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/WebAuthnOptions'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/passkey/login/finish:
+    post:
+      tags: [auth]
+      operationId: passkeyLoginFinish
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challenge_id, credential], additionalProperties: false, properties: {challenge_id: {type: string}, credential: {$ref: '#/components/schemas/WebAuthnJSON'}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/LoginResult'}
+        '401': {$ref: '#/components/responses/Error'}
+        '423': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/reauth:
+    post:
+      tags: [auth]
+      operationId: reauth
+      summary: 用密码重新认证，延长“近期认证”窗口（敏感操作前使用）
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [password], additionalProperties: false, properties: {password: {type: string}}}}}}
+      responses:
+        '200': {description: Fresh, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Me'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/reauth/passkey/begin:
+    post:
+      tags: [auth]
+      operationId: reauthPasskeyBegin
+      summary: 用 Passkey 重新认证（仅 Passkey 的账号）
+      responses:
+        '200': {$ref: '#/components/responses/WebAuthnOptions'}
+        '401': {$ref: '#/components/responses/Error'}
+  /v1/auth/reauth/passkey/finish:
+    post:
+      tags: [auth]
+      operationId: reauthPasskeyFinish
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challenge_id, credential], additionalProperties: false, properties: {challenge_id: {type: string}, credential: {$ref: '#/components/schemas/WebAuthnJSON'}}}}}}
+      responses:
+        '200': {description: Fresh, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Me'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /v1/auth/password:
+    post:
+      tags: [auth]
+      operationId: changePassword
+      summary: 修改自己的密码（需当前密码；成功后吊销其他会话；清除 must_change_password）
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [current_password, new_password], additionalProperties: false, properties: {current_password: {type: string}, new_password: {type: string}}}}}}
+      responses:
+        '204': {description: Changed}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/security:
+    get:
+      tags: [auth]
+      operationId: getMySecurity
+      summary: 我的登录方式概览
+      responses:
+        '200': {description: Summary, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/SecuritySummary'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /v1/auth/totp/begin:
+    post:
+      tags: [auth]
+      operationId: totpBegin
+      summary: 开始绑定 TOTP（返回密钥与 otpauth URI，前端自行渲染二维码）
+      responses:
+        '200': {description: Enrollment, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/TotpEnrollment'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/auth/totp/confirm:
+    post:
+      tags: [auth]
+      operationId: totpConfirm
+      summary: 用一次有效码确认绑定；若这是该用户的第一个 MFA，同时返回一次性展示的恢复码
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challenge_id, code], additionalProperties: false, properties: {challenge_id: {type: string}, code: {type: string}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/MfaEnrolled'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/auth/totp:
+    delete:
+      tags: [auth]
+      operationId: totpDisable
+      summary: 关闭 TOTP（需近期认证；策略要求 MFA 且这是最后一个 MFA 时 409）
+      description: 未处于近期认证窗口（me.fresh=false）时返回 403 `FORBIDDEN`，`details.reason=reauth_required`。
+      responses:
+        '204': {description: Disabled}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/auth/passkeys/begin:
+    post:
+      tags: [auth]
+      operationId: passkeyRegisterBegin
+      summary: 开始注册 Passkey：取得创建选项（requireResidentKey + userVerification=required）
+      responses:
+        '200': {$ref: '#/components/responses/WebAuthnOptions'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/auth/passkeys/finish:
+    post:
+      tags: [auth]
+      operationId: passkeyRegisterFinish
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challenge_id, credential], additionalProperties: false, properties: {challenge_id: {type: string}, name: {type: string, maxLength: 64}, credential: {$ref: '#/components/schemas/WebAuthnJSON'}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/MfaEnrolled'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/auth/passkeys/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}, description: base64url 凭据 ID}
+    patch:
+      tags: [auth]
+      operationId: renamePasskey
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name], additionalProperties: false, properties: {name: {type: string, minLength: 1, maxLength: 64}}}}}}
+      responses:
+        '200': {description: Passkey, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Passkey'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [auth]
+      operationId: deletePasskey
+      summary: 删除 Passkey（需近期认证；不得删到无法登录/违反 MFA 策略）
+      description: 未处于近期认证窗口时返回 403 `FORBIDDEN`，`details.reason=reauth_required`。
+      responses:
+        '204': {description: Deleted}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/auth/recovery-codes:
+    post:
+      tags: [auth]
+      operationId: regenerateRecoveryCodes
+      summary: 重新生成 10 个恢复码（旧码作废，明文只返回这一次；需近期认证且已绑定 MFA）
+      description: 未处于近期认证窗口时返回 403 `FORBIDDEN`，`details.reason=reauth_required`。
+      responses:
+        '200': {description: Codes, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [recovery_codes], properties: {recovery_codes: {type: array, items: {type: string}}}}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/auth/sessions:
+    get:
+      tags: [auth]
+      operationId: listMySessions
+      responses:
+        '200': {description: Sessions, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/SessionInfo'}}}}}}}
+  /v1/auth/sessions/{id}:
+    delete:
+      tags: [auth]
+      operationId: revokeMySession
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Revoked}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/auth/invitations/{token}:
+    get:
+      tags: [auth]
+      operationId: getInvitation
+      summary: 查看邀请（公开；令牌无效/过期统一 404）
+      security: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Invitation, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Invitation'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/invitations/{token}/passkey/begin:
+    post:
+      tags: [auth]
+      operationId: invitationPasskeyBegin
+      security: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/WebAuthnOptions'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/auth/invitations/{token}/passkey/finish:
+    post:
+      tags: [auth]
+      operationId: invitationPasskeyFinish
+      summary: 接受邀请：注册第一个 Passkey 并登录；令牌随即失效
+      security: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challenge_id, credential], additionalProperties: false, properties: {challenge_id: {type: string}, name: {type: string, maxLength: 64}, credential: {$ref: '#/components/schemas/WebAuthnJSON'}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/LoginResult'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/admin/users:
+    get:
+      tags: [admin-users]
+      operationId: adminListUsers
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - {name: q, in: query, schema: {type: string}, description: 用户名/显示名包含}
+        - {name: role, in: query, schema: {$ref: '#/components/schemas/Role'}}
+        - {name: status, in: query, schema: {type: string, enum: [active, disabled, locked]}}
+      responses:
+        '200': {description: Users, content: {application/json: {schema: {$ref: '#/components/schemas/AdminUserPageEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [admin-users]
+      operationId: adminCreateUser
+      summary: 创建用户：返回一次性临时密码，或仅 Passkey 用户的一次性邀请链接
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AdminUserCreate'}}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/AdminUserCreated'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/admin/users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [admin-users]
+      operationId: adminGetUser
+      responses:
+        '200': {$ref: '#/components/responses/AdminUser'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [admin-users]
+      operationId: adminUpdateUser
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, properties: {display_name: {type: string, maxLength: 64}, role: {$ref: '#/components/schemas/Role'}, status: {type: string, enum: [active, disabled]}}}}}}
+      responses:
+        '200': {$ref: '#/components/responses/AdminUser'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [admin-users]
+      operationId: adminDeleteUser
+      description: 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。不能删除自己，也不能删除最后一个启用的管理员（409 `LAST_ADMIN`）。
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/admin/users/{id}/reset-password:
+    post:
+      tags: [admin-users]
+      operationId: adminResetPassword
+      summary: 生成新的一次性临时密码（明文只返回一次），吊销该用户全部会话
+      description: 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': {description: Temporary password, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [temporary_password], properties: {temporary_password: {type: string}}}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/admin/users/{id}/reset-mfa:
+    post:
+      tags: [admin-users]
+      operationId: adminResetMfa
+      summary: 清除该用户的 TOTP、Passkey 与恢复码，并吊销其会话
+      description: 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': {$ref: '#/components/responses/AdminUser'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/admin/users/{id}/unlock:
+    post:
+      tags: [admin-users]
+      operationId: adminUnlockUser
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': {$ref: '#/components/responses/AdminUser'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/admin/users/{id}/revoke-sessions:
+    post:
+      tags: [admin-users]
+      operationId: adminRevokeSessions
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': {description: Count, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [revoked], properties: {revoked: {type: integer}}}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/admin/users/{id}/invite:
+    post:
+      tags: [admin-users]
+      operationId: adminCreateInvite
+      summary: 为用户生成 24 小时有效的 Passkey 邀请链接（明文只返回一次，旧邀请作废）
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '201': {description: Invite, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/InviteCreated'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/admin/sessions:
+    get:
+      tags: [admin-users]
+      operationId: adminListSessions
+      parameters:
+        - {name: user_id, in: query, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Sessions, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/SessionInfo'}}}}}}}
+  /v1/admin/sessions/{id}:
+    delete:
+      tags: [admin-users]
+      operationId: adminRevokeSession
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Revoked}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/admin/security-settings:
+    get:
+      tags: [admin-users]
+      operationId: adminGetSecuritySettings
+      responses:
+        '200': {description: Settings, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/SecuritySettings'}}}}}}
+    patch:
+      tags: [admin-users]
+      operationId: adminUpdateSecuritySettings
+      description: 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。rp_id/origins 变更未带 confirm_passkey_reset 时返回 422 `PASSKEY_RESET_REQUIRED`。修改 `rp_id`/`origins` 会使已注册的 Passkey 失效，需 `confirm_passkey_reset=true`；不能关闭仍有账号依赖的登录方式。
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SecuritySettingsPatch'}}}}
+      responses:
+        '200': {description: Settings, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/SecuritySettings'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/llm/status:
+    get:
+      tags: [ai]
+      operationId: getLlmStatus
+      summary: 当前用户可用的大模型状态与 AI 工作台能力（任何已登录角色；不含密钥）
+      description: |
+        `configured=false` 时 UI 必须提示配置：管理员 → 去“设置 → 全局大模型”；其他人 → 若 `personal_allowed` 可配置个人 API，否则联系管理员（`setup_hint`）。
+        `source`：本用户任务将使用的配置（个人优先于全局）。`auto_ack_version/auto_ack_text` 是全自动模式的法定风险提示原文与版本，前端必须原样展示并要求勾选确认。
+      responses:
+        '200': {description: Status, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmStatus'}}}}}}
+  /v1/llm/personal:
+    get:
+      tags: [ai]
+      operationId: getPersonalLlm
+      summary: 我的个人大模型配置（仅当管理员允许个人 API；否则 403 PERSONAL_LLM_DISABLED）
+      responses:
+        '200': {description: Mine, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmConfig'}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [ai]
+      operationId: savePersonalLlm
+      summary: 保存个人配置（密钥加密保存，只对本人任务生效；校验规则同全局，但默认不允许内网/本机地址，除非管理员放开）
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LlmConfigInput'}}}}
+      responses:
+        '200': {description: Saved, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmConfig'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [ai]
+      operationId: deletePersonalLlm
+      summary: 删除个人配置（回到使用全局配置）
+      responses:
+        '204': {description: Deleted}
+        '403': {$ref: '#/components/responses/Error'}
+  /v1/llm/personal/test:
+    post:
+      tags: [ai]
+      operationId: testPersonalLlm
+      summary: 测试个人配置（限速；地址规则同保存）
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LlmTestInput'}}}}
+      responses:
+        '200': {description: Outcome, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmTestResult'}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/llm/personal/models:
+    post:
+      tags: [ai]
+      operationId: listPersonalLlmModels
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [base_url], additionalProperties: false, properties: {base_url: {type: string}, api_key: {type: string, description: 省略则使用已保存的个人密钥}}}}}}
+      responses:
+        '200': {description: Model ids, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [models], properties: {models: {type: array, items: {type: string}}}}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/admin/ai-policy:
+    get:
+      tags: [admin]
+      operationId: getAiPolicy
+      responses:
+        '200': {description: Policy, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/AiPolicy'}}}}}}
+    patch:
+      tags: [admin]
+      operationId: updateAiPolicy
+      summary: 管理员：是否允许员工配置个人 API、个人 API 是否可用内网地址、是否开放“全自动归档”
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AiPolicyPatch'}}}}
+      responses:
+        '200': {description: Policy, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/AiPolicy'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+  /v1/admin/system:
+    get:
+      tags: [diagnostics]
+      operationId: getSystemInfo
+      summary: 运行状态：版本、模式、运行时长、数据库/Worker 状态、磁盘、上次是否异常退出、未处理错误数
+      responses:
+        '200': {description: System, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/SystemInfo'}}}}}}
+  /v1/admin/error-reports:
+    get:
+      tags: [diagnostics]
+      operationId: listErrorReports
+      summary: 错误报告（按指纹聚合：同一错误只一条，带次数与首末时间）
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - {name: source, in: query, schema: {type: string, enum: [api, pipeline, worker, storage, client, supervisor, startup, llm]}}
+        - {name: severity, in: query, schema: {type: string, enum: [error, panic, fatal]}}
+        - {name: resolved, in: query, schema: {type: boolean}}
+        - {name: state, in: query, schema: {type: string, enum: [all, open, resolved]}, description: 'resolved 过滤的别名：open=未处理，resolved=已处理，all=不过滤；同时给出时以 state 为准'}
+        - {name: q, in: query, schema: {type: string}, description: 消息/错误码/请求 ID 包含}
+      responses:
+        '200': {description: Page, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorReportPageEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+  /v1/admin/error-reports/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [diagnostics]
+      operationId: getErrorReport
+      responses:
+        '200': {description: Report, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/ErrorReportDetail'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [diagnostics]
+      operationId: updateErrorReport
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [resolved], additionalProperties: false, properties: {resolved: {type: boolean}}}}}}
+      responses:
+        '200': {description: Report, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/ErrorReportDetail'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [diagnostics]
+      operationId: deleteErrorReport
+      responses:
+        '204': {description: Deleted}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/admin/diagnostics/bundle:
+    get:
+      tags: [diagnostics]
+      operationId: downloadDiagnosticBundle
+      summary: 下载诊断包（zip）：版本/环境摘要、脱敏配置、最近日志、错误报告、迁移状态；绝不含密钥、令牌、密码、文档内容
+      responses:
+        '200': {description: Zip, content: {application/zip: {schema: {type: string, format: binary}}}}
+  /v1/client-errors:
+    post:
+      tags: [diagnostics]
+      operationId: reportClientError
+      summary: 前端上报运行时错误（已登录；限速；正文限 8 KiB；服务器脱敏并按指纹聚合）
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ClientErrorInput'}}}}
+      responses:
+        '202': {description: Recorded, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [report_id], properties: {report_id: {type: string}}}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     Page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
     PageSize: {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 20}}
   responses:
+    LoginResult:
+      description: 登录结果（设置 `oa_session` Cookie：HttpOnly、SameSite=Strict、HTTPS 下 Secure；`mfa_required` 时不设置会话）
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LoginResult'}}}
+    WebAuthnOptions:
+      description: WebAuthn 选项（标准 JSON 形式，可直接交给 @simplewebauthn/browser 或 PublicKeyCredential.parse*OptionsFromJSON）与一次性 challenge_id
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {type: object, required: [challenge_id, options], properties: {challenge_id: {type: string}, options: {$ref: '#/components/schemas/WebAuthnJSON'}}}}}
+    MfaEnrolled:
+      description: 绑定成功；首个 MFA 时附带一次性展示的恢复码
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/MfaEnrolled'}}}
+    AdminUser:
+      description: User
+      content:
+        application/json:
+          schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/AdminUser'}}}
     Error:
       description: Error
       content:
@@ -547,11 +1735,15 @@ components:
         failure_count: {type: integer, minimum: 0}
         plan_id: {type: [string, 'null'], format: uuid}
         template_id: {type: string, format: uuid}
+        instruction: {type: string, description: 创建任务时给 AI 的说明（可空）}
+        automation: {type: string, enum: [review, auto], description: 默认 review}
+        llm_source: {type: string, enum: [none, global, personal], description: 本任务实际使用的大模型来源}
+        llm_model: {type: string, description: 本任务使用的模型名（none 时为空）}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     FileRecord:
       type: object
-      required: [id, task_id, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, detected_date, evidence, review_required, archive_status, error, created_at]
+      required: [id, task_id, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, detected_date, evidence, review_required, archive_status, error, created_at, ocr]
       properties:
         id: {type: string, format: uuid}
         task_id: {type: string, format: uuid}
@@ -567,6 +1759,19 @@ components:
         review_required: {type: boolean}
         archive_status: {type: string, enum: [pending, archived, failed]}
         error: {type: [string, 'null'], description: '失败原因，形如 “[UNSUPPORTED_FORMAT] …” 或中文说明'}
+        ocr:
+          description: OCR 摘要（未使用 OCR 为 null）。quality 为 OCR 质量判定。
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [used, quality, mean_confidence, profile, attempts, vision_used]
+              properties:
+                used: {type: boolean}
+                quality: {type: [string, 'null'], enum: [good, fair, poor, null]}
+                mean_confidence: {type: [number, 'null']}
+                profile: {type: string, description: 最终采用的识别模式（default/enhanced/rotate/deskew/high_dpi/binarize/vision）}
+                attempts: {type: integer, minimum: 0, description: 总 OCR 次数（含重试）}
+                vision_used: {type: boolean}
         created_at: {type: string, format: date-time}
     PlanItem:
       type: object
@@ -621,6 +1826,8 @@ components:
         sha256: {type: string}
         task_id: {type: string, format: uuid}
         status: {type: string, enum: [archived]}
+        decision: {type: string, enum: [manual, ai_auto], description: 决策方式：manual=人工审批；ai_auto=全自动（由大模型决定，系统未经人工审批）}
+        decision_model: {type: string, description: decision=ai_auto 时的模型名}
         executed_at: {type: string, format: date-time}
     TemplateInput:
       type: object
@@ -775,3 +1982,691 @@ components:
             total: {type: integer}
             page: {type: integer}
             page_size: {type: integer}
+    FsEntry:
+      type: object
+      required: [name, path, is_dir, size_bytes, modified_at, ledger]
+      properties:
+        name: {type: string}
+        path: {type: string, description: 相对归档根目录，正斜杠}
+        is_dir: {type: boolean}
+        size_bytes: {type: integer, minimum: 0, description: 文件夹为 0}
+        modified_at: {type: string, format: date-time}
+        mime_type: {type: string}
+        previewable: {type: boolean, description: 可内联预览（pdf/png/jpg）}
+        ledger:
+          description: 台账记录（文件夹或台账之外的文件为 null）
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [id, original_name, department, document_type, document_date]
+              properties:
+                id: {type: string, format: uuid}
+                original_name: {type: string}
+                department: {type: string}
+                document_type: {type: string}
+                document_date: {type: string}
+    FolderListing:
+      type: object
+      required: [path, parent, entries, capabilities]
+      properties:
+        path: {type: string}
+        parent: {type: [string, 'null'], description: 上级路径；根目录为 null}
+        entries: {type: array, items: {$ref: '#/components/schemas/FsEntry'}}
+        capabilities:
+          type: object
+          required: [reveal, root]
+          properties:
+            reveal: {type: boolean, description: 当前请求是否可使用“在资源管理器中显示”}
+            root: {type: [string, 'null'], description: 归档根目录的绝对路径，仅对本机请求返回}
+    TrashItem:
+      type: object
+      required: [id, original_path, name, is_dir, size_bytes, deleted_at]
+      properties:
+        id: {type: string, format: uuid}
+        original_path: {type: string}
+        name: {type: string}
+        is_dir: {type: boolean}
+        size_bytes: {type: integer, minimum: 0}
+        deleted_at: {type: string, format: date-time}
+    LlmPreset:
+      type: object
+      required: [id, name, description, base_url, models, default_model, needs_api_key, docs_url, vision_models, checked_at, note]
+      properties:
+        id: {type: string, description: 'deepseek / qwen / qwen-intl / openai / ollama / custom'}
+        name: {type: string}
+        description: {type: string}
+        base_url: {type: string}
+        models:
+          type: array
+          items:
+            type: object
+            required: [id, label]
+            properties:
+              id: {type: string}
+              label: {type: string}
+              note: {type: string}
+        default_model: {type: string}
+        needs_api_key: {type: boolean}
+        vision_models:
+          description: 该服务商支持图片输入的模型建议（用于“视觉识别”兜底）；可为空。
+          type: array
+          items:
+            type: object
+            required: [id, label]
+            properties:
+              id: {type: string}
+              label: {type: string}
+              note: {type: string}
+        docs_url: {type: string}
+        checked_at: {type: string, description: 预设建议模型的核对日期（YYYY-MM-DD）；模型更新很快，实际以服务商返回的列表为准}
+        note: {type: string, description: 该服务商的使用提示（如 Base URL 取自控制台、可用模型以控制台为准）}
+    LlmConfig:
+      type: object
+      required: [mode, preset_id, base_url, model, api_key_set, api_key_hint, state, updated_at, vision_model, allow_vision]
+      properties:
+        mode: {type: string, enum: [heuristic, llm]}
+        preset_id: {type: string}
+        base_url: {type: string}
+        model: {type: string}
+        api_key_set: {type: boolean}
+        api_key_hint: {type: string, description: '已保存密钥的尾号提示，如 ••••ab12；未保存为空'}
+        vision_model: {type: string, description: 视觉识别所用模型（空 = 未配置）}
+        allow_vision: {type: boolean, description: 是否允许在 OCR 质量差时把页面图片发送给视觉模型（默认关闭）}
+        state: {type: string, enum: [ok, unconfigured, unavailable]}
+        updated_at: {type: [string, 'null'], format: date-time}
+    LlmConfigInput:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [heuristic, llm]}
+        preset_id: {type: string, maxLength: 40}
+        base_url: {type: string, maxLength: 300}
+        model: {type: string, maxLength: 120}
+        api_key: {type: string, maxLength: 400}
+        clear_api_key: {type: boolean}
+        vision_model: {type: string, maxLength: 120}
+        allow_vision: {type: boolean}
+    LlmTestInput:
+      type: object
+      required: [base_url, model]
+      additionalProperties: false
+      properties:
+        base_url: {type: string}
+        model: {type: string}
+        vision_model: {type: string, description: 提供则额外测试该模型能否接受图片输入}
+        api_key: {type: string, description: 省略则使用已保存的密钥}
+    LlmTestResult:
+      type: object
+      required: [ok, latency_ms, message, tool_calling, vision_ok]
+      properties:
+        ok: {type: boolean}
+        latency_ms: {type: integer, minimum: 0}
+        message: {type: string}
+        tool_calling: {type: [boolean, 'null'], description: 未能判断为 null}
+        vision_ok: {type: [boolean, 'null'], description: 未测试视觉模型为 null}
+    Preview:
+      type: object
+      required: [kind, name, mime_type, size_bytes, pages, truncated, warnings, page_url, message]
+      properties:
+        kind: {type: string, enum: [pdf, image, document, spreadsheet, unsupported]}
+        name: {type: string}
+        mime_type: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        pages: {type: [integer, 'null'], description: pdf/image 的页数}
+        page_url: {type: [string, 'null'], description: '带 {page} 占位符的相对 URL，pdf/image 用'}
+        message: {type: string, description: kind=unsupported 时的原因，否则为空串}
+        truncated: {type: boolean}
+        warnings: {type: array, items: {type: string}}
+        header: {type: string}
+        footer: {type: string}
+        blocks:
+          type: array
+          description: kind=document
+          items:
+            type: object
+            required: [type]
+            properties:
+              type: {type: string, enum: [heading, paragraph, list_item, table]}
+              level: {type: integer, minimum: 0, maximum: 6}
+              text: {type: string}
+              align: {type: string, enum: [left, center, right]}
+              runs:
+                type: array
+                items:
+                  type: object
+                  required: [text]
+                  properties:
+                    text: {type: string}
+                    bold: {type: boolean}
+                    italic: {type: boolean}
+              rows: {type: array, items: {type: array, items: {type: string}}}
+        sheets:
+          type: array
+          description: kind=spreadsheet
+          items:
+            type: object
+            required: [name, rows, rows_total, cols_total, truncated]
+            properties:
+              name: {type: string}
+              rows: {type: array, items: {type: array, items: {type: string}}}
+              rows_total: {type: integer}
+              cols_total: {type: integer}
+              truncated: {type: boolean}
+    StorageField:
+      type: object
+      required: [key, label, type, required, secret, default, placeholder, help, options, show_if, managed]
+      properties:
+        key: {type: string}
+        label: {type: string}
+        type: {type: string, enum: [text, number, select, password, textarea]}
+        required: {type: boolean}
+        secret: {type: boolean, description: 凭据字段：加密保存，永不返回}
+        default: {type: string}
+        placeholder: {type: string}
+        help: {type: string}
+        options:
+          type: array
+          items:
+            type: object
+            required: [value, label]
+            properties: {value: {type: string}, label: {type: string}}
+        show_if:
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [key, equals]
+              properties: {key: {type: string}, equals: {type: string}}
+        managed: {type: boolean, description: 由服务器托管（只读展示），如已信任的 SSH 主机密钥}
+    StorageKind:
+      type: object
+      required: [id, name, group, description, docs_url, fields]
+      properties:
+        id: {type: string, description: 's3 / azure_blob / webdav / sftp / ftp / smb / dingtalk / onedrive / googledrive / dropbox / aliyundrive_open / baidu_netdisk / 123_open / openlist / seafile / cloudreve / localdir'}
+        name: {type: string}
+        group: {type: string, enum: [cloud, enterprise, gateway]}
+        description: {type: string}
+        docs_url: {type: string}
+        fields: {type: array, items: {$ref: '#/components/schemas/StorageField'}}
+    StorageConnection:
+      type: object
+      required: [id, name, kind, enabled, base_path, use_for_import, replicate, settings, secrets_set, last_test, replication, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        kind: {type: string}
+        enabled: {type: boolean}
+        base_path: {type: string}
+        use_for_import: {type: boolean}
+        replicate: {type: string, enum: [off, manual, auto]}
+        settings: {type: object, additionalProperties: {type: string}}
+        secrets_set: {type: object, additionalProperties: {type: boolean}, description: 哪些凭据已保存（不含值）}
+        last_test:
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [ok, at, message]
+              properties:
+                ok: {type: boolean}
+                at: {type: string, format: date-time}
+                message: {type: string}
+        replication:
+          type: object
+          required: [queued, running, done, skipped, failed]
+          properties:
+            queued: {type: integer}
+            running: {type: integer}
+            done: {type: integer}
+            skipped: {type: integer}
+            failed: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    StorageConnectionInput:
+      type: object
+      required: [name, kind]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        kind: {type: string}
+        settings: {type: object, additionalProperties: {type: string}}
+        secrets: {type: object, additionalProperties: {type: string}}
+        base_path: {type: string}
+        enabled: {type: boolean}
+        use_for_import: {type: boolean}
+        replicate: {type: string, enum: [off, manual, auto]}
+    StorageConnectionPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        settings: {type: object, additionalProperties: {type: string}}
+        secrets: {type: object, additionalProperties: {type: string}}
+        clear_secrets: {type: array, items: {type: string}}
+        base_path: {type: string}
+        enabled: {type: boolean}
+        use_for_import: {type: boolean}
+        replicate: {type: string, enum: [off, manual, auto]}
+    StorageTestInput:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind: {type: string}
+        settings: {type: object, additionalProperties: {type: string}}
+        secrets: {type: object, additionalProperties: {type: string}}
+        base_path: {type: string}
+        connection_id: {type: string, format: uuid}
+        check_write: {type: boolean}
+        accept_host_key: {type: string}
+    StorageTestResult:
+      type: object
+      required: [ok, latency_ms, steps, host_key]
+      properties:
+        ok: {type: boolean}
+        latency_ms: {type: integer, minimum: 0}
+        steps:
+          type: array
+          items:
+            type: object
+            required: [name, ok, message]
+            properties:
+              name: {type: string}
+              ok: {type: boolean}
+              message: {type: string}
+        host_key:
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [fingerprint, changed]
+              properties:
+                fingerprint: {type: string}
+                changed: {type: boolean}
+    StorageEntry:
+      type: object
+      required: [name, path, is_dir, size_bytes, modified_at]
+      properties:
+        name: {type: string}
+        path: {type: string}
+        is_dir: {type: boolean}
+        size_bytes: {type: integer, minimum: 0}
+        modified_at: {type: [string, 'null'], format: date-time}
+    StorageListing:
+      type: object
+      required: [path, parent, entries, truncated]
+      properties:
+        path: {type: string}
+        parent: {type: [string, 'null']}
+        entries: {type: array, items: {$ref: '#/components/schemas/StorageEntry'}}
+        truncated: {type: boolean, description: 目录项过多时只返回前 5000 项}
+    Replication:
+      type: object
+      required: [id, connection_id, connection_name, local_path, remote_path, status, attempts, error, size_bytes, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        connection_id: {type: string, format: uuid}
+        connection_name: {type: string}
+        local_path: {type: string}
+        remote_path: {type: string}
+        status: {type: string, enum: [queued, running, done, skipped, failed]}
+        attempts: {type: integer}
+        error: {type: [string, 'null']}
+        size_bytes: {type: integer}
+        updated_at: {type: string, format: date-time}
+    ReplicationPageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, page_size]
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/Replication'}}
+            total: {type: integer}
+            page: {type: integer}
+            page_size: {type: integer}
+    Role: {type: string, enum: [admin, operator, viewer]}
+    WebAuthnJSON: {type: object, additionalProperties: true, description: 标准 WebAuthn JSON（PublicKeyCredentialCreationOptionsJSON / RequestOptionsJSON / RegistrationResponseJSON / AuthenticationResponseJSON），原样透传}
+    SessionUser:
+      type: object
+      required: [id, username, display_name, role, must_change_password]
+      properties:
+        id: {type: string}
+        username: {type: string}
+        display_name: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+        must_change_password: {type: boolean}
+    LoginResult:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok, mfa_required, enroll_mfa]}
+        user: {$ref: '#/components/schemas/SessionUser'}
+        csrf_token: {type: string, description: status 为 ok/enroll_mfa 时返回；非 GET 请求放入 X-CSRF-Token}
+        mfa_token: {type: string, description: status=mfa_required 时的 5 分钟一次性令牌}
+        methods: {type: array, items: {type: string, enum: [totp, passkey, recovery]}}
+        session_expires_at: {type: string, format: date-time}
+    Policy:
+      type: object
+      required: [mode, mfa_policy, allow_password_login, passkey_available]
+      properties:
+        mode: {type: string, enum: [enterprise, local]}
+        mfa_policy: {type: string, enum: ['off', admins, all]}
+        allow_password_login: {type: boolean}
+        passkey_available: {type: boolean}
+        password_min_length: {type: integer}
+    Me:
+      type: object
+      required: [user, csrf_token, scope, mfa, fresh, session_expires_at, policy]
+      properties:
+        user: {$ref: '#/components/schemas/SessionUser'}
+        csrf_token: {type: string}
+        scope: {type: string, enum: [full, enroll_mfa]}
+        mfa: {type: string, enum: [none, totp, passkey, recovery, local]}
+        fresh: {type: boolean, description: 是否处于“近期认证”窗口}
+        session_expires_at: {type: string, format: date-time}
+        policy: {$ref: '#/components/schemas/Policy'}
+    SetupCheck:
+      type: object
+      required: [name, ok, message]
+      properties: {name: {type: string}, ok: {type: boolean}, message: {type: string}}
+    SetupStatus:
+      type: object
+      required: [initialized, wizard_finished, server_version, api_level, needs_token, loopback, https, passkey_available, checks, min_password_length]
+      properties:
+        initialized: {type: boolean}
+        wizard_finished: {type: boolean, description: 'false 直到向导完成（POST /v1/setup/finish）；local 模式与升级前已初始化的安装为 true。false 且 initialized 时服务端闸门拒绝大部分接口（409 WIZARD_REQUIRED）'}
+        server_version: {type: string, description: 后端构建版本}
+        api_level: {type: integer, description: '后端实现的契约代数（Go 常量 api.APILevel，当前 3）；前端依赖新接口/字段时必须同时递增前后端的常量，不一致时前端显示版本不匹配横幅'}
+        mode: {type: string, enum: [enterprise, local], description: 已初始化时返回}
+        needs_token: {type: boolean, description: 非回环请求需要初始化令牌}
+        loopback: {type: boolean, description: 本次请求是否来自本机回环地址（local 模式的前提）}
+        https: {type: boolean}
+        passkey_available: {type: boolean}
+        rp_id_suggestion: {type: string}
+        origin_suggestion: {type: string}
+        allow_password_login: {type: boolean, description: 已初始化时返回；false 时登录页应隐藏密码表单（仅 Passkey）}
+        min_password_length: {type: integer}
+        checks: {type: array, items: {$ref: '#/components/schemas/SetupCheck'}}
+    SetupRequest:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        setup_token: {type: string}
+        mode: {type: string, enum: [enterprise, local]}
+        admin:
+          type: object
+          required: [username, display_name, password]
+          additionalProperties: false
+          properties: {username: {type: string}, display_name: {type: string}, password: {type: string}}
+        rp_id: {type: string}
+        rp_name: {type: string}
+        origins: {type: array, items: {type: string}}
+        mfa_policy: {type: string, enum: ['off', admins, all]}
+        allow_password_login: {type: boolean}
+        session_idle_minutes: {type: integer, minimum: 5, maximum: 1440}
+        session_max_hours: {type: integer, minimum: 1, maximum: 720}
+        password_min_length: {type: integer, minimum: 8, maximum: 128}
+    Passkey:
+      type: object
+      required: [id, name, created_at, last_used_at, backup_eligible, backup_state, transports]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        created_at: {type: string, format: date-time}
+        last_used_at: {type: [string, 'null'], format: date-time}
+        backup_eligible: {type: boolean}
+        backup_state: {type: boolean}
+        transports: {type: array, items: {type: string}}
+    SecuritySummary:
+      type: object
+      required: [has_password, totp_enabled, passkeys, recovery_codes_remaining, mfa_required_by_policy]
+      properties:
+        has_password: {type: boolean}
+        totp_enabled: {type: boolean}
+        passkeys: {type: array, items: {$ref: '#/components/schemas/Passkey'}}
+        recovery_codes_remaining: {type: integer}
+        mfa_required_by_policy: {type: boolean}
+    TotpEnrollment:
+      type: object
+      required: [challenge_id, secret, otpauth_uri, digits, period, algorithm]
+      properties:
+        challenge_id: {type: string}
+        secret: {type: string, description: Base32，供手动输入；只在此响应出现}
+        otpauth_uri: {type: string}
+        digits: {type: integer}
+        period: {type: integer}
+        algorithm: {type: string}
+    MfaEnrolled:
+      type: object
+      required: [recovery_codes]
+      properties:
+        recovery_codes: {type: array, items: {type: string}, description: 仅在该用户第一次绑定 MFA 时非空；明文只返回这一次}
+        passkey: {$ref: '#/components/schemas/Passkey'}
+        me: {$ref: '#/components/schemas/Me'}
+    SessionInfo:
+      type: object
+      required: [id, user_id, username, created_at, last_seen_at, expires_at, ip, user_agent, mfa, current]
+      properties:
+        id: {type: string}
+        user_id: {type: string}
+        username: {type: string}
+        created_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        ip: {type: string}
+        user_agent: {type: string}
+        mfa: {type: string, enum: [none, totp, passkey, recovery, local]}
+        current: {type: boolean}
+    Invitation:
+      type: object
+      required: [username, display_name, expires_at, passkey_available]
+      properties:
+        username: {type: string}
+        display_name: {type: string}
+        expires_at: {type: string, format: date-time}
+        passkey_available: {type: boolean}
+    InviteCreated:
+      type: object
+      required: [token, path, expires_at]
+      properties:
+        token: {type: string}
+        path: {type: string, description: 相对路径 /invite/<token>；前端用当前 origin 拼成完整链接}
+        expires_at: {type: string, format: date-time}
+    AdminUser:
+      type: object
+      required: [id, username, display_name, role, status, has_password, totp_enabled, passkey_count, recovery_codes_remaining, must_change_password, failed_logins, locked_until, last_login_at, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        username: {type: string}
+        display_name: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+        status: {type: string, enum: [active, disabled, locked]}
+        has_password: {type: boolean}
+        totp_enabled: {type: boolean}
+        passkey_count: {type: integer}
+        recovery_codes_remaining: {type: integer}
+        must_change_password: {type: boolean}
+        failed_logins: {type: integer}
+        locked_until: {type: [string, 'null'], format: date-time}
+        last_login_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+    AdminUserCreate:
+      type: object
+      required: [username, display_name, role, credential]
+      additionalProperties: false
+      properties:
+        username: {type: string}
+        display_name: {type: string, maxLength: 64}
+        role: {$ref: '#/components/schemas/Role'}
+        credential: {type: string, enum: [password, passkey_invite], description: password：生成临时密码；passkey_invite：无密码，生成邀请链接}
+    AdminUserCreated:
+      type: object
+      required: [user]
+      properties:
+        user: {$ref: '#/components/schemas/AdminUser'}
+        temporary_password: {type: string, description: credential=password 时返回，仅此一次}
+        invite: {$ref: '#/components/schemas/InviteCreated'}
+    AdminUserPageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, page_size]
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/AdminUser'}}
+            total: {type: integer}
+            page: {type: integer}
+            page_size: {type: integer}
+    SecuritySettings:
+      type: object
+      required: [mode, rp_id, rp_name, origins, mfa_policy, allow_password_login, session_idle_minutes, session_max_hours, password_min_length, lockout_threshold, lockout_minutes, passkey_available]
+      properties:
+        mode: {type: string, enum: [enterprise, local]}
+        rp_id: {type: string}
+        rp_name: {type: string}
+        origins: {type: array, items: {type: string}}
+        mfa_policy: {type: string, enum: ['off', admins, all]}
+        allow_password_login: {type: boolean}
+        session_idle_minutes: {type: integer}
+        session_max_hours: {type: integer}
+        password_min_length: {type: integer}
+        lockout_threshold: {type: integer}
+        lockout_minutes: {type: integer}
+        passkey_available: {type: boolean}
+    SecuritySettingsPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        rp_id: {type: string}
+        rp_name: {type: string}
+        origins: {type: array, items: {type: string}}
+        mfa_policy: {type: string, enum: ['off', admins, all]}
+        allow_password_login: {type: boolean}
+        session_idle_minutes: {type: integer, minimum: 5, maximum: 1440}
+        session_max_hours: {type: integer, minimum: 1, maximum: 720}
+        password_min_length: {type: integer, minimum: 8, maximum: 128}
+        lockout_threshold: {type: integer, minimum: 3, maximum: 20}
+        lockout_minutes: {type: integer, minimum: 1, maximum: 1440}
+        confirm_passkey_reset: {type: boolean}
+    LlmStatus:
+      type: object
+      required: [configured, source, mode, model, global_configured, personal_configured, personal_allowed, allow_personal_private_hosts, auto_archive_allowed, auto_ack_version, auto_ack_text, setup_hint]
+      properties:
+        configured: {type: boolean, description: 本用户的任务是否有可用的大模型（mode=llm 且状态 ok）}
+        source: {type: string, enum: [none, global, personal]}
+        mode: {type: string, enum: [heuristic, llm]}
+        model: {type: string, description: 将使用的模型名（none 时为空）}
+        provider_label: {type: string}
+        global_configured: {type: boolean}
+        personal_configured: {type: boolean}
+        personal_allowed: {type: boolean}
+        allow_personal_private_hosts: {type: boolean, description: 管理员是否允许个人 API 使用 http/内网/本机地址（供 UI 提前展示地址规则）}
+        auto_archive_allowed: {type: boolean, description: 策略允许 + 已配置大模型 + 角色足够时为 true}
+        auto_ack_version: {type: string}
+        auto_ack_text: {type: string, description: 全自动模式风险提示原文（前端原样展示）}
+        setup_hint: {type: string, enum: [none, admin_global, personal_or_admin, contact_admin]}
+    AiPolicy:
+      type: object
+      required: [allow_personal_llm, allow_personal_private_hosts, allow_auto_archive, updated_at]
+      properties:
+        allow_personal_llm: {type: boolean, description: 允许员工配置个人大模型 API（默认 false）}
+        allow_personal_private_hosts: {type: boolean, description: 个人 API 是否允许 http/内网/本机地址（默认 false，防 SSRF）}
+        allow_auto_archive: {type: boolean, description: 是否开放“全自动归档”（默认 true，管理员可整体关闭）}
+        updated_at: {type: [string, 'null'], format: date-time}
+    AiPolicyPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        allow_personal_llm: {type: boolean}
+        allow_personal_private_hosts: {type: boolean}
+        allow_auto_archive: {type: boolean}
+    ImportOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        instruction: {type: string, maxLength: 2000, description: '给 AI 的任务说明（如“只处理采购类文件，按项目名归档”）。只作为分类/命名的指导，不能授予工具权限、不能改变路径安全规则；文档内容仍是数据而非指令。需要已配置大模型，否则 422 LLM_REQUIRED。'}
+        automation: {type: string, enum: [review, auto], default: review, description: review=人工审批后执行；auto=全自动（需 auto_ack）}
+        llm_source: {type: string, enum: [auto, global, personal], default: auto}
+        auto_ack:
+          type: object
+          required: [version, accepted]
+          additionalProperties: false
+          properties:
+            version: {type: string, description: 必须等于 LlmStatus.auto_ack_version}
+            accepted: {type: boolean}
+    ErrorReport:
+      type: object
+      required: [id, source, severity, code, message, count, first_seen, last_seen, resolved, request_id]
+      properties:
+        id: {type: string}
+        source: {type: string, enum: [api, pipeline, worker, storage, client, supervisor, startup, llm]}
+        severity: {type: string, enum: [error, panic, fatal]}
+        code: {type: string}
+        message: {type: string}
+        count: {type: integer, minimum: 1}
+        first_seen: {type: string, format: date-time}
+        last_seen: {type: string, format: date-time}
+        resolved: {type: boolean}
+        request_id: {type: string, description: 最近一次的请求 ID（可用于对照日志）}
+    ErrorReportDetail:
+      allOf:
+        - $ref: '#/components/schemas/ErrorReport'
+        - type: object
+          required: [stack, details, occurrences]
+          properties:
+            stack: {type: string, description: 已脱敏的调用栈（panic/fatal/客户端错误）}
+            details: {type: object, additionalProperties: true, description: 脱敏后的上下文（路径、任务 ID、用户名、版本等）}
+            occurrences:
+              type: array
+              description: 最近最多 20 次发生
+              items:
+                type: object
+                required: [at, request_id, user]
+                properties: {at: {type: string, format: date-time}, request_id: {type: string}, user: {type: string}}
+    ErrorReportPageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, page_size]
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/ErrorReport'}}
+            total: {type: integer}
+            page: {type: integer}
+            page_size: {type: integer}
+    ClientErrorInput:
+      type: object
+      required: [message]
+      additionalProperties: false
+      properties:
+        message: {type: string, maxLength: 500}
+        stack: {type: string, maxLength: 4000}
+        route: {type: string, maxLength: 200}
+        component: {type: string, maxLength: 120}
+        app_version: {type: string, maxLength: 40}
+        request_id: {type: string, maxLength: 64}
+    SystemInfo:
+      type: object
+      required: [version, commit, build_mode, go_version, os, started_at, uptime_seconds, database, worker, disk, last_exit_unclean, open_error_reports, standalone]
+      properties:
+        version: {type: string}
+        commit: {type: string}
+        build_mode: {type: string, enum: [debug, release]}
+        go_version: {type: string}
+        os: {type: string}
+        standalone: {type: boolean}
+        started_at: {type: string, format: date-time}
+        uptime_seconds: {type: integer}
+        database: {type: object, required: [ok, message], properties: {ok: {type: boolean}, message: {type: string}}}
+        worker: {type: object, required: [ok, message], properties: {ok: {type: boolean}, message: {type: string}}}
+        disk:
+          type: object
+          required: [archive_path, free_bytes, total_bytes]
+          properties: {archive_path: {type: string}, free_bytes: {type: integer}, total_bytes: {type: integer}}
+        last_exit_unclean: {type: boolean, description: 上次运行异常结束（崩溃/被强杀）；已记录一条 supervisor 错误报告}
+        open_error_reports: {type: integer}
+  securitySchemes:
+    cookieAuth: {type: apiKey, in: cookie, name: oa_session, description: 登录后下发的 HttpOnly 会话 Cookie；非 GET 请求另需 X-CSRF-Token（见 /v1/auth/me）}

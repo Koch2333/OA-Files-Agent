@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,8 @@ import (
 
 	"oa-agent/backend/internal/api"
 	"oa-agent/backend/internal/db"
+	"oa-agent/backend/internal/fileops"
+	"oa-agent/backend/internal/fsman"
 	"oa-agent/backend/internal/harness"
 	"oa-agent/backend/internal/imports"
 	"oa-agent/backend/internal/store"
@@ -32,7 +36,7 @@ func testStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema := "oa_pipe_" + time.Now().Format("150405_000000000")
+	schema := "oa_pipe_" + fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Int63())
 	q := pgx.Identifier{schema}.Sanitize()
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+q); err != nil {
 		t.Fatal(err)
@@ -378,5 +382,41 @@ func TestRestartResumesWithoutReanalysingFinishedFiles(t *testing.T) {
 	plan, _ := st.GetPlan(ctx, *got.PlanID)
 	if len(plan.Items) != 2 {
 		t.Fatalf("plan must cover both files, got %d", len(plan.Items))
+	}
+}
+
+// Once a file was renamed/moved/deleted in the file manager, rolling back the original archive operation
+// must be refused instead of silently skipping it and flagging the ledger wrongly.
+func TestRollbackIsRefusedAfterFileManagerChanges(t *testing.T) {
+	st := testStore(t)
+	ok := harness.Result{Department: sp("财务部"), DocumentType: sp("合同"), DocumentDate: sp("2026-01-01")}
+	svc, spool, arch := newSvc(t, st, &fakeAnalyzer{results: map[string]harness.Result{"a.pdf": ok, "b.pdf": ok}})
+	ctx := context.Background()
+	b := importFiles(t, st, spool, map[string]string{"a.pdf": "A", "b.pdf": "B"})
+	j, _ := st.ClaimJob(ctx)
+	svc.process(ctx, j)
+	j, _ = st.GetJob(ctx, b.Job.ID)
+	p, _ := st.GetPlan(ctx, *j.PlanID)
+	p, _ = st.ApprovePlan(ctx, p.ID, p.Version, "u")
+	done, err := svc.ExecutePlan(ctx, p.ID, "k", "u")
+	if err != nil || done.OperationID == nil {
+		t.Fatalf("execute: %v", err)
+	}
+	fm := &fileops.Service{Store: st, FS: &fsman.Manager{Root: arch}}
+	first := done.Items[0].DestinationPath
+	if _, _, err := fm.Move(ctx, first, strings.TrimSuffix(first, ".pdf")+"_改名.pdf", "u"); err != nil {
+		t.Fatal(err)
+	}
+	var ee *api.ExecError
+	if err := svc.Rollback(ctx, *done.OperationID, "u"); !errors.As(err, &ee) || ee.Code != "FILES_CHANGED" {
+		t.Fatalf("rollback after a manual move must be refused, got %v", err)
+	}
+	for _, it := range done.Items[1:] {
+		if _, err := os.Stat(filepath.Join(arch, filepath.FromSlash(it.DestinationPath))); err != nil {
+			t.Fatal("a refused rollback must not delete anything")
+		}
+	}
+	if _, total, _ := st.Ledger(ctx, store.Page{}, store.LedgerFilter{}); total != 2 {
+		t.Fatalf("ledger must be untouched, rows=%d", total)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"mime/multipart"
 	"os"
 	"strings"
@@ -156,5 +157,126 @@ func TestValidatePath(t *testing.T) {
 		if err := ValidatePath(bad); err == nil {
 			t.Errorf("%q should be rejected", bad)
 		}
+	}
+}
+
+func runOpts(t *testing.T, h OptionsHandler, parts ...part) (Batch, *memStore, error) {
+	t.Helper()
+	ms := &memStore{}
+	ctx := WithAI(context.Background(), TaskAI{Source: SourceGlobal, Model: "default-model"})
+	if h != nil {
+		ctx = WithOptionsHandler(ctx, h)
+	}
+	b, err := (&Service{Store: ms, Root: t.TempDir()}).Import(ctx, body(t, parts...), "", "")
+	return b, ms, err
+}
+
+func TestOptionsPartIsParsedInOrderAndAppliedToTheTask(t *testing.T) {
+	var got []byte
+	h := func(raw []byte) (TaskAI, error) {
+		got = raw
+		return TaskAI{Instruction: "只处理采购", Automation: AutomationAuto, Source: SourcePersonal, Owner: "u1", Model: "m1", AckVersion: "v1", AckBy: "alice", Fingerprint: "fp-1"}, nil
+	}
+	b, ms, err := runOpts(t, h, paths("a.docx"), part{"options", "", `{"instruction":"x"}`}, part{"files", "a.docx", "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := ms.saved.Job
+	if string(got) != `{"instruction":"x"}` || j.Instruction != "只处理采购" || j.Automation != "auto" || j.LLMSource != "personal" || j.LLMOwner != "u1" || j.LLMModel != "m1" || j.AckVersion != "v1" || j.AckBy != "alice" || j.AckAt == nil || b.Job.ID != j.ID {
+		t.Fatalf("job = %+v", j)
+	}
+	// without an options part the default from the context applies (a plain import still records its model)
+	_, ms, err = runOpts(t, h, paths("a.docx"), part{"files", "a.docx", "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := ms.saved.Job; j.LLMSource != "global" || j.LLMModel != "default-model" || j.Automation != "review" || j.AckAt != nil {
+		t.Fatalf("default job = %+v", j)
+	}
+	// no AI context at all: review mode and no model
+	_, ms, _, _ = run(t, paths("a.docx"), part{"files", "a.docx", "hello"})
+	if j := ms.saved.Job; j.Automation != "review" || j.LLMSource != "none" {
+		t.Fatalf("legacy job = %+v", j)
+	}
+}
+
+func TestOptionsPartMisuseIsRejectedBeforeAnyFileIsStored(t *testing.T) {
+	h := func([]byte) (TaskAI, error) { return TaskAI{}, nil }
+	opts := part{"options", "", `{}`}
+	file := part{"files", "a.docx", "hello"}
+	cases := map[string][]part{
+		"before paths":   {opts, paths("a.docx"), file},
+		"after file":     {paths("a.docx"), file, opts},
+		"twice":          {paths("a.docx"), opts, opts, file},
+		"without paths":  {opts, file},
+		"paths after it": {paths("a.docx"), opts, paths("a.docx"), file},
+	}
+	for name, parts := range cases {
+		if _, _, err := runOpts(t, h, parts...); code(err) != "INVALID_MULTIPART" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// without a handler the part is not supported at all
+	if _, _, err := runOpts(t, nil, paths("a.docx"), opts, file); code(err) != "INVALID_MULTIPART" {
+		t.Errorf("no handler: %v", err)
+	}
+	// oversized options
+	big := part{"options", "", strings.Repeat("x", MaxOptionsBytes+10)}
+	if _, _, err := runOpts(t, h, paths("a.docx"), big, file); code(err) != "INVALID_OPTIONS" {
+		t.Errorf("oversized: %v", err)
+	}
+	// a handler error aborts the import and nothing is spooled
+	root := t.TempDir()
+	reject := func([]byte) (TaskAI, error) { return TaskAI{}, &Error{422, "LLM_REQUIRED", "x"} }
+	ms := &memStore{}
+	_, err := (&Service{Store: ms, Root: root}).Import(WithOptionsHandler(context.Background(), reject), body(t, paths("a.docx"), opts, file), "", "")
+	if code(err) != "LLM_REQUIRED" || ms.saved != nil {
+		t.Fatalf("%v %v", err, ms.saved)
+	}
+	if ents, _ := os.ReadDir(root); len(ents) != 0 {
+		t.Fatalf("spool must be empty: %v", ents)
+	}
+}
+
+func TestOptionsAreBoundIntoTheIdempotencyFingerprint(t *testing.T) {
+	mk := func(fp string) string {
+		h := func([]byte) (TaskAI, error) { return TaskAI{Fingerprint: fp}, nil }
+		_, ms, err := runOpts(t, h, paths("a.docx"), part{"options", "", `{}`}, part{"files", "a.docx", "hello"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ms.saved.Fingerprint
+	}
+	a, b, c := mk("one"), mk("one"), mk("two")
+	if a != b || a == c {
+		t.Fatalf("fingerprints: %s %s %s", a, b, c)
+	}
+	_, ms, _, _ := run(t, paths("a.docx"), part{"files", "a.docx", "hello"})
+	if ms.saved.Fingerprint == a {
+		t.Fatal("a request with options must not collide with one without")
+	}
+}
+
+func TestRemoteImportRecordsAISettingsAndFingerprint(t *testing.T) {
+	open := func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("hello")), nil }
+	files := []RemoteFile{{RelPath: "a.docx", Size: 5, Open: open}}
+	do := func(ai TaskAI) *Batch {
+		ms := &memStore{}
+		_, err := (&Service{Store: ms, Root: t.TempDir()}).ImportRemote(WithAI(context.Background(), ai), files, "", "", "conn-1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ms.saved
+	}
+	s := do(TaskAI{Instruction: "按项目", Automation: AutomationAuto, Source: SourceGlobal, Owner: "u1", Model: "m", AckVersion: "v1", AckBy: "alice", Fingerprint: "fp"})
+	if j := s.Job; j.Instruction != "按项目" || j.Automation != "auto" || j.LLMSource != "global" || j.LLMOwner != "u1" || j.AckVersion != "v1" || j.AckAt == nil {
+		t.Fatalf("%+v", j)
+	}
+	plain := do(TaskAI{})
+	if plain.Job.Automation != "review" || plain.Job.LLMSource != "none" || plain.Fingerprint == s.Fingerprint {
+		t.Fatalf("%+v", plain.Job)
+	}
+	if do(TaskAI{Fingerprint: "a"}).Fingerprint == do(TaskAI{Fingerprint: "b"}).Fingerprint {
+		t.Fatal("options must change the fingerprint")
 	}
 }

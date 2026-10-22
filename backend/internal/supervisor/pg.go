@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -47,6 +48,7 @@ func StartPostgres(ctx context.Context, l Layout) (*Postgres, error) {
 	if _, err := os.Stat(l.pgBin("pg_ctl")); err != nil {
 		return nil, fmt.Errorf("embedded PostgreSQL not found in %s", l.PGDir)
 	}
+	trackLayout(l)
 	secretPath := filepath.Join(l.Data, "pg.secret")
 	if err := os.MkdirAll(l.Data, 0o700); err != nil {
 		return nil, err
@@ -78,6 +80,14 @@ func StartPostgres(ctx context.Context, l Layout) (*Postgres, error) {
 	logPath := filepath.Join(l.Logs, "postgres.log")
 	_ = os.MkdirAll(l.Logs, 0o700)
 	// A stale postmaster.pid from a crash is handled by pg_ctl; -w waits until ready.
+	// A server left behind by a previous run that was killed (crash, taskkill /F) still owns the data directory and the log
+	// file: stop it first (fast mode) so the new instance can start. pg_ctl status exits 0 when a server is running.
+	if _, serr := runPG(ctx, l, "pg_ctl", "-D", data, "status"); serr == nil {
+		log.Print("stopping a leftover embedded PostgreSQL from a previous run …")
+		if out, err := runPG(ctx, l, "pg_ctl", "-D", data, "-m", "fast", "-w", "-t", "60", "stop"); err != nil {
+			return nil, fmt.Errorf("a previous embedded PostgreSQL is still running and could not be stopped: %v: %s", err, tail(out))
+		}
+	}
 	out, err := runPG(ctx, l, "pg_ctl", "-D", data, "-l", logPath, "-w", "-t", "60", "-o", fmt.Sprintf("-p %d -c listen_addresses=127.0.0.1 -c unix_socket_directories=", port), "start")
 	if err != nil {
 		return nil, fmt.Errorf("pg_ctl start failed: %v: %s", err, tail(out))

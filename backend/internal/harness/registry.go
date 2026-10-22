@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"oa-agent/backend/internal/diag"
 )
 
 const (
@@ -22,6 +24,10 @@ const (
 	ToolTimeout       = "timeout"
 	ToolFailed        = "tool_failed"
 	ToolOutputInvalid = "output_invalid"
+	// ToolSkillNotLoaded: the model called a skill tool before load_skill.
+	ToolSkillNotLoaded = "skill_not_loaded"
+	// ToolRetryLimit: a per-file attempt cap (OCR reruns, vision reads) is spent.
+	ToolRetryLimit = "retry_limit"
 )
 
 // ToolError is returned by Registry.Execute. Message is safe to show to the
@@ -48,15 +54,62 @@ type Tool struct {
 	OutputSchema map[string]any
 	Timeout      time.Duration
 	Run          func(ctx context.Context, s *Session, args map[string]any) (any, error)
+	// Available, when set, hides the tool (and rejects calls as unknown) for
+	// sessions where it returns false, e.g. vision tools without a vision model.
+	Available func(s *Session) bool
 }
 
 // Registry is a fixed set of tools. It has no shell/file-write tool and the
 // model cannot register tools, so document content cannot widen permissions.
 type Registry struct {
-	tools map[string]Tool
+	tools     map[string]Tool
+	skills    map[string]Skill
+	toolSkill map[string]string // tool name -> owning skill (locked until loaded)
 }
 
-func NewRegistry() *Registry { return &Registry{tools: map[string]Tool{}} }
+func NewRegistry() *Registry {
+	return &Registry{tools: map[string]Tool{}, skills: map[string]Skill{}, toolSkill: map[string]string{}}
+}
+
+// RegisterSkill adds a skill and locks its tools until load_skill unlocks
+// them. It panics on programmer errors (duplicate, unknown or already owned tool).
+func (r *Registry) RegisterSkill(sk Skill) {
+	if sk.Name == "" || sk.Instructions == "" {
+		panic("harness: incomplete skill " + sk.Name)
+	}
+	if _, dup := r.skills[sk.Name]; dup {
+		panic("harness: duplicate skill " + sk.Name)
+	}
+	for _, n := range sk.Tools {
+		if _, ok := r.tools[n]; !ok {
+			panic("harness: skill " + sk.Name + " names unknown tool " + n)
+		}
+		if owner, taken := r.toolSkill[n]; taken {
+			panic("harness: tool " + n + " already owned by skill " + owner)
+		}
+		r.toolSkill[n] = sk.Name
+	}
+	r.skills[sk.Name] = sk
+}
+
+// Skills returns the registered skills sorted by name.
+func (r *Registry) Skills() []Skill {
+	out := make([]Skill, 0, len(r.skills))
+	for _, sk := range r.skills {
+		out = append(out, sk)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// usable reports whether tool t may be offered/executed for session s
+// (nil = no session: only base tools).
+func (r *Registry) usable(t Tool, s *Session) bool {
+	if owner, locked := r.toolSkill[t.Name]; locked && (s == nil || !s.loaded[owner]) {
+		return false
+	}
+	return t.Available == nil || (s != nil && t.Available(s))
+}
 
 // Register adds a tool; it panics on programmer errors (duplicate/empty).
 func (r *Registry) Register(t Tool) {
@@ -79,11 +132,19 @@ func (r *Registry) Names() []string {
 	return out
 }
 
-// Specs returns the provider-facing tool definitions in a stable order.
-func (r *Registry) Specs() []ToolSpec {
+// Specs returns the base (always available) tool definitions in a stable
+// order: tools owned by a skill or gated by Available are not included.
+func (r *Registry) Specs() []ToolSpec { return r.SpecsFor(nil) }
+
+// SpecsFor returns the tools offered to the model for session s: the base
+// tools plus the tools of the skills s has loaded (and that are available).
+func (r *Registry) SpecsFor(s *Session) []ToolSpec {
 	out := make([]ToolSpec, 0, len(r.tools))
 	for _, n := range r.Names() {
 		t := r.tools[n]
+		if !r.usable(t, s) {
+			continue
+		}
 		out = append(out, ToolSpec{Name: t.Name, Description: t.Description, Parameters: t.InputSchema})
 	}
 	return out
@@ -96,6 +157,12 @@ func (r *Registry) Execute(ctx context.Context, s *Session, name string, rawArgs
 	t, ok := r.tools[name]
 	if !ok {
 		return "", &ToolError{Code: ToolUnknown, Message: "no such tool"}
+	}
+	if t.Available != nil && (s == nil || !t.Available(s)) {
+		return "", &ToolError{Code: ToolUnknown, Message: "no such tool"}
+	}
+	if owner, locked := r.toolSkill[name]; locked && (s == nil || !s.loaded[owner]) {
+		return "", &ToolError{Code: ToolSkillNotLoaded, Message: "tool is locked: call load_skill with name \"" + owner + "\" first"}
 	}
 	if len(rawArgs) > maxToolArgBytes {
 		return "", &ToolError{Code: ToolInvalidInput, Message: "arguments too large"}
@@ -120,6 +187,7 @@ func (r *Registry) Execute(ctx context.Context, s *Session, name string, rawArgs
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
+				diag.ReportPanic("pipeline.tool."+t.Name, p)
 				ch <- outcome{err: errors.New("tool panicked")}
 			}
 		}()

@@ -12,14 +12,17 @@
     "gen:api": "openapi-typescript ../contracts/openapi.yaml -o src/api/schema.d.ts"
   },
   "dependencies": {
-    "@material-symbols/font-400": "^0.48.1",
     "@material/material-color-utilities": "^0.4.0",
+    "@simplewebauthn/browser": "^14.0.0",
+    "lucide-vue-next": "1.0.0",
     "pinia": "^4.1.0",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.44",
     "vue-router": "^5.4.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.10",
     "openapi-typescript": "^7.13.0",
     "puppeteer-core": "^25.15.0",

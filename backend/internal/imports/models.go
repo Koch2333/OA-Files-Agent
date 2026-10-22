@@ -1,22 +1,93 @@
 package imports
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"time"
 )
 
 type Job struct {
-	ID             string    `json:"id"`
-	Status         string    `json:"status"`
-	TotalFiles     int       `json:"total_files"`
-	ProcessedFiles int       `json:"processed_files"`
-	SuccessCount   int       `json:"success_count"`
-	FailureCount   int       `json:"failure_count"`
-	PlanID         *string   `json:"plan_id"`
-	TemplateID     *string   `json:"template_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string  `json:"id"`
+	Status         string  `json:"status"`
+	TotalFiles     int     `json:"total_files"`
+	ProcessedFiles int     `json:"processed_files"`
+	SuccessCount   int     `json:"success_count"`
+	FailureCount   int     `json:"failure_count"`
+	PlanID         *string `json:"plan_id"`
+	TemplateID     *string `json:"template_id,omitempty"`
+	// AI settings fixed at creation (see TaskAI). Owner and acknowledgement details stay server-side.
+	Instruction string     `json:"instruction"`
+	Automation  string     `json:"automation"`
+	LLMSource   string     `json:"llm_source"`
+	LLMModel    string     `json:"llm_model"`
+	LLMOwner    string     `json:"-"`
+	AckVersion  string     `json:"-"`
+	AckAt       *time.Time `json:"-"`
+	AckBy       string     `json:"-"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// Automation modes and model sources of a task.
+const (
+	AutomationReview = "review"
+	AutomationAuto   = "auto"
+	SourceNone       = "none"
+	SourceGlobal     = "global"
+	SourcePersonal   = "personal"
+)
+
+// TaskAI is the resolved, validated AI configuration of a new task. The API layer builds it after checking the
+// caller's role, the administrator policy and the risk acknowledgement; imports only carries it into the task row.
+type TaskAI struct {
+	Instruction string
+	Automation  string // review | auto
+	Source      string // none | global | personal
+	Owner       string // user id who created the task (its personal configuration is used when Source=personal)
+	Model       string
+	AckVersion  string
+	AckBy       string // username recorded with the acknowledgement (auto only)
+	// Fingerprint binds the AI options into the idempotency fingerprint (same key + different options = conflict).
+	Fingerprint string
+}
+
+type aiCtxKey struct{}
+type optsCtxKey struct{}
+
+// WithAI hands a resolved TaskAI to Import / ImportRemote through the context.
+func WithAI(ctx context.Context, ai TaskAI) context.Context {
+	return context.WithValue(ctx, aiCtxKey{}, ai)
+}
+
+// AIFrom returns the TaskAI carried by ctx (the zero value means "no options": review mode, no model).
+func AIFrom(ctx context.Context) TaskAI {
+	ai, _ := ctx.Value(aiCtxKey{}).(TaskAI)
+	return ai
+}
+
+// OptionsHandler receives the raw JSON of the multipart "options" part as soon as it has been read (before any file
+// is stored) and returns the resolved TaskAI, or an error that aborts the import (for example *Error with 422).
+type OptionsHandler func(raw []byte) (TaskAI, error)
+
+// WithOptionsHandler enables the multipart "options" part for one Import call.
+func WithOptionsHandler(ctx context.Context, h OptionsHandler) context.Context {
+	return context.WithValue(ctx, optsCtxKey{}, h)
+}
+
+// applyAI copies a TaskAI into a new job (defaults: review, no model).
+func applyAI(j *Job, ai TaskAI) {
+	j.Instruction, j.Automation, j.LLMSource, j.LLMModel, j.LLMOwner = ai.Instruction, ai.Automation, ai.Source, ai.Model, ai.Owner
+	if j.Automation == "" {
+		j.Automation = AutomationReview
+	}
+	if j.LLMSource == "" {
+		j.LLMSource = SourceNone
+	}
+	if ai.AckVersion != "" {
+		now := time.Now().UTC()
+		j.AckVersion, j.AckAt, j.AckBy = ai.AckVersion, &now, ai.AckBy
+	}
 }
 
 type File struct {
@@ -37,7 +108,18 @@ type File struct {
 	CreatedAt      time.Time `json:"created_at"`
 	StoredPath     string    `json:"-"`
 	OCRUsed        bool      `json:"-"`
+	OCR            *OCRInfo  `json:"ocr"`
 	TemplateID     *string   `json:"-"`
+}
+
+// OCRInfo summarises how OCR went for a file (nil when OCR was not used).
+type OCRInfo struct {
+	Used           bool     `json:"used"`
+	Quality        *string  `json:"quality"`
+	MeanConfidence *float64 `json:"mean_confidence"`
+	Profile        string   `json:"profile"`
+	Attempts       int      `json:"attempts"`
+	VisionUsed     bool     `json:"vision_used"`
 }
 
 type Failure struct {
@@ -57,6 +139,8 @@ type Batch struct {
 	Job         Job       `json:"task"`
 	Files       []File    `json:"files"`
 	Failures    []Failure `json:"failures"`
+	// Replay is true when an Idempotency-Key matched an earlier request and the stored task was returned.
+	Replay bool `json:"-"`
 }
 
 func NewID() (string, error) {

@@ -62,12 +62,18 @@ var (
 	ErrWorkerUnavailable = &WorkerError{Code: CodeWorkerUnavailable}
 )
 
+const defaultRenderBytes = 4 << 20
+
 // WorkerExtractor talks to the loopback Python document worker.
 type WorkerExtractor struct {
-	endpoint string
-	token    string
-	http     *http.Client
-	// MaxResponseBytes caps the response body (default 8 MiB).
+	endpoint       string
+	token          string
+	http           *http.Client
+	renderEndpoint string
+	// MaxRenderBytes caps the render response body (default 4 MiB: a base64
+	// image of up to 2.5 MB encoded plus the JSON envelope).
+	MaxRenderBytes int64
+	// MaxResponseBytes caps the extract response body (default 8 MiB).
 	MaxResponseBytes int64
 }
 
@@ -94,6 +100,7 @@ func NewWorkerExtractor(baseURL, token string) (*WorkerExtractor, error) {
 	}
 	return &WorkerExtractor{
 		endpoint:         strings.TrimSuffix(baseURL, "/") + "/v1/extract",
+		renderEndpoint:   strings.TrimSuffix(baseURL, "/") + "/v1/render",
 		token:            token,
 		MaxResponseBytes: 8 << 20,
 		http: &http.Client{
@@ -107,23 +114,32 @@ func NewWorkerExtractor(baseURL, token string) (*WorkerExtractor, error) {
 // SetTimeout overrides the overall HTTP timeout.
 func (w *WorkerExtractor) SetTimeout(d time.Duration) { w.http.Timeout = d }
 
-type workerEnvelope struct {
-	Data  *ExtractResult `json:"data"`
-	Error *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
+type workerError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
-// Extract implements Extractor.
-func (w *WorkerExtractor) Extract(ctx context.Context, req ExtractRequest) (ExtractResult, error) {
+type workerEnvelope struct {
+	Data  *ExtractResult `json:"data"`
+	Error *workerError   `json:"error"`
+}
+
+type renderEnvelope struct {
+	Data  *RenderResult `json:"data"`
+	Error *workerError  `json:"error"`
+}
+
+// post sends one authenticated JSON request and returns the raw response
+// body and status. Transport failures and oversize bodies are typed
+// *WorkerError values (or the context error); worker text is never propagated.
+func (w *WorkerExtractor) post(ctx context.Context, endpoint string, req any, limit int64) ([]byte, int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return ExtractResult{}, err
+		return nil, 0, err
 	}
-	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, w.endpoint, bytes.NewReader(body))
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return ExtractResult{}, err
+		return nil, 0, err
 	}
 	hr.Header.Set("Authorization", "Bearer "+w.token)
 	hr.Header.Set("Content-Type", "application/json")
@@ -131,37 +147,54 @@ func (w *WorkerExtractor) Extract(ctx context.Context, req ExtractRequest) (Extr
 	res, err := w.http.Do(hr)
 	if err != nil {
 		if ctx.Err() != nil {
-			return ExtractResult{}, ctx.Err()
+			return nil, 0, ctx.Err()
 		}
 		// Do not wrap err: its text may contain the URL.
-		return ExtractResult{}, &WorkerError{Code: CodeWorkerUnavailable, Message: "worker request failed"}
+		return nil, 0, &WorkerError{Code: CodeWorkerUnavailable, Message: "worker request failed"}
 	}
 	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	if err != nil {
+		return nil, 0, &WorkerError{Code: CodeWorkerUnavailable, Status: res.StatusCode, Message: "reading worker response failed"}
+	}
+	if int64(len(raw)) > limit {
+		return nil, 0, &WorkerError{Code: CodeWorkerBadResponse, Status: res.StatusCode, Message: "worker response exceeds size cap"}
+	}
+	return raw, res.StatusCode, nil
+}
+
+// statusError maps a non-200 response to a typed error.
+func statusError(status int, we *workerError) error {
+	code := ""
+	if we != nil {
+		code = we.Code
+	}
+	if code == "" {
+		code = codeFromStatus(status)
+	}
+	return &WorkerError{Code: code, Status: status, Message: safeMessage(code)}
+}
+
+// Extract implements Extractor.
+func (w *WorkerExtractor) Extract(ctx context.Context, req ExtractRequest) (ExtractResult, error) {
 	limit := w.MaxResponseBytes
 	if limit <= 0 {
 		limit = 8 << 20
 	}
-	raw, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	raw, status, err := w.post(ctx, w.endpoint, req, limit)
 	if err != nil {
-		return ExtractResult{}, &WorkerError{Code: CodeWorkerUnavailable, Status: res.StatusCode, Message: "reading worker response failed"}
-	}
-	if int64(len(raw)) > limit {
-		return ExtractResult{}, &WorkerError{Code: CodeWorkerBadResponse, Status: res.StatusCode, Message: "worker response exceeds size cap"}
+		return ExtractResult{}, err
 	}
 	var env workerEnvelope
 	jerr := json.Unmarshal(raw, &env)
-	if res.StatusCode != http.StatusOK {
-		code := ""
-		if jerr == nil && env.Error != nil {
-			code = env.Error.Code
+	if status != http.StatusOK {
+		if jerr != nil {
+			env.Error = nil
 		}
-		if code == "" {
-			code = codeFromStatus(res.StatusCode)
-		}
-		return ExtractResult{}, &WorkerError{Code: code, Status: res.StatusCode, Message: safeMessage(code)}
+		return ExtractResult{}, statusError(status, env.Error)
 	}
 	if jerr != nil || env.Data == nil {
-		return ExtractResult{}, &WorkerError{Code: CodeWorkerBadResponse, Status: res.StatusCode, Message: "malformed worker response"}
+		return ExtractResult{}, &WorkerError{Code: CodeWorkerBadResponse, Status: status, Message: "malformed worker response"}
 	}
 	out := *env.Data
 	if out.Pages == nil {
@@ -171,6 +204,35 @@ func (w *WorkerExtractor) Extract(ctx context.Context, req ExtractRequest) (Extr
 		out.Warnings = []string{}
 	}
 	return out, nil
+}
+
+// Render implements PageRenderer (POST /v1/render). The response carries a
+// base64 image of up to ~2.5 MB encoded, so it has its own, larger body cap.
+func (w *WorkerExtractor) Render(ctx context.Context, req RenderRequest) (RenderResult, error) {
+	limit := w.MaxRenderBytes
+	if limit <= 0 {
+		limit = defaultRenderBytes
+	}
+	raw, status, err := w.post(ctx, w.renderEndpoint, struct {
+		Path    string `json:"path"`
+		Page    int    `json:"page"`
+		MaxSide int    `json:"max_side"`
+	}{req.Path, req.Page, req.MaxSide}, limit)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	var env renderEnvelope
+	jerr := json.Unmarshal(raw, &env)
+	if status != http.StatusOK {
+		if jerr != nil {
+			env.Error = nil
+		}
+		return RenderResult{}, statusError(status, env.Error)
+	}
+	if jerr != nil || env.Data == nil || env.Data.ImageBase64 == "" {
+		return RenderResult{}, &WorkerError{Code: CodeWorkerBadResponse, Status: status, Message: "malformed worker response"}
+	}
+	return *env.Data, nil
 }
 
 func codeFromStatus(s int) string {

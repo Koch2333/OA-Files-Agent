@@ -90,6 +90,9 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 	}()
 	now := time.Now().UTC()
 	batch = Batch{Key: key, TemplateID: templateID, Job: Job{ID: id, Status: "queued", CreatedAt: now, UpdatedAt: now}, Files: []File{}, Failures: []Failure{}}
+	applyAI(&batch.Job, AIFrom(ctx))
+	optsHandler, _ := ctx.Value(optsCtxKey{}).(OptionsHandler)
+	optionsSeen := false
 	requestHash := sha256.New()
 	var paths []string
 	manifestSeen := false
@@ -104,7 +107,22 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 		if nextErr != nil {
 			return batch, &Error{400, "INVALID_MULTIPART", "上传内容不完整"}
 		}
-		if part.FormName() == "paths" && batch.Job.TotalFiles == 0 && !manifestSeen {
+		if part.FormName() == "options" && optsHandler != nil && manifestSeen && !optionsSeen && batch.Job.TotalFiles == 0 {
+			raw, readErr := io.ReadAll(io.LimitReader(part, MaxOptionsBytes+1))
+			if readErr != nil || len(raw) > MaxOptionsBytes {
+				return batch, &Error{400, "INVALID_OPTIONS", "options 必须是不超过 32 KiB 的 JSON 对象"}
+			}
+			ai, herr := optsHandler(raw)
+			if herr != nil {
+				return batch, herr
+			}
+			optionsSeen = true
+			applyAI(&batch.Job, ai)
+			fmt.Fprintf(requestHash, "opts:%d:%s;", len(ai.Fingerprint), ai.Fingerprint)
+			part.Close()
+			continue
+		}
+		if part.FormName() == "paths" && batch.Job.TotalFiles == 0 && !manifestSeen && !optionsSeen {
 			raw, readErr := io.ReadAll(io.LimitReader(part, (64<<10)+1))
 			if readErr != nil || len(raw) > 64<<10 || json.Unmarshal(raw, &paths) != nil || paths == nil {
 				return batch, &Error{400, "INVALID_PATHS", "paths 必须是相对路径数组"}
@@ -117,7 +135,7 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 			continue
 		}
 		if part.FormName() != "files" {
-			return batch, &Error{400, "INVALID_MULTIPART", "仅支持 files；paths 必须置于文件之前且仅出现一次"}
+			return batch, &Error{400, "INVALID_MULTIPART", "仅支持 files；paths 必须置于文件之前且仅出现一次，options（可选）必须紧跟在 paths 之后、文件之前且仅一次"}
 		}
 		index := batch.Job.TotalFiles
 		batch.Job.TotalFiles++
@@ -204,5 +222,9 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 	}
 	committed = !replay
 	batch = saved
+	batch.Replay = replay
 	return batch, nil
 }
+
+// MaxOptionsBytes caps the multipart "options" part.
+const MaxOptionsBytes = 32 << 10

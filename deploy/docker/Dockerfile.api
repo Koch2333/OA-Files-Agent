@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+# OA Agent API image: Go server + oa-admin CLI + built frontend + migrations.
+# Build context = repository root:  docker build -f deploy/docker/Dockerfile.api -t oa-agent-api .
+ARG NODE_VERSION=22
+ARG GO_VERSION=1.26
+ARG ALPINE_VERSION=3.21
+
+FROM node:${NODE_VERSION}-alpine AS web
+ARG NPM_REGISTRY=
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
+ && npm ci --no-audit --no-fund
+COPY frontend/ ./
+COPY contracts/ /src/contracts/
+# Production build talks to the real backend (VITE_USE_MOCK is a dev-time demo switch).
+RUN npm run build
+
+FROM golang:${GO_VERSION}-alpine AS go
+ARG OA_VERSION=dev
+ARG OA_COMMIT=unknown
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly GOPROXY=${GOPROXY}
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN pkg=oa-agent/backend/internal/buildinfo \
+ && go build -trimpath -ldflags "-s -w -X ${pkg}.Version=${OA_VERSION} -X ${pkg}.Commit=${OA_COMMIT}" -o /out/oa-agent ./cmd/oa-agent \
+ && go build -trimpath -ldflags "-s -w -X ${pkg}.Version=${OA_VERSION} -X ${pkg}.Commit=${OA_COMMIT}" -o /out/oa-admin ./cmd/oa-admin
+
+FROM alpine:${ALPINE_VERSION}
+ARG OA_VERSION=dev
+LABEL org.opencontainers.image.title="oa-agent-api" org.opencontainers.image.version="${OA_VERSION}" \
+      org.opencontainers.image.licenses="AGPL-3.0"
+RUN apk add --no-cache ca-certificates tzdata wget \
+ && addgroup -g 10001 -S oa && adduser -u 10001 -S -G oa -h /data -s /sbin/nologin oa \
+ && mkdir -p /app/web /app/migrations /data/archive /data/spool && chown -R oa:oa /data
+COPY --from=go /out/oa-agent /out/oa-admin /usr/local/bin/
+COPY --from=web /src/frontend/dist /app/web
+COPY migrations/ /app/migrations/
+ENV OA_LISTEN_ADDR=0.0.0.0:8080 \
+    OA_FRONTEND_DIR=/app/web \
+    OA_MIGRATIONS_DIR=/app/migrations \
+    OA_SPOOL_ROOT=/data/spool \
+    OA_ARCHIVE_ROOT=/data/archive \
+    OA_AUTO_MIGRATE=1 \
+    OA_ALLOW_REVEAL=0
+USER 10001:10001
+WORKDIR /data
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+ENTRYPOINT ["oa-agent"]

@@ -413,6 +413,1339 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/fs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 浏览归档根目录下的文件夹
+         * @description `path` 为相对归档根目录的路径（空 = 根）。只列出非隐藏项（以 `.` 开头的内部目录如 .staging/.journal/.trash 不可见）。
+         *     台账管理的文件带 `ledger` 信息。目录在前、按名称排序。
+         */
+        get: operations["listFolder"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 预览或下载归档文件
+         * @description pdf/png/jpg 默认内联预览，其余及 `download=1` 作为附件下载；总是带 `nosniff` 并禁止缓存；除 pdf/png/jpg 外一律强制下载。
+         */
+        get: operations["getFileContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重命名或移动文件/文件夹（不覆盖；台账同步）
+         * @description `to` 是目标的完整相对路径（重命名＝同目录换名，移动＝换目录）。目标已存在返回 409，不会覆盖；不能把文件夹移入自身。
+         *     台账中受影响的记录（路径、规范文件名）同步更新。
+         */
+        post: operations["moveEntry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/trash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTrash"];
+        put?: never;
+        /** 删除到回收站（可恢复；台账记录标记为已移除） */
+        post: operations["trashEntry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/trash/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 从回收站恢复到原位置（原位置被占用则自动加序号） */
+        post: operations["restoreTrash"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 在 Windows 资源管理器中显示（仅本机、仅 Windows）
+         * @description 文件 → 打开其所在文件夹并选中；文件夹 → 打开该文件夹；空路径 → 归档根目录。
+         *     只有当 API 运行在 Windows 上、请求来自本机回环地址且未被 `OA_ALLOW_REVEAL=0` 关闭时可用；否则 403（非本机）或 501（不支持）。
+         *     路径必须位于归档根目录内；不会执行或打开文件本身。
+         */
+        post: operations["revealInExplorer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型预设（DeepSeek、通义千问等）；用户仍可自由改 Base URL 与模型名 */
+        get: operations["listLlmPresets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 当前识别引擎配置（API Key 永不返回，只返回是否已保存与尾号提示） */
+        get: operations["getLlmConfig"];
+        /**
+         * 保存并立即生效（无需重启）
+         * @description `mode=heuristic` 使用离线规则识别（不联网）。`mode=llm` 使用 OpenAI 兼容接口：`base_url` 必填且为 https（本机/内网地址允许 http），
+         *     `model` 必填，需要密钥的预设必须已保存或随本次提交 `api_key`。`api_key` 省略 = 保持已保存的密钥；`clear_api_key=true` 清除。
+         *     密钥在服务器端加密保存，不写入日志与审计。
+         */
+        put: operations["saveLlmConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 测试连接（用提交的参数发一次极小请求，不保存）
+         * @description 始终返回 200；`ok=false` 时 `message` 给出可读原因（密钥错误/模型不存在/网络不通…）。`tool_calling` 表示模型是否能发起工具调用（识别流程需要）。
+         */
+        post: operations["testLlm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 从服务商的 /models 接口获取可用模型列表（便于自由选择） */
+        post: operations["listLlmModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 预览导入时保存的原件（PDF/图片按页，Word/Excel 结构化） */
+        get: operations["previewFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files/{id}/preview/page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 原件第 N 页的 PNG 图片 */
+        get: operations["previewFilePage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 预览归档目录中的文件 */
+        get: operations["previewArchived"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/preview/page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 归档文件第 N 页的 PNG 图片 */
+        get: operations["previewArchivedPage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/kinds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 可用的存储类型及其表单字段（前端据此动态生成表单） */
+        get: operations["listStorageKinds"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listStorageConnections"];
+        put?: never;
+        post: operations["createStorageConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/connections/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 测试尚未保存的连接参数
+         * @description `connection_id` 可选：提供时，未重新填写的凭据沿用该连接已保存的凭据（仅当目标主机相同）。`check_write` 为 true 时额外写入并删除一个测试标记文件。
+         *     SFTP 首次连接会返回 `host_key`（指纹）等待确认；用户核对后把同一指纹放进 `accept_host_key` 重新测试。
+         */
+        post: operations["testStorageDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/connections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getStorageConnection"];
+        put?: never;
+        post?: never;
+        /** 删除连接（远端文件不受影响；该连接的同步记录一并删除） */
+        delete: operations["deleteStorageConnection"];
+        options?: never;
+        head?: never;
+        /** 部分更新；secrets 中给出的键会替换，`clear_secrets` 清除指定凭据 */
+        patch: operations["updateStorageConnection"];
+        trace?: never;
+    };
+    "/v1/storage/connections/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 测试已保存的连接 */
+        post: operations["testStorageConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/connections/{id}/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 浏览远端目录（限定在连接的起始目录内） */
+        get: operations["browseStorage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/connections/{id}/replicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把尚未同步的已归档文件加入同步队列（手动）
+         * @description 只增不改不删：远端已有同名且大小一致的文件视为已存在；大小不同则追加序号另存。
+         */
+        post: operations["replicateToStorage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/replications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listReplications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/storage/replications/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retryReplication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/remote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从远端存储导入文件/文件夹并创建任务
+         * @description `items` 的每一项是远端相对路径（文件或文件夹，文件夹递归）。限制与本机上传一致：每批最多 100 个文件、单文件 20 MiB；格式不支持/过大/空文件作为失败项计入，不让整批失败。
+         *     文件按相对路径保留目录层级（相对于所选项目的上级）。支持 `Idempotency-Key`。
+         */
+        post: operations["createRemoteImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/setup/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 初始化状态与环境检查（公开） */
+        get: operations["getSetupStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/setup/verify-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 校验初始化令牌（公开，限速） */
+        post: operations["verifySetupToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/setup/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 完成初始化：创建管理员、写入安全策略并登录
+         * @description 原子操作；并发只有一个成功，其余 409 `ALREADY_SETUP`。`local` 模式只接受来自本机回环地址的请求；`enterprise` 模式必须带正确的初始化令牌（回环请求的 local 模式可免令牌）。
+         */
+        post: operations["completeSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/setup/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 完成初始化向导（解除服务端向导闸门）
+         * @description `POST /v1/setup/complete` 之后向导还有后续步骤（首次 MFA 绑定、恢复码、全局 LLM）。`wizard_finished=false` 期间，除 `/v1/auth/*`、`/v1/setup/*`、`/v1/llm/*`、`/v1/admin/ai-policy`、`/v1/client-errors` 外的所有已认证请求一律返回 409 `WIZARD_REQUIRED`。
+         *     本接口要求管理员的完整会话（受限的 `enroll_mfa` 会话得到 403）；策略要求 MFA 而管理员尚未绑定 → 409 `MFA_REQUIRED_BY_POLICY`。幂等；成功写审计 `setup.finished`，返回最新的 SetupStatus。`local` 模式与升级前已初始化的安装视为已完成。
+         */
+        post: operations["finishSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 用户名+密码登录（第一因素）
+         * @description 未知用户与错误密码同样返回 401 `INVALID_CREDENTIALS`。已绑定 MFA → `status=mfa_required`（带 `mfa_token`，5 分钟一次性）；策略要求 MFA 但未绑定 → `status=enroll_mfa`（受限会话）；否则 `status=ok`。
+         *     连续失败达阈值 → 423 `ACCOUNT_LOCKED`；超过速率限制 → 429 `RATE_LIMITED`（带 Retry-After）；管理员禁用密码登录且用户无密码 → 401。
+         */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 当前会话（含 csrf_token） */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/mfa/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用 TOTP 完成第二因素 */
+        post: operations["mfaTotp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/mfa/recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用恢复码完成第二因素（一次性） */
+        post: operations["mfaRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/mfa/passkey/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用 Passkey 完成第二因素：取得断言选项 */
+        post: operations["mfaPasskeyBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/mfa/passkey/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mfaPasskeyFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/passkey/login/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Passkey 无密码登录：取得断言选项（可发现凭据，不需要用户名） */
+        post: operations["passkeyLoginBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/passkey/login/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["passkeyLoginFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用密码重新认证，延长“近期认证”窗口（敏感操作前使用） */
+        post: operations["reauth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/reauth/passkey/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用 Passkey 重新认证（仅 Passkey 的账号） */
+        post: operations["reauthPasskeyBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/reauth/passkey/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reauthPasskeyFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 修改自己的密码（需当前密码；成功后吊销其他会话；清除 must_change_password） */
+        post: operations["changePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/security": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 我的登录方式概览 */
+        get: operations["getMySecurity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/totp/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 开始绑定 TOTP（返回密钥与 otpauth URI，前端自行渲染二维码） */
+        post: operations["totpBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用一次有效码确认绑定；若这是该用户的第一个 MFA，同时返回一次性展示的恢复码 */
+        post: operations["totpConfirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 关闭 TOTP（需近期认证；策略要求 MFA 且这是最后一个 MFA 时 409）
+         * @description 未处于近期认证窗口（me.fresh=false）时返回 403 `FORBIDDEN`，`details.reason=reauth_required`。
+         */
+        delete: operations["totpDisable"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/passkeys/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 开始注册 Passkey：取得创建选项（requireResidentKey + userVerification=required） */
+        post: operations["passkeyRegisterBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/passkeys/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["passkeyRegisterFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/passkeys/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description base64url 凭据 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除 Passkey（需近期认证；不得删到无法登录/违反 MFA 策略）
+         * @description 未处于近期认证窗口时返回 403 `FORBIDDEN`，`details.reason=reauth_required`。
+         */
+        delete: operations["deletePasskey"];
+        options?: never;
+        head?: never;
+        patch: operations["renamePasskey"];
+        trace?: never;
+    };
+    "/v1/auth/recovery-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重新生成 10 个恢复码（旧码作废，明文只返回这一次；需近期认证且已绑定 MFA）
+         * @description 未处于近期认证窗口时返回 403 `FORBIDDEN`，`details.reason=reauth_required`。
+         */
+        post: operations["regenerateRecoveryCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMySessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["revokeMySession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/invitations/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 查看邀请（公开；令牌无效/过期统一 404） */
+        get: operations["getInvitation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/invitations/{token}/passkey/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["invitationPasskeyBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/invitations/{token}/passkey/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 接受邀请：注册第一个 Passkey 并登录；令牌随即失效 */
+        post: operations["invitationPasskeyFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["adminListUsers"];
+        put?: never;
+        /** 创建用户：返回一次性临时密码，或仅 Passkey 用户的一次性邀请链接 */
+        post: operations["adminCreateUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get: operations["adminGetUser"];
+        put?: never;
+        post?: never;
+        /** @description 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。不能删除自己，也不能删除最后一个启用的管理员（409 `LAST_ADMIN`）。 */
+        delete: operations["adminDeleteUser"];
+        options?: never;
+        head?: never;
+        patch: operations["adminUpdateUser"];
+        trace?: never;
+    };
+    "/v1/admin/users/{id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 生成新的一次性临时密码（明文只返回一次），吊销该用户全部会话
+         * @description 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。
+         */
+        post: operations["adminResetPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{id}/reset-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 清除该用户的 TOTP、Passkey 与恢复码，并吊销其会话
+         * @description 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。
+         */
+        post: operations["adminResetMfa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{id}/unlock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["adminUnlockUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{id}/revoke-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["adminRevokeSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{id}/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 为用户生成 24 小时有效的 Passkey 邀请链接（明文只返回一次，旧邀请作废） */
+        post: operations["adminCreateInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["adminListSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["adminRevokeSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/security-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["adminGetSecuritySettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description 需要近期认证（否则 403 `FORBIDDEN`，`details.reason=reauth_required`）。rp_id/origins 变更未带 confirm_passkey_reset 时返回 422 `PASSKEY_RESET_REQUIRED`。修改 `rp_id`/`origins` 会使已注册的 Passkey 失效，需 `confirm_passkey_reset=true`；不能关闭仍有账号依赖的登录方式。 */
+        patch: operations["adminUpdateSecuritySettings"];
+        trace?: never;
+    };
+    "/v1/llm/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前用户可用的大模型状态与 AI 工作台能力（任何已登录角色；不含密钥）
+         * @description `configured=false` 时 UI 必须提示配置：管理员 → 去“设置 → 全局大模型”；其他人 → 若 `personal_allowed` 可配置个人 API，否则联系管理员（`setup_hint`）。
+         *     `source`：本用户任务将使用的配置（个人优先于全局）。`auto_ack_version/auto_ack_text` 是全自动模式的法定风险提示原文与版本，前端必须原样展示并要求勾选确认。
+         */
+        get: operations["getLlmStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/personal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 我的个人大模型配置（仅当管理员允许个人 API；否则 403 PERSONAL_LLM_DISABLED） */
+        get: operations["getPersonalLlm"];
+        /** 保存个人配置（密钥加密保存，只对本人任务生效；校验规则同全局，但默认不允许内网/本机地址，除非管理员放开） */
+        put: operations["savePersonalLlm"];
+        post?: never;
+        /** 删除个人配置（回到使用全局配置） */
+        delete: operations["deletePersonalLlm"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/personal/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 测试个人配置（限速；地址规则同保存） */
+        post: operations["testPersonalLlm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/personal/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["listPersonalLlmModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/ai-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAiPolicy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 管理员：是否允许员工配置个人 API、个人 API 是否可用内网地址、是否开放“全自动归档” */
+        patch: operations["updateAiPolicy"];
+        trace?: never;
+    };
+    "/v1/admin/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 运行状态：版本、模式、运行时长、数据库/Worker 状态、磁盘、上次是否异常退出、未处理错误数 */
+        get: operations["getSystemInfo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/error-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 错误报告（按指纹聚合：同一错误只一条，带次数与首末时间） */
+        get: operations["listErrorReports"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/error-reports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get: operations["getErrorReport"];
+        put?: never;
+        post?: never;
+        delete: operations["deleteErrorReport"];
+        options?: never;
+        head?: never;
+        patch: operations["updateErrorReport"];
+        trace?: never;
+    };
+    "/v1/admin/diagnostics/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 下载诊断包（zip）：版本/环境摘要、脱敏配置、最近日志、错误报告、迁移状态；绝不含密钥、令牌、密码、文档内容 */
+        get: operations["downloadDiagnosticBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/client-errors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 前端上报运行时错误（已登录；限速；正文限 8 KiB；服务器脱敏并按指纹聚合） */
+        post: operations["reportClientError"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -453,6 +1786,20 @@ export interface components {
             plan_id: string | null;
             /** Format: uuid */
             template_id?: string;
+            /** @description 创建任务时给 AI 的说明（可空） */
+            instruction?: string;
+            /**
+             * @description 默认 review
+             * @enum {string}
+             */
+            automation?: "review" | "auto";
+            /**
+             * @description 本任务实际使用的大模型来源
+             * @enum {string}
+             */
+            llm_source?: "none" | "global" | "personal";
+            /** @description 本任务使用的模型名（none 时为空） */
+            llm_model?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -480,6 +1827,18 @@ export interface components {
             archive_status: "pending" | "archived" | "failed";
             /** @description 失败原因，形如 “[UNSUPPORTED_FORMAT] …” 或中文说明 */
             error: string | null;
+            /** @description OCR 摘要（未使用 OCR 为 null）。quality 为 OCR 质量判定。 */
+            ocr: null | {
+                used: boolean;
+                /** @enum {string|null} */
+                quality: "good" | "fair" | "poor" | null;
+                mean_confidence: number | null;
+                /** @description 最终采用的识别模式（default/enhanced/rotate/deskew/high_dpi/binarize/vision） */
+                profile: string;
+                /** @description 总 OCR 次数（含重试） */
+                attempts: number;
+                vision_used: boolean;
+            };
             /** Format: date-time */
             created_at: string;
         };
@@ -541,6 +1900,13 @@ export interface components {
             task_id: string;
             /** @enum {string} */
             status: "archived";
+            /**
+             * @description 决策方式：manual=人工审批；ai_auto=全自动（由大模型决定，系统未经人工审批）
+             * @enum {string}
+             */
+            decision?: "manual" | "ai_auto";
+            /** @description decision=ai_auto 时的模型名 */
+            decision_model?: string;
             /** Format: date-time */
             executed_at: string;
         };
@@ -674,8 +2040,742 @@ export interface components {
                 page_size: number;
             };
         };
+        FsEntry: {
+            name: string;
+            /** @description 相对归档根目录，正斜杠 */
+            path: string;
+            is_dir: boolean;
+            /** @description 文件夹为 0 */
+            size_bytes: number;
+            /** Format: date-time */
+            modified_at: string;
+            mime_type?: string;
+            /** @description 可内联预览（pdf/png/jpg） */
+            previewable?: boolean;
+            /** @description 台账记录（文件夹或台账之外的文件为 null） */
+            ledger: null | {
+                /** Format: uuid */
+                id: string;
+                original_name: string;
+                department: string;
+                document_type: string;
+                document_date: string;
+            };
+        };
+        FolderListing: {
+            path: string;
+            /** @description 上级路径；根目录为 null */
+            parent: string | null;
+            entries: components["schemas"]["FsEntry"][];
+            capabilities: {
+                /** @description 当前请求是否可使用“在资源管理器中显示” */
+                reveal: boolean;
+                /** @description 归档根目录的绝对路径，仅对本机请求返回 */
+                root: string | null;
+            };
+        };
+        TrashItem: {
+            /** Format: uuid */
+            id: string;
+            original_path: string;
+            name: string;
+            is_dir: boolean;
+            size_bytes: number;
+            /** Format: date-time */
+            deleted_at: string;
+        };
+        LlmPreset: {
+            /** @description deepseek / qwen / qwen-intl / openai / ollama / custom */
+            id: string;
+            name: string;
+            description: string;
+            base_url: string;
+            models: {
+                id: string;
+                label: string;
+                note?: string;
+            }[];
+            default_model: string;
+            needs_api_key: boolean;
+            /** @description 该服务商支持图片输入的模型建议（用于“视觉识别”兜底）；可为空。 */
+            vision_models: {
+                id: string;
+                label: string;
+                note?: string;
+            }[];
+            docs_url: string;
+            /** @description 预设建议模型的核对日期（YYYY-MM-DD）；模型更新很快，实际以服务商返回的列表为准 */
+            checked_at: string;
+            /** @description 该服务商的使用提示（如 Base URL 取自控制台、可用模型以控制台为准） */
+            note: string;
+        };
+        LlmConfig: {
+            /** @enum {string} */
+            mode: "heuristic" | "llm";
+            preset_id: string;
+            base_url: string;
+            model: string;
+            api_key_set: boolean;
+            /** @description 已保存密钥的尾号提示，如 ••••ab12；未保存为空 */
+            api_key_hint: string;
+            /** @description 视觉识别所用模型（空 = 未配置） */
+            vision_model: string;
+            /** @description 是否允许在 OCR 质量差时把页面图片发送给视觉模型（默认关闭） */
+            allow_vision: boolean;
+            /** @enum {string} */
+            state: "ok" | "unconfigured" | "unavailable";
+            /** Format: date-time */
+            updated_at: string | null;
+        };
+        LlmConfigInput: {
+            /** @enum {string} */
+            mode: "heuristic" | "llm";
+            preset_id?: string;
+            base_url?: string;
+            model?: string;
+            api_key?: string;
+            clear_api_key?: boolean;
+            vision_model?: string;
+            allow_vision?: boolean;
+        };
+        LlmTestInput: {
+            base_url: string;
+            model: string;
+            /** @description 提供则额外测试该模型能否接受图片输入 */
+            vision_model?: string;
+            /** @description 省略则使用已保存的密钥 */
+            api_key?: string;
+        };
+        LlmTestResult: {
+            ok: boolean;
+            latency_ms: number;
+            message: string;
+            /** @description 未能判断为 null */
+            tool_calling: boolean | null;
+            /** @description 未测试视觉模型为 null */
+            vision_ok: boolean | null;
+        };
+        Preview: {
+            /** @enum {string} */
+            kind: "pdf" | "image" | "document" | "spreadsheet" | "unsupported";
+            name: string;
+            mime_type: string;
+            size_bytes: number;
+            /** @description pdf/image 的页数 */
+            pages: number | null;
+            /** @description 带 {page} 占位符的相对 URL，pdf/image 用 */
+            page_url: string | null;
+            /** @description kind=unsupported 时的原因，否则为空串 */
+            message: string;
+            truncated: boolean;
+            warnings: string[];
+            header?: string;
+            footer?: string;
+            /** @description kind=document */
+            blocks?: {
+                /** @enum {string} */
+                type: "heading" | "paragraph" | "list_item" | "table";
+                level?: number;
+                text?: string;
+                /** @enum {string} */
+                align?: "left" | "center" | "right";
+                runs?: {
+                    text: string;
+                    bold?: boolean;
+                    italic?: boolean;
+                }[];
+                rows?: string[][];
+            }[];
+            /** @description kind=spreadsheet */
+            sheets?: {
+                name: string;
+                rows: string[][];
+                rows_total: number;
+                cols_total: number;
+                truncated: boolean;
+            }[];
+        };
+        StorageField: {
+            key: string;
+            label: string;
+            /** @enum {string} */
+            type: "text" | "number" | "select" | "password" | "textarea";
+            required: boolean;
+            /** @description 凭据字段：加密保存，永不返回 */
+            secret: boolean;
+            default: string;
+            placeholder: string;
+            help: string;
+            options: {
+                value: string;
+                label: string;
+            }[];
+            show_if: null | {
+                key: string;
+                equals: string;
+            };
+            /** @description 由服务器托管（只读展示），如已信任的 SSH 主机密钥 */
+            managed: boolean;
+        };
+        StorageKind: {
+            /** @description s3 / azure_blob / webdav / sftp / ftp / smb / dingtalk / onedrive / googledrive / dropbox / aliyundrive_open / baidu_netdisk / 123_open / openlist / seafile / cloudreve / localdir */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            group: "cloud" | "enterprise" | "gateway";
+            description: string;
+            docs_url: string;
+            fields: components["schemas"]["StorageField"][];
+        };
+        StorageConnection: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            kind: string;
+            enabled: boolean;
+            base_path: string;
+            use_for_import: boolean;
+            /** @enum {string} */
+            replicate: "off" | "manual" | "auto";
+            settings: {
+                [key: string]: string;
+            };
+            /** @description 哪些凭据已保存（不含值） */
+            secrets_set: {
+                [key: string]: boolean;
+            };
+            last_test: null | {
+                ok: boolean;
+                /** Format: date-time */
+                at: string;
+                message: string;
+            };
+            replication: {
+                queued: number;
+                running: number;
+                done: number;
+                skipped: number;
+                failed: number;
+            };
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        StorageConnectionInput: {
+            name: string;
+            kind: string;
+            settings?: {
+                [key: string]: string;
+            };
+            secrets?: {
+                [key: string]: string;
+            };
+            base_path?: string;
+            enabled?: boolean;
+            use_for_import?: boolean;
+            /** @enum {string} */
+            replicate?: "off" | "manual" | "auto";
+        };
+        StorageConnectionPatch: {
+            name?: string;
+            settings?: {
+                [key: string]: string;
+            };
+            secrets?: {
+                [key: string]: string;
+            };
+            clear_secrets?: string[];
+            base_path?: string;
+            enabled?: boolean;
+            use_for_import?: boolean;
+            /** @enum {string} */
+            replicate?: "off" | "manual" | "auto";
+        };
+        StorageTestInput: {
+            kind: string;
+            settings?: {
+                [key: string]: string;
+            };
+            secrets?: {
+                [key: string]: string;
+            };
+            base_path?: string;
+            /** Format: uuid */
+            connection_id?: string;
+            check_write?: boolean;
+            accept_host_key?: string;
+        };
+        StorageTestResult: {
+            ok: boolean;
+            latency_ms: number;
+            steps: {
+                name: string;
+                ok: boolean;
+                message: string;
+            }[];
+            host_key: null | {
+                fingerprint: string;
+                changed: boolean;
+            };
+        };
+        StorageEntry: {
+            name: string;
+            path: string;
+            is_dir: boolean;
+            size_bytes: number;
+            /** Format: date-time */
+            modified_at: string | null;
+        };
+        StorageListing: {
+            path: string;
+            parent: string | null;
+            entries: components["schemas"]["StorageEntry"][];
+            /** @description 目录项过多时只返回前 5000 项 */
+            truncated: boolean;
+        };
+        Replication: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            connection_id: string;
+            connection_name: string;
+            local_path: string;
+            remote_path: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "done" | "skipped" | "failed";
+            attempts: number;
+            error: string | null;
+            size_bytes: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ReplicationPageEnvelope: {
+            data: {
+                items: components["schemas"]["Replication"][];
+                total: number;
+                page: number;
+                page_size: number;
+            };
+        };
+        /** @enum {string} */
+        Role: "admin" | "operator" | "viewer";
+        /** @description 标准 WebAuthn JSON（PublicKeyCredentialCreationOptionsJSON / RequestOptionsJSON / RegistrationResponseJSON / AuthenticationResponseJSON），原样透传 */
+        WebAuthnJSON: {
+            [key: string]: unknown;
+        };
+        SessionUser: {
+            id: string;
+            username: string;
+            display_name: string;
+            role: components["schemas"]["Role"];
+            must_change_password: boolean;
+        };
+        LoginResult: {
+            /** @enum {string} */
+            status: "ok" | "mfa_required" | "enroll_mfa";
+            user?: components["schemas"]["SessionUser"];
+            /** @description status 为 ok/enroll_mfa 时返回；非 GET 请求放入 X-CSRF-Token */
+            csrf_token?: string;
+            /** @description status=mfa_required 时的 5 分钟一次性令牌 */
+            mfa_token?: string;
+            methods?: ("totp" | "passkey" | "recovery")[];
+            /** Format: date-time */
+            session_expires_at?: string;
+        };
+        Policy: {
+            /** @enum {string} */
+            mode: "enterprise" | "local";
+            /** @enum {string} */
+            mfa_policy: "off" | "admins" | "all";
+            allow_password_login: boolean;
+            passkey_available: boolean;
+            password_min_length?: number;
+        };
+        Me: {
+            user: components["schemas"]["SessionUser"];
+            csrf_token: string;
+            /** @enum {string} */
+            scope: "full" | "enroll_mfa";
+            /** @enum {string} */
+            mfa: "none" | "totp" | "passkey" | "recovery" | "local";
+            /** @description 是否处于“近期认证”窗口 */
+            fresh: boolean;
+            /** Format: date-time */
+            session_expires_at: string;
+            policy: components["schemas"]["Policy"];
+        };
+        SetupCheck: {
+            name: string;
+            ok: boolean;
+            message: string;
+        };
+        SetupStatus: {
+            initialized: boolean;
+            /** @description false 直到向导完成（POST /v1/setup/finish）；local 模式与升级前已初始化的安装为 true。false 且 initialized 时服务端闸门拒绝大部分接口（409 WIZARD_REQUIRED） */
+            wizard_finished: boolean;
+            /** @description 后端构建版本 */
+            server_version: string;
+            /** @description 后端实现的契约代数（Go 常量 api.APILevel，当前 3）；前端依赖新接口/字段时必须同时递增前后端的常量，不一致时前端显示版本不匹配横幅 */
+            api_level: number;
+            /**
+             * @description 已初始化时返回
+             * @enum {string}
+             */
+            mode?: "enterprise" | "local";
+            /** @description 非回环请求需要初始化令牌 */
+            needs_token: boolean;
+            /** @description 本次请求是否来自本机回环地址（local 模式的前提） */
+            loopback: boolean;
+            https: boolean;
+            passkey_available: boolean;
+            rp_id_suggestion?: string;
+            origin_suggestion?: string;
+            /** @description 已初始化时返回；false 时登录页应隐藏密码表单（仅 Passkey） */
+            allow_password_login?: boolean;
+            min_password_length: number;
+            checks: components["schemas"]["SetupCheck"][];
+        };
+        SetupRequest: {
+            setup_token?: string;
+            /** @enum {string} */
+            mode: "enterprise" | "local";
+            admin?: {
+                username: string;
+                display_name: string;
+                password: string;
+            };
+            rp_id?: string;
+            rp_name?: string;
+            origins?: string[];
+            /** @enum {string} */
+            mfa_policy?: "off" | "admins" | "all";
+            allow_password_login?: boolean;
+            session_idle_minutes?: number;
+            session_max_hours?: number;
+            password_min_length?: number;
+        };
+        Passkey: {
+            id: string;
+            name: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_used_at: string | null;
+            backup_eligible: boolean;
+            backup_state: boolean;
+            transports: string[];
+        };
+        SecuritySummary: {
+            has_password: boolean;
+            totp_enabled: boolean;
+            passkeys: components["schemas"]["Passkey"][];
+            recovery_codes_remaining: number;
+            mfa_required_by_policy: boolean;
+        };
+        TotpEnrollment: {
+            challenge_id: string;
+            /** @description Base32，供手动输入；只在此响应出现 */
+            secret: string;
+            otpauth_uri: string;
+            digits: number;
+            period: number;
+            algorithm: string;
+        };
+        MfaEnrolled: {
+            /** @description 仅在该用户第一次绑定 MFA 时非空；明文只返回这一次 */
+            recovery_codes: string[];
+            passkey?: components["schemas"]["Passkey"];
+            me?: components["schemas"]["Me"];
+        };
+        SessionInfo: {
+            id: string;
+            user_id: string;
+            username: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            ip: string;
+            user_agent: string;
+            /** @enum {string} */
+            mfa: "none" | "totp" | "passkey" | "recovery" | "local";
+            current: boolean;
+        };
+        Invitation: {
+            username: string;
+            display_name: string;
+            /** Format: date-time */
+            expires_at: string;
+            passkey_available: boolean;
+        };
+        InviteCreated: {
+            token: string;
+            /** @description 相对路径 /invite/<token>；前端用当前 origin 拼成完整链接 */
+            path: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        AdminUser: {
+            /** Format: uuid */
+            id: string;
+            username: string;
+            display_name: string;
+            role: components["schemas"]["Role"];
+            /** @enum {string} */
+            status: "active" | "disabled" | "locked";
+            has_password: boolean;
+            totp_enabled: boolean;
+            passkey_count: number;
+            recovery_codes_remaining: number;
+            must_change_password: boolean;
+            failed_logins: number;
+            /** Format: date-time */
+            locked_until: string | null;
+            /** Format: date-time */
+            last_login_at: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AdminUserCreate: {
+            username: string;
+            display_name: string;
+            role: components["schemas"]["Role"];
+            /**
+             * @description password：生成临时密码；passkey_invite：无密码，生成邀请链接
+             * @enum {string}
+             */
+            credential: "password" | "passkey_invite";
+        };
+        AdminUserCreated: {
+            user: components["schemas"]["AdminUser"];
+            /** @description credential=password 时返回，仅此一次 */
+            temporary_password?: string;
+            invite?: components["schemas"]["InviteCreated"];
+        };
+        AdminUserPageEnvelope: {
+            data: {
+                items: components["schemas"]["AdminUser"][];
+                total: number;
+                page: number;
+                page_size: number;
+            };
+        };
+        SecuritySettings: {
+            /** @enum {string} */
+            mode: "enterprise" | "local";
+            rp_id: string;
+            rp_name: string;
+            origins: string[];
+            /** @enum {string} */
+            mfa_policy: "off" | "admins" | "all";
+            allow_password_login: boolean;
+            session_idle_minutes: number;
+            session_max_hours: number;
+            password_min_length: number;
+            lockout_threshold: number;
+            lockout_minutes: number;
+            passkey_available: boolean;
+        };
+        SecuritySettingsPatch: {
+            rp_id?: string;
+            rp_name?: string;
+            origins?: string[];
+            /** @enum {string} */
+            mfa_policy?: "off" | "admins" | "all";
+            allow_password_login?: boolean;
+            session_idle_minutes?: number;
+            session_max_hours?: number;
+            password_min_length?: number;
+            lockout_threshold?: number;
+            lockout_minutes?: number;
+            confirm_passkey_reset?: boolean;
+        };
+        LlmStatus: {
+            /** @description 本用户的任务是否有可用的大模型（mode=llm 且状态 ok） */
+            configured: boolean;
+            /** @enum {string} */
+            source: "none" | "global" | "personal";
+            /** @enum {string} */
+            mode: "heuristic" | "llm";
+            /** @description 将使用的模型名（none 时为空） */
+            model: string;
+            provider_label?: string;
+            global_configured: boolean;
+            personal_configured: boolean;
+            personal_allowed: boolean;
+            /** @description 管理员是否允许个人 API 使用 http/内网/本机地址（供 UI 提前展示地址规则） */
+            allow_personal_private_hosts: boolean;
+            /** @description 策略允许 + 已配置大模型 + 角色足够时为 true */
+            auto_archive_allowed: boolean;
+            auto_ack_version: string;
+            /** @description 全自动模式风险提示原文（前端原样展示） */
+            auto_ack_text: string;
+            /** @enum {string} */
+            setup_hint: "none" | "admin_global" | "personal_or_admin" | "contact_admin";
+        };
+        AiPolicy: {
+            /** @description 允许员工配置个人大模型 API（默认 false） */
+            allow_personal_llm: boolean;
+            /** @description 个人 API 是否允许 http/内网/本机地址（默认 false，防 SSRF） */
+            allow_personal_private_hosts: boolean;
+            /** @description 是否开放“全自动归档”（默认 true，管理员可整体关闭） */
+            allow_auto_archive: boolean;
+            /** Format: date-time */
+            updated_at: string | null;
+        };
+        AiPolicyPatch: {
+            allow_personal_llm?: boolean;
+            allow_personal_private_hosts?: boolean;
+            allow_auto_archive?: boolean;
+        };
+        ImportOptions: {
+            /** @description 给 AI 的任务说明（如“只处理采购类文件，按项目名归档”）。只作为分类/命名的指导，不能授予工具权限、不能改变路径安全规则；文档内容仍是数据而非指令。需要已配置大模型，否则 422 LLM_REQUIRED。 */
+            instruction?: string;
+            /**
+             * @description review=人工审批后执行；auto=全自动（需 auto_ack）
+             * @default review
+             * @enum {string}
+             */
+            automation: "review" | "auto";
+            /**
+             * @default auto
+             * @enum {string}
+             */
+            llm_source: "auto" | "global" | "personal";
+            auto_ack?: {
+                /** @description 必须等于 LlmStatus.auto_ack_version */
+                version: string;
+                accepted: boolean;
+            };
+        };
+        ErrorReport: {
+            id: string;
+            /** @enum {string} */
+            source: "api" | "pipeline" | "worker" | "storage" | "client" | "supervisor" | "startup" | "llm";
+            /** @enum {string} */
+            severity: "error" | "panic" | "fatal";
+            code: string;
+            message: string;
+            count: number;
+            /** Format: date-time */
+            first_seen: string;
+            /** Format: date-time */
+            last_seen: string;
+            resolved: boolean;
+            /** @description 最近一次的请求 ID（可用于对照日志） */
+            request_id: string;
+        };
+        ErrorReportDetail: components["schemas"]["ErrorReport"] & {
+            /** @description 已脱敏的调用栈（panic/fatal/客户端错误） */
+            stack: string;
+            /** @description 脱敏后的上下文（路径、任务 ID、用户名、版本等） */
+            details: {
+                [key: string]: unknown;
+            };
+            /** @description 最近最多 20 次发生 */
+            occurrences: {
+                /** Format: date-time */
+                at: string;
+                request_id: string;
+                user: string;
+            }[];
+        };
+        ErrorReportPageEnvelope: {
+            data: {
+                items: components["schemas"]["ErrorReport"][];
+                total: number;
+                page: number;
+                page_size: number;
+            };
+        };
+        ClientErrorInput: {
+            message: string;
+            stack?: string;
+            route?: string;
+            component?: string;
+            app_version?: string;
+            request_id?: string;
+        };
+        SystemInfo: {
+            version: string;
+            commit: string;
+            /** @enum {string} */
+            build_mode: "debug" | "release";
+            go_version: string;
+            os: string;
+            standalone: boolean;
+            /** Format: date-time */
+            started_at: string;
+            uptime_seconds: number;
+            database: {
+                ok: boolean;
+                message: string;
+            };
+            worker: {
+                ok: boolean;
+                message: string;
+            };
+            disk: {
+                archive_path: string;
+                free_bytes: number;
+                total_bytes: number;
+            };
+            /** @description 上次运行异常结束（崩溃/被强杀）；已记录一条 supervisor 错误报告 */
+            last_exit_unclean: boolean;
+            open_error_reports: number;
+        };
     };
     responses: {
+        /** @description 登录结果（设置 `oa_session` Cookie：HttpOnly、SameSite=Strict、HTTPS 下 Secure；`mfa_required` 时不设置会话） */
+        LoginResult: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data: components["schemas"]["LoginResult"];
+                };
+            };
+        };
+        /** @description WebAuthn 选项（标准 JSON 形式，可直接交给 @simplewebauthn/browser 或 PublicKeyCredential.parse*OptionsFromJSON）与一次性 challenge_id */
+        WebAuthnOptions: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data: {
+                        challenge_id: string;
+                        options: components["schemas"]["WebAuthnJSON"];
+                    };
+                };
+            };
+        };
+        /** @description 绑定成功；首个 MFA 时附带一次性展示的恢复码 */
+        MfaEnrolled: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data: components["schemas"]["MfaEnrolled"];
+                };
+            };
+        };
+        /** @description User */
+        AdminUser: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data: components["schemas"]["AdminUser"];
+                };
+            };
+        };
         /** @description Error */
         Error: {
             headers: {
@@ -857,6 +2957,8 @@ export interface operations {
                 "multipart/form-data": {
                     /** @description JSON 数组字符串，如 ["a/b.docx"] */
                     paths: string;
+                    /** @description JSON 字符串（ImportOptions：instruction/automation/llm_source/auto_ack），可选；若出现必须紧跟在 paths 之后、第一个 files 之前，且仅一次 */
+                    options?: string;
                     files: string[];
                 };
             };
@@ -864,8 +2966,10 @@ export interface operations {
         responses: {
             202: components["responses"]["Job"];
             400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
             409: components["responses"]["Error"];
             413: components["responses"]["Error"];
+            422: components["responses"]["Error"];
             500: components["responses"]["Error"];
         };
     };
@@ -1188,6 +3292,8 @@ export interface operations {
                 date_to?: string;
                 sort?: "original_name" | "canonical_name" | "department" | "document_type" | "document_date" | "archive_path" | "executed_at";
                 order?: "asc" | "desc";
+                /** @description 按决策方式筛选（manual=人工审批；ai_auto=全自动） */
+                decision?: "manual" | "ai_auto";
             };
             header?: never;
             path?: never;
@@ -1216,6 +3322,8 @@ export interface operations {
                 date_to?: string;
                 sort?: string;
                 order?: "asc" | "desc";
+                /** @description 按决策方式筛选（manual=人工审批；ai_auto=全自动） */
+                decision?: "manual" | "ai_auto";
             };
             header?: never;
             path?: never;
@@ -1444,6 +3552,2271 @@ export interface operations {
                     "application/json": components["schemas"]["AuditPageEnvelope"];
                 };
             };
+        };
+    };
+    listFolder: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder listing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FolderListing"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    getFileContent: {
+        parameters: {
+            query: {
+                path: string;
+                download?: "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description File bytes (supports Range) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    createFolder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description 新文件夹的完整相对路径 */
+                    path: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FsEntry"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    moveEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    from: string;
+                    to: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Moved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            entry: components["schemas"]["FsEntry"];
+                            ledger_updated: number;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listTrash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Items in the trash, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TrashItem"][];
+                    };
+                };
+            };
+        };
+    };
+    trashEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    path: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Moved to trash */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TrashItem"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    restoreTrash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Restored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            path: string;
+                            ledger_updated: number;
+                        };
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    revealInExplorer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @default  */
+                    path?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Explorer was launched */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            revealed: string;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            501: components["responses"]["Error"];
+        };
+    };
+    listLlmPresets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Presets, recommended first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmPreset"][];
+                    };
+                };
+            };
+        };
+    };
+    getLlmConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmConfig"];
+                    };
+                };
+            };
+        };
+    };
+    saveLlmConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmConfigInput"];
+            };
+        };
+        responses: {
+            /** @description Saved and active */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmConfig"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    testLlm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmTestInput"];
+            };
+        };
+        responses: {
+            /** @description Test outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmTestResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    listLlmModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    base_url: string;
+                    /** @description 省略则使用已保存的密钥 */
+                    api_key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Model ids */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            models: string[];
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            502: components["responses"]["Error"];
+        };
+    };
+    previewFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Preview"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    previewFilePage: {
+        parameters: {
+            query?: {
+                page?: number;
+                max_side?: number;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PNG image */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    previewArchived: {
+        parameters: {
+            query: {
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Preview"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    previewArchivedPage: {
+        parameters: {
+            query: {
+                path: string;
+                page?: number;
+                max_side?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PNG image */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listStorageKinds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kinds */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageKind"][];
+                    };
+                };
+            };
+        };
+    };
+    listStorageConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connections (credentials never returned) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageConnection"][];
+                    };
+                };
+            };
+        };
+    };
+    createStorageConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageConnectionInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageConnection"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    testStorageDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageTestInput"];
+            };
+        };
+        responses: {
+            /** @description Test report (ok=false carries readable steps) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageTestResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getStorageConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageConnection"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    deleteStorageConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    updateStorageConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageConnectionPatch"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageConnection"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    testStorageConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    check_write?: boolean;
+                    /** @description 首次连接 SFTP 时确认的主机密钥指纹；服务器据此固定信任 */
+                    accept_host_key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Test report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageTestResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    browseStorage: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One level of the remote folder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StorageListing"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            502: components["responses"]["Error"];
+        };
+    };
+    replicateToStorage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description 仅同步归档路径以该前缀开头的文件（空 = 全部） */
+                    path_prefix?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            queued: number;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listReplications: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                page_size?: components["parameters"]["PageSize"];
+                connection_id?: string;
+                status?: "queued" | "running" | "done" | "skipped" | "failed";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replication page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplicationPageEnvelope"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    retryReplication: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Re-queued */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Replication"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    createRemoteImport: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    connection_id: string;
+                    items: {
+                        path: string;
+                    }[];
+                    /** Format: uuid */
+                    template_id?: string;
+                    options?: components["schemas"]["ImportOptions"];
+                };
+            };
+        };
+        responses: {
+            202: components["responses"]["Job"];
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            502: components["responses"]["Error"];
+        };
+    };
+    getSetupStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SetupStatus"];
+                    };
+                };
+            };
+        };
+    };
+    verifySetupToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Token valid */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            valid: boolean;
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    completeSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupRequest"];
+            };
+        };
+        responses: {
+            201: components["responses"]["LoginResult"];
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    finishSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SetupStatus"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    username: string;
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["LoginResult"];
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            423: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Me */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Me"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    mfaTotp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    mfa_token: string;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["LoginResult"];
+            401: components["responses"]["Error"];
+            423: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    mfaRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    mfa_token: string;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["LoginResult"];
+            401: components["responses"]["Error"];
+            423: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    mfaPasskeyBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    mfa_token: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["WebAuthnOptions"];
+            401: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    mfaPasskeyFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    mfa_token: string;
+                    challenge_id: string;
+                    credential: components["schemas"]["WebAuthnJSON"];
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["LoginResult"];
+            401: components["responses"]["Error"];
+            423: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    passkeyLoginBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["WebAuthnOptions"];
+            409: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    passkeyLoginFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: string;
+                    credential: components["schemas"]["WebAuthnJSON"];
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["LoginResult"];
+            401: components["responses"]["Error"];
+            423: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    reauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Fresh */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Me"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    reauthPasskeyBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["WebAuthnOptions"];
+            401: components["responses"]["Error"];
+        };
+    };
+    reauthPasskeyFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: string;
+                    credential: components["schemas"]["WebAuthnJSON"];
+                };
+            };
+        };
+        responses: {
+            /** @description Fresh */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Me"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    changePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    current_password: string;
+                    new_password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Changed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    getMySecurity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SecuritySummary"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    totpBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enrollment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TotpEnrollment"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    totpConfirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: string;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["MfaEnrolled"];
+            401: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    totpDisable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Disabled */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    passkeyRegisterBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["WebAuthnOptions"];
+            409: components["responses"]["Error"];
+        };
+    };
+    passkeyRegisterFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: string;
+                    name?: string;
+                    credential: components["schemas"]["WebAuthnJSON"];
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["MfaEnrolled"];
+            401: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    deletePasskey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description base64url 凭据 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    renamePasskey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description base64url 凭据 ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Passkey */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Passkey"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    regenerateRecoveryCodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Codes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            recovery_codes: string[];
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listMySessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sessions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SessionInfo"][];
+                    };
+                };
+            };
+        };
+    };
+    revokeMySession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    getInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Invitation"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    invitationPasskeyBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["WebAuthnOptions"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    invitationPasskeyFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    challenge_id: string;
+                    name?: string;
+                    credential: components["schemas"]["WebAuthnJSON"];
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["LoginResult"];
+            404: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    adminListUsers: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                page_size?: components["parameters"]["PageSize"];
+                /** @description 用户名/显示名包含 */
+                q?: string;
+                role?: components["schemas"]["Role"];
+                status?: "active" | "disabled" | "locked";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Users */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserPageEnvelope"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    adminCreateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AdminUserCreated"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    adminGetUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["AdminUser"];
+            404: components["responses"]["Error"];
+        };
+    };
+    adminDeleteUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    adminUpdateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    display_name?: string;
+                    role?: components["schemas"]["Role"];
+                    /** @enum {string} */
+                    status?: "active" | "disabled";
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["AdminUser"];
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    adminResetPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary password */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            temporary_password: string;
+                        };
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    adminResetMfa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["AdminUser"];
+            404: components["responses"]["Error"];
+        };
+    };
+    adminUnlockUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["AdminUser"];
+            404: components["responses"]["Error"];
+        };
+    };
+    adminRevokeSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Count */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            revoked: number;
+                        };
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    adminCreateInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invite */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["InviteCreated"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    adminListSessions: {
+        parameters: {
+            query?: {
+                user_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sessions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SessionInfo"][];
+                    };
+                };
+            };
+        };
+    };
+    adminRevokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    adminGetSecuritySettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SecuritySettings"];
+                    };
+                };
+            };
+        };
+    };
+    adminUpdateSecuritySettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecuritySettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description Settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SecuritySettings"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getLlmStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmStatus"];
+                    };
+                };
+            };
+        };
+    };
+    getPersonalLlm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mine */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmConfig"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+        };
+    };
+    savePersonalLlm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmConfigInput"];
+            };
+        };
+        responses: {
+            /** @description Saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmConfig"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    deletePersonalLlm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+        };
+    };
+    testPersonalLlm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmTestInput"];
+            };
+        };
+        responses: {
+            /** @description Outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmTestResult"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    listPersonalLlmModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    base_url: string;
+                    /** @description 省略则使用已保存的个人密钥 */
+                    api_key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Model ids */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            models: string[];
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    getAiPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AiPolicy"];
+                    };
+                };
+            };
+        };
+    };
+    updateAiPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AiPolicyPatch"];
+            };
+        };
+        responses: {
+            /** @description Policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AiPolicy"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    getSystemInfo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description System */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SystemInfo"];
+                    };
+                };
+            };
+        };
+    };
+    listErrorReports: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                page_size?: components["parameters"]["PageSize"];
+                source?: "api" | "pipeline" | "worker" | "storage" | "client" | "supervisor" | "startup" | "llm";
+                severity?: "error" | "panic" | "fatal";
+                resolved?: boolean;
+                /** @description resolved 过滤的别名：open=未处理，resolved=已处理，all=不过滤；同时给出时以 state 为准 */
+                state?: "all" | "open" | "resolved";
+                /** @description 消息/错误码/请求 ID 包含 */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorReportPageEnvelope"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    getErrorReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ErrorReportDetail"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    deleteErrorReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    updateErrorReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    resolved: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ErrorReportDetail"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    downloadDiagnosticBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Zip */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+        };
+    };
+    reportClientError: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClientErrorInput"];
+            };
+        };
+        responses: {
+            /** @description Recorded */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            report_id: string;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            429: components["responses"]["Error"];
         };
     };
 }

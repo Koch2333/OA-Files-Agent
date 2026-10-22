@@ -1,0 +1,140 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useAuth } from '../stores/auth'
+import { useAi } from '../stores/ai'
+import { fmtBytes } from '../utils/format'
+import { MAX_BATCH_BYTES, MAX_FILES, MAX_FILE_BYTES, verdict, VERDICT_LABEL } from '../utils/importLimits'
+import { fromClipboard } from '../utils/importFlow'
+import { useImportFlow } from '../utils/useImportFlow'
+import Icon from './Icon.vue'
+import ErrorBanner from './ErrorBanner.vue'
+import AutomationSelector from './AutomationSelector.vue'
+import AutoRiskDialog from './AutoRiskDialog.vue'
+import LlmStatusBanner from './LlmStatusBanner.vue'
+
+/**
+ * 工作台拖入区：整页都能接收拖拽（文件/文件夹）与粘贴；选好文件后变成确认条，点“开始智能归档”才提交（绝不自动提交）。
+ * 状态与提交与批量导入页共用 useImportFlow。
+ */
+const props = defineProps<{ firstRun?: boolean }>()
+const auth = useAuth()
+const ai = useAi()
+const flow = useImportFlow()
+const { picked, brief, auto } = flow
+const dragging = ref(false)
+const listOpen = ref(false)
+const instrOpen = ref(false)
+const canWrite = computed(() => auth.canWrite)
+const shown = computed(() => picked.value.slice(0, listOpen.value ? 100 : 0))
+const rejectedPreview = computed(() => flow.summary.value.rejectedList.slice(0, 4).map((r) => r.path).join('、'))
+
+const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files')
+function onOver(e: DragEvent) { if (!hasFiles(e)) return; e.preventDefault(); dragging.value = canWrite.value }
+function onLeave(e: DragEvent) { if (!e.relatedTarget) dragging.value = false }
+function onDrop(e: DragEvent) {
+  if (!hasFiles(e)) return
+  e.preventDefault(); dragging.value = false
+  if (canWrite.value && !flow.submitting.value && e.dataTransfer) void flow.addFromDrop(e.dataTransfer)
+}
+function onPaste(e: ClipboardEvent) {
+  const t = e.target as HTMLElement | null
+  if (!canWrite.value || flow.submitting.value || t?.closest('input, textarea, select, [contenteditable]')) return
+  const list = fromClipboard(e.clipboardData?.files)
+  if (list.length) { e.preventDefault(); flow.add(list) }
+}
+function onPick(e: Event) { const el = e.target as HTMLInputElement; flow.addFromInput(el.files); el.value = '' }
+onMounted(() => {
+  void ai.refresh()
+  window.addEventListener('dragover', onOver); window.addEventListener('dragleave', onLeave); window.addEventListener('drop', onDrop); document.addEventListener('paste', onPaste)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('dragover', onOver); window.removeEventListener('dragleave', onLeave); window.removeEventListener('drop', onDrop); document.removeEventListener('paste', onPaste)
+})
+const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' : v === 'unsupported' || v === 'too_large' ? 'error' : 'attention' }
+</script>
+<template>
+  <section class="dz" :class="{ on: dragging, has: picked.length > 0, off: !canWrite }" role="group" aria-label="导入文件" data-testid="home-dropzone">
+    <!-- 只读账号：禁用并解释原因 -->
+    <div v-if="!canWrite" class="empty">
+      <Icon name="lock" class="big" />
+      <div class="t-title">当前账号是只读权限，不能导入文件</div>
+      <p class="muted">你可以查看任务、文件库和台账。需要导入文件时，请联系管理员把账号权限调整为“操作员”。</p>
+    </div>
+
+    <!-- 还没选文件：大号拖入区 -->
+    <div v-else-if="!picked.length" class="empty">
+      <Icon :name="flow.scanning.value ? 'progress_activity' : 'cloud_upload'" class="big" :class="{ spin: flow.scanning.value }" />
+      <div class="t-title" data-testid="dz-title">{{ flow.scanning.value ? '正在读取文件夹…' : '把文件或文件夹拖到这里，AI 自动识别并归档' }}</div>
+      <p class="muted">支持 Word / Excel / PDF / 图片（含扫描件 OCR）。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
+      <div class="row wrap" style="justify-content: center">
+        <label class="btn filled has-icon"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.doc,.xls" data-testid="dz-files" @change="onPick" /></label>
+        <label class="btn tonal has-icon"><Icon name="folder_open" sm />选择文件夹<input type="file" hidden webkitdirectory data-testid="dz-folder" @change="onPick" /></label>
+      </div>
+      <p class="muted lim">每批最多 {{ MAX_FILES }} 个文件，单个不超过 {{ fmtBytes(MAX_FILE_BYTES) }}，整批不超过 {{ fmtBytes(MAX_BATCH_BYTES) }}</p>
+      <ol v-if="props.firstRun" class="steps" aria-label="使用步骤">
+        <li><b>1</b>拖入文件</li><li class="sep" aria-hidden="true"><Icon name="arrow_forward" sm /></li><li><b>2</b>AI 识别并生成计划</li><li class="sep" aria-hidden="true"><Icon name="arrow_forward" sm /></li><li><b>3</b>你审批后归档</li>
+      </ol>
+      <LlmStatusBanner compact />
+    </div>
+
+    <!-- 已选文件：确认条 -->
+    <div v-else class="confirm" data-testid="dz-confirm">
+      <div class="row wrap top">
+        <Icon name="inventory_2" class="ico" />
+        <div class="grow"><div class="t-title-m" data-testid="dz-brief">{{ brief.text }}</div>
+          <div class="muted t-label"><button type="button" class="link" :aria-expanded="listOpen" @click="listOpen = !listOpen">{{ listOpen ? '收起文件清单' : '查看文件清单' }}</button><span v-if="brief.rejected" class="chip attention" style="margin-left: 8px" data-testid="rejected-count">{{ brief.rejected }} 个将被拒绝</span></div></div>
+        <label class="btn sm has-icon"><Icon name="add" sm />继续添加<input type="file" multiple hidden accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.doc,.xls" @change="onPick" /></label>
+        <button class="btn sm has-icon" :disabled="flow.submitting.value" data-testid="dz-clear" @click="flow.clear()"><Icon name="delete_sweep" sm />全部移除</button>
+      </div>
+      <div v-if="brief.blocking" class="banner error" role="alert"><Icon name="error" />{{ brief.blockReason }}</div>
+      <div v-if="listOpen" class="table-wrap files">
+        <table class="tbl"><tbody>
+          <tr v-for="p in shown" :key="p.relativePath"><td class="ellipsis" style="max-width: 380px" :title="p.relativePath">{{ p.relativePath }}</td><td class="muted nowrap">{{ fmtBytes(p.file.size) }}</td><td><span class="chip" :class="chip(p.file)">{{ VERDICT_LABEL[verdict(p.file)] }}</span></td>
+            <td><button class="btn icon-only sm" :aria-label="`移除 ${p.file.name}`" @click="flow.remove(p)"><Icon name="close" sm /></button></td></tr>
+        </tbody></table>
+      </div>
+      <p v-if="brief.rejected" class="muted t-label" data-testid="rejected-list">格式不支持、过大或空的文件仍会提交，在任务里显示为失败项，不影响其他文件：{{ rejectedPreview }}<template v-if="flow.summary.value.rejectedList.length > 4"> 等 {{ flow.summary.value.rejectedList.length }} 个</template></p>
+      <div class="opts">
+        <AutomationSelector :mode="auto.mode.value" :gate="auto.gate.value" :disabled="flow.submitting.value" @select="auto.select" />
+        <div class="field instr">
+          <button class="link" type="button" :aria-expanded="instrOpen" aria-controls="dz-instr" data-testid="dz-instr-toggle" :disabled="!flow.llmOk.value" :title="flow.llmOk.value ? '' : '需要先配置大模型才能使用任务说明'" @click="instrOpen = !instrOpen"><Icon :name="instrOpen ? 'expand_more' : 'chevron_right'" sm />给 AI 的说明（可选）</button>
+          <textarea v-if="instrOpen && flow.llmOk.value" id="dz-instr" v-model="flow.instruction.value" class="input" rows="2" maxlength="2000" placeholder="例如：只处理采购相关文件，按项目名归档" aria-label="给 AI 的说明" />
+          <span v-if="!flow.llmOk.value" class="muted t-label">未配置大模型，将使用离线规则识别。</span>
+        </div>
+      </div>
+      <ErrorBanner :message="flow.err.value" />
+      <div class="row go">
+        <span class="muted t-label grow">此步骤只读取你选的文件，不会移动或修改任何原文件。</span>
+        <button class="btn filled has-icon big-btn" :disabled="flow.submitting.value || brief.blocking" data-testid="home-start" @click="flow.submit()">
+          <Icon :name="flow.submitting.value ? 'progress_activity' : 'auto_awesome'" :class="{ spin: flow.submitting.value }" sm />{{ flow.submitting.value ? '正在提交…' : '开始智能归档' }}
+        </button>
+      </div>
+    </div>
+    <ErrorBanner v-if="!picked.length" :message="flow.err.value" />
+    <AutoRiskDialog v-if="auto.dialogOpen.value && ai.status" v-model:checked="auto.checked.value" :status="ai.status" :remaining-sec="auto.remainingSec.value" :can-confirm="auto.canConfirm.value" @confirm="auto.confirm" @cancel="auto.cancel" />
+  </section>
+</template>
+<style scoped>
+.dz { border: 2px dashed var(--md-sys-color-outline); border-radius: var(--shape-xl); padding: 24px; background: color-mix(in srgb, var(--md-sys-color-primary-container) 40%, var(--c-surface-1)); transition: border-color var(--dur-s), background var(--dur-s), box-shadow var(--dur-s); }
+.dz.on { border-color: var(--md-sys-color-primary); background: var(--md-sys-color-primary-container); box-shadow: 0 0 0 4px color-mix(in srgb, var(--md-sys-color-primary) 22%, transparent); }
+.dz.has { border-style: solid; border-width: 1px; border-color: var(--md-sys-color-outline-variant); padding: 16px 20px; background: var(--c-surface-1); }
+.dz.off { border-color: var(--md-sys-color-outline-variant); background: var(--c-surface-1); }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.empty p { max-width: 640px; } .empty .t-title { line-height: 30px; }
+.big { font-size: 56px; color: var(--md-sys-color-primary); } .off .big { color: var(--md-sys-color-outline); }
+.spin { animation: spin 1.1s linear infinite; }
+.lim { font-size: 12px; }
+.steps { display: flex; align-items: center; gap: 8px; list-style: none; margin: 8px 0 0; padding: 0; flex-wrap: wrap; justify-content: center; }
+.steps li { display: flex; align-items: center; gap: 8px; } .steps b { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); font-size: 12px; }
+.steps .sep { color: var(--md-sys-color-outline); }
+.confirm { display: flex; flex-direction: column; gap: 12px; }
+.top { gap: 12px; } .ico { font-size: 32px; color: var(--md-sys-color-primary); }
+.link { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; color: var(--md-sys-color-primary); font-weight: 500; border-radius: var(--shape-sm); padding: 2px 4px; margin-left: -4px; }
+.link:hover { text-decoration: underline; } .link:focus-visible { outline: 3px solid var(--md-sys-color-primary); } .link:disabled { color: var(--md-sys-color-outline); cursor: not-allowed; text-decoration: none; }
+.files { max-height: 220px; border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--shape-md); }
+.opts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; } .instr { gap: 6px; }
+.go { gap: 16px; } .big-btn { height: 44px; padding: 0 28px 0 20px; }
+@media (max-width: 900px) { .opts { grid-template-columns: 1fr; } .dz { padding: 20px 16px; } .go { flex-wrap: wrap; } .big-btn { width: 100%; justify-content: center; } .steps .sep { display: none; } .steps { flex-direction: column; align-items: flex-start; } }
+@media (max-width: 900px) { .btn, .link { min-height: 44px; } .btn.icon-only.sm { width: 44px; height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+</style>

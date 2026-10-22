@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -248,4 +249,32 @@ func (s *Store) ApplyCorrection(ctx context.Context, c Correction, derive func(P
 	}
 	c.Status = "approved"
 	return c, nil
+}
+
+// ---- LLM settings (single row) ----
+
+type LLMSettings struct {
+	Mode        string
+	PresetID    string
+	BaseURL     string
+	Model       string
+	APIKeyEnc   []byte
+	VisionModel string
+	AllowVision bool
+	UpdatedAt   time.Time
+}
+
+func (s *Store) LoadLLM(ctx context.Context) (LLMSettings, bool, error) {
+	var v LLMSettings
+	err := s.Pool.QueryRow(ctx, `SELECT mode, preset_id, base_url, model, api_key_enc, vision_model, allow_vision, updated_at FROM llm_settings WHERE id=1`).Scan(&v.Mode, &v.PresetID, &v.BaseURL, &v.Model, &v.APIKeyEnc, &v.VisionModel, &v.AllowVision, &v.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return v, false, nil
+	}
+	return v, err == nil, err
+}
+
+func (s *Store) SaveLLM(ctx context.Context, v LLMSettings) error {
+	_, err := s.Pool.Exec(ctx, `INSERT INTO llm_settings(id, mode, preset_id, base_url, model, api_key_enc, vision_model, allow_vision, updated_at) VALUES (1,$1,$2,$3,$4,$5,$6,$7,now())
+		ON CONFLICT (id) DO UPDATE SET mode=$1, preset_id=$2, base_url=$3, model=$4, api_key_enc=$5, vision_model=$6, allow_vision=$7, updated_at=now()`, v.Mode, v.PresetID, v.BaseURL, v.Model, v.APIKeyEnc, v.VisionModel, v.AllowVision)
+	return err
 }

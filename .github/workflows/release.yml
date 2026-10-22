@@ -1,0 +1,58 @@
+name: Release build
+# Builds the Windows distribution (Electron installer + portable zip + server zip) and the Linux release.
+# Artifacts are uploaded only for tag pushes (v*) and manual runs; nothing is published and no secrets are required.
+# Optional signing: add repository secrets CSC_LINK (base64 PFX) and CSC_KEY_PASSWORD and they are picked up automatically.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Worker virtualenv
+        shell: pwsh
+        run: |
+          python -m venv workers/document-ai/.venv
+          workers/document-ai/.venv/Scripts/python -m pip install -r workers/document-ai/requirements.txt pyinstaller
+      - name: Build Windows distribution
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist-windows.ps1
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          name: oa-agent-windows
+          path: dist/release/*/*
+          if-no-files-found: error
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build Linux release
+        run: bash scripts/dist-linux.sh
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          name: oa-agent-linux
+          path: dist/release/*/*
+          if-no-files-found: error

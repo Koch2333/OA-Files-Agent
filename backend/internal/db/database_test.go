@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,7 +38,7 @@ func TestPostgresMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(context.Background())
-	schema := "oa_test_" + time.Now().Format("20060102150405_000000000")
+	schema := "oa_test_" + fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Int63())
 	quoted := pgx.Identifier{schema}.Sanitize()
 	if _, err = conn.Exec(ctx, "CREATE SCHEMA "+quoted); err != nil {
 		t.Fatal(err)
@@ -83,7 +85,7 @@ func TestMigrateDirAppliesAllVersionsAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(context.Background())
-	schema := "oa_test_dir_" + time.Now().Format("20060102150405_000000000")
+	schema := "oa_test_dir_" + fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Int63())
 	quoted := pgx.Identifier{schema}.Sanitize()
 	if _, err = conn.Exec(ctx, "CREATE SCHEMA "+quoted); err != nil {
 		t.Fatal(err)

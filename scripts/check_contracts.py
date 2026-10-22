@@ -97,6 +97,8 @@ def main():
             if r.get("body") is None:
                 continue
             path = r["path"].split("?")[0]
+            if path.startswith("/v1/test/"):
+                continue  # faultinject-only test hooks (build tag), never part of the contract
             match = next((p for rx, p in routes if rx.match(path)), None)
             if match is None:
                 raise ValueError(f"Recorded call {r['method']} {path} is not in the contract")
@@ -105,6 +107,12 @@ def main():
                 if r["status"] == 405:
                     continue
                 raise ValueError(f"{r['method']} {match} not documented")
+            globals_ = spec.get("x-global-errors", {}).get(str(r["status"]), [])
+            if r["body"].get("error", {}).get("code") in globals_ and response_schema(spec, match, method, r["status"])[1]:
+                # cross-cutting errors (401 UNAUTHENTICATED, 403 FORBIDDEN/CSRF_INVALID/CROSS_ORIGIN, 503 SETUP_REQUIRED) are valid on any route
+                check_schema({"$ref": "#/components/schemas/Error"}, r["body"])
+                seen.add((match, method, str(r["status"])))
+                continue
             schema, err = response_schema(spec, match, method, r["status"])
             if err:
                 raise ValueError(err + f" (recorded body: {str(r['body'])[:200]})")

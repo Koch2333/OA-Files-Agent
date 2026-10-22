@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+# OA Agent document-AI worker (python-docx, openpyxl, PyMuPDF, RapidOCR/onnxruntime).
+# Build context = repository root.  NOTE: PyMuPDF is AGPL-3.0 (see docs/THIRD-PARTY-LICENSES.md).
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim-bookworm AS deps
+ARG PIP_INDEX_URL=
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY workers/document-ai/requirements.txt /tmp/requirements.txt
+RUN python -m venv /opt/venv && PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple}" /opt/venv/bin/pip install -r /tmp/requirements.txt
+
+FROM python:${PYTHON_VERSION}-slim-bookworm
+ARG OA_VERSION=dev
+LABEL org.opencontainers.image.title="oa-agent-worker" org.opencontainers.image.version="${OA_VERSION}" \
+      org.opencontainers.image.licenses="AGPL-3.0"
+# libgl1/libglib2.0-0: opencv; libgomp1: onnxruntime/numpy threading; tzdata + CA certs for completeness.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libgomp1 tzdata ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd -g 10001 oa && useradd -u 10001 -g oa -M -d /nonexistent -s /usr/sbin/nologin oa \
+ && mkdir -p /data/spool && chown oa:oa /data/spool
+COPY --from=deps /opt/venv /opt/venv
+COPY workers/document-ai/*.py /app/
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp \
+    OA_WORKER_PORT=8090 \
+    OA_SPOOL_ROOT=/data/spool
+WORKDIR /app
+USER 10001:10001
+# The worker binds 127.0.0.1 only: in compose it shares the API container's network namespace.
+HEALTHCHECK --interval=20s --timeout=10s --start-period=90s --retries=5 \
+  CMD ["python", "-c", "import os,sys,urllib.request as u;r=u.Request('http://127.0.0.1:%s/healthz'%os.environ.get('OA_WORKER_PORT','8090'),headers={'Authorization':'Bearer '+os.environ['OA_WORKER_TOKEN']});sys.exit(0 if u.urlopen(r,timeout=8).status==200 else 1)"]
+CMD ["python", "server.py"]

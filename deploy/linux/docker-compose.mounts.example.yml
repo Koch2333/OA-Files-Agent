@@ -1,0 +1,21 @@
+# EXAMPLE of what "oa-agentctl mounts apply" generates as <installdir>/docker-compose.mounts.yml from this mounts.json:
+#   {"version":1,"archive":{"host":"/srv/oa/archive"},"spool":{"host":"/srv/oa/spool"},"app":{"host":"/srv/oa/app"},
+#    "pgdata":{"host":"/srv/oa/pgdata"},"extra":[{"name":"nas1","host":"/mnt/nas1","container":"/mnt/storage/nas1","readonly":true}]}
+# Used by CI (docker compose config) and by the offline tests. Compose merges "volumes" lists by container path,
+# so each entry below REPLACES the base fallback for the same target.
+services:
+  postgres:
+    volumes:
+      - /srv/oa/pgdata:/var/lib/postgresql/data
+  api:
+    environment:
+      OA_LOCAL_ROOTS: /mnt/storage
+    volumes:
+      - /srv/oa/app:/data
+      - /srv/oa/spool:/data/spool
+      - /srv/oa/archive:/data/archive
+      - /mnt/nas1:/mnt/storage/nas1:ro
+  worker:
+    volumes:
+      - /srv/oa/spool:/data/spool
+      - /srv/oa/archive:/data/archive:ro

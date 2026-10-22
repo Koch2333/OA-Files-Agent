@@ -1,0 +1,15 @@
+# generated — do not edit. Source of truth: mounts.json; regenerate with "oa-agentctl mounts apply".
+# Compose merges "volumes" lists by container path, so each entry replaces the base file's fallback.
+services:
+  postgres:
+    volumes:
+      - /srv/oa/pgdata:/var/lib/postgresql/data
+  api:
+    volumes:
+      - /srv/oa/app:/data
+      - /srv/oa/spool:/data/spool
+      - /srv/oa/archive:/data/archive
+  worker:
+    volumes:
+      - /srv/oa/spool:/data/spool
+      - /srv/oa/archive:/data/archive:ro

@@ -1,10 +1,7 @@
 import { onScopeDispose, ref, shallowRef } from 'vue'
-import { ApiError } from '../api/types'
+import { errMsg } from './errorInfo'
 
-export function errMsg(e: unknown): string {
-  if (e instanceof ApiError) return e.requestId ? `${e.message}（请求 ID：${e.requestId}）` : e.message
-  return e instanceof Error ? e.message : String(e)
-}
+export { errMsg }
 
 /** 统一 loading / error / data 状态；并丢弃过期请求的结果。 */
 export function useAsync<T>(fn: () => Promise<T>) {

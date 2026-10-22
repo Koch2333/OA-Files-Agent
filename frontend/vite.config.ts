@@ -7,6 +7,7 @@ const target = process.env.OA_API_TARGET ?? 'http://127.0.0.1:8080'
 
 export default defineConfig({
   plugins: [vue()],
+  define: { __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? 'dev') },
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   server: {
     port: 5173,

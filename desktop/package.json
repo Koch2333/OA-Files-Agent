@@ -1,0 +1,19 @@
+{
+  "name": "oa-agent-desktop",
+  "productName": "OA 文件智能归档",
+  "version": "0.1.0",
+  "description": "OA 文件智能归档 —— Windows 桌面版（Electron 外壳 + 本机后端，单用户免登录）",
+  "author": "OA Agent",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/diagnose.test.js test/workdir.test.js",
+    "icons": "node scripts/make-icons.js"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.15.3"
+  }
+}

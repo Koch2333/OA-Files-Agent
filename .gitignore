@@ -8,3 +8,11 @@ data/
 dist/
 node_modules/
 .venv/
+backend/bin/
+
+# Local editor settings and machine-specific secrets.
+.idea/
+oa-agent.env
+
+# Authentication screenshots may contain setup tokens, MFA seeds or recovery codes.
+frontend/e2e/screenshots/auth-*.png

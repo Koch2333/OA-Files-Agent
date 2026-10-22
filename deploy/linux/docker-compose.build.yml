@@ -1,0 +1,19 @@
+# Overlay: build the images from the source tree (default). OA_SRC_DIR is the repository root
+# (install.sh sets it to ./src inside the install dir; running from a checkout: ../..).
+services:
+  api:
+    build:
+      context: ${OA_SRC_DIR:-../..}
+      dockerfile: deploy/docker/Dockerfile.api
+      args:
+        OA_VERSION: ${OA_VERSION:-dev}
+        OA_COMMIT: ${OA_COMMIT:-unknown}
+        GOPROXY: ${OA_BUILD_GOPROXY:-https://proxy.golang.org,direct}
+        NPM_REGISTRY: ${OA_BUILD_NPM_REGISTRY:-}
+  worker:
+    build:
+      context: ${OA_SRC_DIR:-../..}
+      dockerfile: deploy/docker/Dockerfile.worker
+      args:
+        OA_VERSION: ${OA_VERSION:-dev}
+        PIP_INDEX_URL: ${OA_BUILD_PIP_INDEX:-}

@@ -14,7 +14,7 @@ import (
 )
 
 // SchemaVersion is the newest migration this build expects.
-const SchemaVersion = 2
+const SchemaVersion = 10
 
 // Connect never includes the connection string in errors returned to callers.
 func Connect(ctx context.Context, url string) (*pgx.Conn, error) {

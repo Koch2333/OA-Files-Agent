@@ -4,7 +4,7 @@ import "time"
 
 // Options configures an Agent. Zero values select safe defaults.
 type Options struct {
-	MaxTurns        int           // model round trips (default 8)
+	MaxTurns        int           // model round trips (default 14: the OCR rescue path alone needs ~10 turns)
 	MaxFailures     int           // tool/format failures tolerated (default 3)
 	MaxContextChars int           // total characters sent to the model across turns (default 120000)
 	MaxTokens       int           // total provider-reported tokens; 0 = unlimited
@@ -21,6 +21,11 @@ type Options struct {
 
 	// CheckDuplicates enables the check_duplicates tool when non-nil.
 	CheckDuplicates DuplicateChecker
+	// Vision returns the vision transcriber, or nil when vision is disabled.
+	// It is called each time vision is considered so settings can change
+	// without a restart. read_page_image also needs an Extractor that
+	// implements PageRenderer.
+	Vision func() VisionTranscriber
 	// Now is the clock for date plausibility (default time.Now).
 	Now func() time.Time
 }
@@ -34,7 +39,7 @@ const (
 
 func (o Options) withDefaults() Options {
 	if o.MaxTurns <= 0 {
-		o.MaxTurns = 8
+		o.MaxTurns = 14
 	}
 	if o.MaxFailures <= 0 {
 		o.MaxFailures = 3

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"oa-agent/backend/internal/diag"
 )
 
 // Layout is the standalone directory structure relative to the executable.
@@ -33,6 +35,9 @@ type Layout struct {
 
 func NewLayout(root string) Layout {
 	d := filepath.Join(root, "data")
+	if v := os.Getenv("OA_DATA_DIR"); v != "" { // writable data outside the program directory (per-user desktop install)
+		d = v
+	}
 	return Layout{
 		Root: root, Web: filepath.Join(root, "web"), WorkerExe: filepath.Join(root, "worker", exeName("document-worker")),
 		PGDir: filepath.Join(root, "pgsql"), Migrations: filepath.Join(root, "migrations"),
@@ -123,38 +128,53 @@ func StartWorker(ctx context.Context, l Layout) (*Worker, error) {
 		return nil, err
 	}
 	w := &Worker{URL: fmt.Sprintf("http://127.0.0.1:%d", port), Token: randomHex(24)}
+	trackWorker(w)
 	cctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
-	env := append(os.Environ(), "OA_WORKER_TOKEN="+w.Token, "OA_SPOOL_ROOT="+l.Spool, fmt.Sprintf("OA_WORKER_PORT=%d", port))
+	archiveRoot := os.Getenv("OA_ARCHIVE_ROOT")
+	if archiveRoot == "" {
+		archiveRoot = l.Archive
+	}
+	env := append(os.Environ(), "OA_WORKER_TOKEN="+w.Token, "OA_SPOOL_ROOT="+l.Spool, fmt.Sprintf("OA_WORKER_PORT=%d", port), "OA_ALLOWED_ROOTS="+archiveRoot) // the worker may preview (read-only) the archive in addition to the spool
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
-		backoff := time.Second
-		for cctx.Err() == nil {
-			lf, _ := logFile(l.Logs, "worker.log")
-			cmd := exec.CommandContext(cctx, l.WorkerExe)
-			cmd.Env, cmd.Dir = env, filepath.Dir(l.WorkerExe)
-			if lf != nil {
-				cmd.Stdout, cmd.Stderr = lf, lf
+		// diag.Loop keeps the supervision alive even if something in this loop panics (recorded as a report).
+		diag.Loop(cctx, "worker.supervise", func(cctx context.Context) {
+			backoff := time.Second
+			for cctx.Err() == nil {
+				lf, _ := logFile(l.Logs, "worker.log")
+				cmd := exec.CommandContext(cctx, l.WorkerExe)
+				cmd.Env, cmd.Dir = env, filepath.Dir(l.WorkerExe)
+				if lf != nil {
+					cmd.Stdout, cmd.Stderr = lf, lf
+				}
+				hide(cmd)
+				start := time.Now()
+				runErr := cmd.Run()
+				if lf != nil {
+					lf.Close()
+				}
+				if cctx.Err() == nil {
+					msg := "文档解析 Worker 进程意外退出，将自动重启"
+					if runErr != nil {
+						msg += "：" + runErr.Error()
+					}
+					diag.Report(context.Background(), diag.Entry{Source: "worker", Code: "WORKER_EXITED", Message: msg, Details: map[string]any{"ran_seconds": int(time.Since(start).Seconds()), "restart_in_seconds": int(backoff.Seconds())}})
+				}
+				if time.Since(start) > 30*time.Second {
+					backoff = time.Second
+				}
+				select {
+				case <-cctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
 			}
-			hide(cmd)
-			start := time.Now()
-			_ = cmd.Run()
-			if lf != nil {
-				lf.Close()
-			}
-			if time.Since(start) > 30*time.Second {
-				backoff = time.Second
-			}
-			select {
-			case <-cctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-		}
+		})
 	}()
 	return w, nil
 }

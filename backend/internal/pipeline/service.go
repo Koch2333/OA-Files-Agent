@@ -16,8 +16,11 @@ import (
 
 	"oa-agent/backend/internal/api"
 	"oa-agent/backend/internal/archive"
+	"oa-agent/backend/internal/diag"
 	"oa-agent/backend/internal/harness"
 	"oa-agent/backend/internal/imports"
+	"oa-agent/backend/internal/llm"
+	"oa-agent/backend/internal/logx"
 	"oa-agent/backend/internal/store"
 )
 
@@ -36,7 +39,18 @@ type Config struct {
 	ProviderName string
 	Model        string
 	ProviderOK   bool
-	Poll         time.Duration
+	// ProviderInfo, when set, reports the live recognition engine (name, model, state) instead of the static fields.
+	ProviderInfo func() (name, model, state string)
+	// Models resolves the model a task runs with from the task's stored llm_source/llm_owner (implemented by
+	// llm.Manager). nil: every task uses the Analyzer's own provider (unit tests).
+	Models ModelResolver
+	Poll   time.Duration
+}
+
+// ModelResolver turns a task's stored model binding into a provider. There is no fallback between sources: an
+// error means the task's model is gone and its files fail with the error text.
+type ModelResolver interface {
+	TaskProvider(ctx context.Context, source, owner string) (llm.TaskModel, error)
 }
 
 type Service struct {
@@ -71,17 +85,25 @@ func New(cfg Config) (*Service, error) {
 func (s *Service) Run(ctx context.Context) {
 	if n, err := s.exec.Recover(ctx); err != nil {
 		log.Printf("archive recovery: %v", err)
+		reportError("pipeline", "ARCHIVE_RECOVERY_FAILED", "启动时的归档恢复失败", err)
 	} else if n > 0 {
 		log.Printf("archive recovery removed %d orphaned staging files", n)
 	}
 	if n, err := s.cfg.Store.RecoverJobs(ctx); err != nil {
 		log.Printf("job recovery: %v", err)
+		reportError("pipeline", "JOB_RECOVERY_FAILED", "启动时的任务恢复失败", err)
 	} else if n > 0 {
 		log.Printf("re-queued %d interrupted jobs", n)
 	}
 	if ids, err := s.cfg.Store.RecoverArchiving(ctx); err == nil {
 		for _, id := range ids {
-			go s.resumeExecution(ctx, id)
+			diag.Go("pipeline.resume", func() { s.resumeExecution(ctx, id) })
+		}
+	}
+	// Automatic plans that were approved but never executed (crash right after planning).
+	if refs, err := s.cfg.Store.RecoverAutoPlans(ctx); err == nil {
+		for _, r := range refs {
+			diag.Go("pipeline.resume_auto", func() { s.resumeAuto(ctx, r) })
 		}
 	}
 	var wg sync.WaitGroup
@@ -89,7 +111,7 @@ func (s *Service) Run(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.loop(ctx)
+			diag.Loop(ctx, "pipeline.loop", s.loop)
 		}()
 	}
 	wg.Wait()
@@ -104,10 +126,16 @@ func (s *Service) loop(ctx context.Context) {
 			if err != nil {
 				if !errors.Is(err, store.ErrNotFound) && ctx.Err() == nil {
 					log.Printf("claim job: %v", err)
+					reportError("pipeline", "CLAIM_JOB_FAILED", "领取任务失败（数据库不可用？）", err)
 				}
 				break
 			}
-			s.process(ctx, job)
+			// A panic while processing fails this one task with a numbered message; the worker loop and the process live on.
+			if id := diag.SafeD("pipeline.process", map[string]any{"task_id": job.ID}, func() { s.process(ctx, job) }); id != "" {
+				msg := diag.UserMessage(id)
+				_ = s.cfg.Store.FailJob(context.WithoutCancel(ctx), job.ID, msg)
+				s.event(context.WithoutCancel(ctx), job.ID, "failed", "task_failed", nil, msg, nil)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -124,9 +152,14 @@ func (s *Service) event(ctx context.Context, taskID, phase, typ string, fileID *
 }
 
 func (s *Service) process(ctx context.Context, job imports.Job) {
+	logx.Debugf("job picked up: %s", job.ID)
+	if processHook != nil {
+		processHook(job)
+	}
 	st := s.cfg.Store
 	fail := func(msg string, err error) {
 		log.Printf("job %s: %s: %v", job.ID, msg, err)
+		reportTask("pipeline", "JOB_FAILED", msg, err, job.ID, "", nil)
 		_ = st.FailJob(context.WithoutCancel(ctx), job.ID, msg)
 		s.event(context.WithoutCancel(ctx), job.ID, "failed", "task_failed", nil, msg, nil)
 	}
@@ -175,6 +208,11 @@ func (s *Service) process(ctx context.Context, job imports.Job) {
 		fail("读取文件列表失败", err)
 		return
 	}
+	// The model is fixed by the task row, never by whoever is logged in now (this goroutine has no HTTP user).
+	tm, merr := s.taskModel(ctx, job)
+	if merr != nil {
+		reportError("llm", "TASK_MODEL_UNAVAILABLE", "任务绑定的大模型不可用（来源："+job.LLMSource+"）", merr)
+	}
 	sem := make(chan struct{}, s.cfg.FileParallel)
 	var wg sync.WaitGroup
 	for _, f := range files {
@@ -187,12 +225,29 @@ func (s *Service) process(ctx context.Context, job imports.Job) {
 		if cancelled() {
 			break
 		}
+		if merr != nil {
+			// No fallback to another model: the file fails with a clear reason and can be retried after the cause is fixed.
+			msg := userMessage(merr)
+			_ = st.SaveAnalysis(ctx, f.ID, store.AnalysisResult{ReviewRequired: true, Error: &msg})
+			fid := f.ID
+			s.event(ctx, job.ID, "analyzing", "file_failed", &fid, f.SourceName+"："+msg, nil)
+			_ = st.Progress(ctx, job.ID)
+			continue
+		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(f imports.File) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			s.analyzeOne(ctx, job.ID, f, tpls)
+			// A panic fails this one file with a numbered message instead of killing the process.
+			meta := map[string]any{"task_id": job.ID, "file_id": f.ID, "ext": filepath.Ext(f.SourceName), "size_bytes": f.SizeBytes}
+			if id := diag.SafeD("pipeline.analyze", meta, func() { s.analyzeOne(ctx, job, f, tpls, tm) }); id != "" {
+				msg := diag.UserMessage(id)
+				fid := f.ID
+				_ = st.SaveAnalysis(ctx, f.ID, store.AnalysisResult{ReviewRequired: true, Error: &msg})
+				s.event(ctx, job.ID, "analyzing", "file_failed", &fid, f.SourceName+"："+msg, nil)
+				_ = st.Progress(ctx, job.ID)
+			}
 		}(f)
 	}
 	wg.Wait()
@@ -211,12 +266,42 @@ func (s *Service) fileProcessed(ctx context.Context, id string) (bool, error) {
 	return p, err
 }
 
-func (s *Service) analyzeOne(ctx context.Context, taskID string, f imports.File, tpls []harness.Template) {
+// taskModel resolves the model a task is bound to and records the model that actually runs it.
+func (s *Service) taskModel(ctx context.Context, job imports.Job) (llm.TaskModel, error) {
+	if s.cfg.Models == nil {
+		return llm.TaskModel{}, nil
+	}
+	tm, err := s.cfg.Models.TaskProvider(ctx, job.LLMSource, job.LLMOwner)
+	if err != nil {
+		return tm, err
+	}
+	if job.LLMSource != imports.SourceNone && tm.Model != "" && tm.Model != job.LLMModel {
+		_ = s.cfg.Store.SetJobModel(ctx, job.ID, tm.Model)
+	}
+	s.event(ctx, job.ID, "analyzing", "model_selected", nil, modelSummary(job, tm.Model), map[string]any{"llm_source": job.LLMSource, "model": tm.Model, "automation": job.Automation, "instruction": job.Instruction != ""})
+	return tm, nil
+}
+
+func modelSummary(job imports.Job, model string) string {
+	switch job.LLMSource {
+	case imports.SourcePersonal:
+		return "使用创建者的个人大模型：" + model
+	case imports.SourceGlobal:
+		return "使用全局大模型：" + model
+	}
+	return "未使用大模型：离线规则识别"
+}
+
+func (s *Service) analyzeOne(ctx context.Context, job imports.Job, f imports.File, tpls []harness.Template, tm llm.TaskModel) {
+	taskID := job.ID
 	fid := f.ID
 	emit := func(e harness.Event) {
 		s.event(ctx, taskID, e.Phase, e.Type, &fid, e.Summary, e.Details)
 	}
-	res, err := s.cfg.Analyzer.AnalyzeFile(ctx, harness.FileInput{FileID: f.ID, SourceName: f.SourceName, SourcePath: f.SourcePath, MIMEType: f.MIMEType, StoredPath: f.StoredPath}, tpls, emit)
+	started := time.Now()
+	res, err := s.cfg.Analyzer.AnalyzeFile(ctx, harness.FileInput{FileID: f.ID, SourceName: f.SourceName, SourcePath: f.SourcePath, MIMEType: f.MIMEType, StoredPath: f.StoredPath,
+		Instruction: job.Instruction, Provider: tm.Provider, Vision: tm.Vision}, tpls, emit)
+	logx.Debugf("analyze file=%s task=%s ext=%s took=%s err=%v", f.ID, taskID, filepath.Ext(f.SourceName), time.Since(started).Round(time.Millisecond), err)
 	if ctx.Err() != nil {
 		return
 	}
@@ -231,6 +316,7 @@ func (s *Service) analyzeOne(ctx context.Context, taskID string, f imports.File,
 		}
 	}
 	if err != nil {
+		s.reportAnalyzeFailure(job, f, err)
 		msg := userMessage(err)
 		_ = s.cfg.Store.SaveAnalysis(ctx, f.ID, store.AnalysisResult{ReviewRequired: true, Error: &msg})
 		s.event(ctx, taskID, "analyzing", "file_failed", &fid, f.SourceName+"："+msg, nil)
@@ -244,8 +330,13 @@ func (s *Service) analyzeOne(ctx context.Context, taskID string, f imports.File,
 		}
 	}
 	an := map[string]any{"trace": res.Trace, "warnings": res.Warnings}
+	if res.OCR != nil && res.OCR.Used {
+		an["ocr"] = res.OCR
+		ocr = true
+	}
 	if err := s.cfg.Store.SaveAnalysis(ctx, f.ID, store.AnalysisResult{Department: res.Department, DocumentType: res.DocumentType, DocumentDate: res.DocumentDate, Evidence: res.Evidence, ReviewRequired: res.ReviewRequired, TemplateID: res.TemplateID, OCRUsed: ocr, Analysis: an}); err != nil {
 		log.Printf("save analysis: %v", err)
+		reportTask("pipeline", "SAVE_ANALYSIS_FAILED", "保存识别结果失败", err, taskID, f.ID, nil)
 		return
 	}
 	_ = s.cfg.Store.Progress(ctx, taskID)
@@ -262,6 +353,10 @@ func strOr(p *string) string {
 
 // userMessage turns analysis errors into short, non-sensitive Chinese messages.
 func userMessage(err error) string {
+	var tme *llm.TaskModelError
+	if errors.As(err, &tme) {
+		return tme.Msg
+	}
 	var we *harness.WorkerError
 	if errors.As(err, &we) {
 		switch we.Code {
@@ -317,6 +412,11 @@ func (s *Service) activeRule(ctx context.Context) (store.Rule, archive.Rule) {
 
 func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 	st := s.cfg.Store
+	if cur, err := st.GetJob(ctx, job.ID); err == nil {
+		job = cur // the model recorded at the start of analysis
+	}
+	// Fully automatic archiving only ever runs on top of a real model; the API guarantees it, this keeps it true.
+	auto := job.Automation == imports.AutomationAuto && job.LLMSource != imports.SourceNone
 	_ = st.SetJobStatus(ctx, job.ID, "planning")
 	s.event(ctx, job.ID, "planning", "phase_started", nil, "按规则生成标准文件名与归档路径", nil)
 	files, err := st.JobFiles(ctx, job.ID)
@@ -367,12 +467,19 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 	for _, p := range planned {
 		f := meta[p.FileID]
 		warns := append(append([]string{}, renderWarn[p.FileID]...), p.Warnings...)
+		duplicate := false
 		if prev, ok, _ := st.ArchivedByHash(ctx, f.SHA256); ok {
 			warns = append(warns, "与已归档文件内容相同："+prev)
+			duplicate = true
 		}
 		review := f.ReviewRequired || f.Department == nil || f.DocumentType == nil || f.Date == nil
 		if review {
 			warns = append(warns, "字段置信度低或信息缺失，需人工确认")
+		}
+		if auto && duplicate && !review {
+			// a repeated import is a human decision, never an automatic one
+			review = true
+			warns = append(warns, "全自动模式：内容与已归档文件相同，需人工确认是否重复归档")
 		}
 		items = append(items, store.PlanItem{FileID: f.ID, OriginalName: f.SourceName, SuggestedName: p.Name, SourcePath: f.SourcePath, DestinationPath: p.Rel, Department: f.Department, DocumentType: f.DocumentType, DocumentDate: f.Date, Warnings: warns, ReviewRequired: review})
 	}
@@ -380,9 +487,25 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 	if stored.ID != "" {
 		ruleID = &stored.ID
 	}
+	if auto {
+		var ready, left []store.PlanItem
+		for _, it := range items {
+			if it.ReviewRequired {
+				left = append(left, it)
+			} else {
+				ready = append(ready, it)
+			}
+		}
+		if len(ready) > 0 {
+			s.planAndRunAuto(ctx, job, ruleID, ready, left)
+			return
+		}
+		s.event(ctx, job.ID, "planning", "auto_nothing_ready", nil, "全自动模式：模型没有能够完全确定的条目，未自动归档任何文件，全部转人工审核", map[string]any{"automation": "auto", "model": job.LLMModel})
+	}
 	plan, err := st.CreatePlan(ctx, job.ID, ruleID, items)
 	if err != nil {
 		log.Printf("create plan: %v", err)
+		reportTask("pipeline", "CREATE_PLAN_FAILED", "生成归档计划失败", err, job.ID, "", nil)
 		_ = st.FailJob(ctx, job.ID, "生成归档计划失败")
 		return
 	}
@@ -434,6 +557,10 @@ func (s *Service) ValidateRule(r store.Rule) error {
 }
 
 func (s *Service) Providers() []api.ProviderStatus {
+	if s.cfg.ProviderInfo != nil {
+		n, m, st := s.cfg.ProviderInfo()
+		return []api.ProviderStatus{{Name: n, Model: m, State: st}}
+	}
 	state := "ok"
 	if !s.cfg.ProviderOK {
 		state = "unconfigured"
@@ -455,13 +582,18 @@ func (s *Service) planLock(id string) *sync.Mutex {
 }
 
 func (s *Service) ExecutePlan(ctx context.Context, planID, key, actor string) (store.Plan, error) {
+	return s.executePlan(ctx, planID, key, actor, store.DecisionManual, "")
+}
+
+// executePlan runs a plan; decision/model mark who decided (a human approval, or the model in automatic mode).
+func (s *Service) executePlan(ctx context.Context, planID, key, actor, decision, model string) (store.Plan, error) {
 	l := s.planLock(planID)
 	l.Lock()
 	defer l.Unlock()
 	// A client disconnect must not abort a half-finished archive run; the journal makes re-runs safe anyway.
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
 	defer cancel()
-	op, plan, replay, err := s.cfg.Store.BeginExecution(dctx, planID, key)
+	op, plan, replay, err := s.cfg.Store.BeginExecutionAs(dctx, planID, key, decision, model)
 	if err != nil {
 		return plan, err
 	}
@@ -489,7 +621,12 @@ func (s *Service) run(ctx context.Context, op store.Operation, plan store.Plan, 
 		}
 		ops = append(ops, archive.Op{OpID: op.ID, FileID: it.FileID, SourceStored: f.StoredPath, DestRel: it.DestinationPath, Sha256: f.SHA256})
 	}
-	s.event(ctx, plan.TaskID, "archiving", "phase_started", nil, fmt.Sprintf("开始归档 %d 个文件", len(ops)), nil)
+	auto := op.Decision == store.DecisionAIAuto
+	if auto {
+		s.event(ctx, plan.TaskID, "archiving", "auto_archive_started", nil, fmt.Sprintf("全自动模式：未经人工审批，按模型 %s 的判断开始归档 %d 个文件", op.DecisionModel, len(ops)), map[string]any{"automation": "auto", "model": op.DecisionModel, "operation_id": op.ID})
+	} else {
+		s.event(ctx, plan.TaskID, "archiving", "phase_started", nil, fmt.Sprintf("开始归档 %d 个文件", len(ops)), nil)
+	}
 	res := s.exec.Execute(ctx, ops)
 	out := make([]store.OpResult, 0, len(res))
 	for _, r := range res {
@@ -506,11 +643,20 @@ func (s *Service) run(ctx context.Context, op store.Operation, plan store.Plan, 
 		}
 	}
 	s.cfg.Store.Audit(ctx, actor, "plan.execute", plan.ID, fmt.Sprintf("执行归档：成功 %d / %d", published, len(out)))
+	if auto {
+		s.cfg.Store.Audit(ctx, actor, "ai.auto_archive.executed", plan.ID, fmt.Sprintf("全自动归档：任务 %s，成功 %d / %d，模型 %s，操作 %s", plan.TaskID, published, len(out), op.DecisionModel, op.ID))
+	}
 	typ := "archive_completed"
 	if published < len(out) {
 		typ = "archive_partial"
 	}
-	s.event(ctx, plan.TaskID, "archiving", typ, nil, fmt.Sprintf("已归档 %d/%d 个文件并写入台账", published, len(out)), map[string]any{"operation_id": op.ID})
+	summary := fmt.Sprintf("已归档 %d/%d 个文件并写入台账", published, len(out))
+	details := map[string]any{"operation_id": op.ID}
+	if auto {
+		summary = fmt.Sprintf("全自动模式：已自动归档 %d/%d 个文件并写入台账（模型 %s 决定；可在操作历史中撤销）", published, len(out), op.DecisionModel)
+		details["automation"], details["model"] = "auto", op.DecisionModel
+	}
+	s.event(ctx, plan.TaskID, "archiving", typ, nil, summary, details)
 	return done, nil
 }
 
@@ -526,9 +672,58 @@ func (s *Service) resumeExecution(ctx context.Context, planID string) {
 	if err != nil {
 		return
 	}
-	if _, err := s.run(ctx, op, plan, "系统恢复"); err != nil {
-		log.Printf("resume execution %s: %v", planID, err)
+	actor := "系统恢复"
+	if op.Decision == store.DecisionAIAuto && plan.ApprovedBy != nil {
+		actor = *plan.ApprovedBy
 	}
+	if _, err := s.run(ctx, op, plan, actor); err != nil {
+		log.Printf("resume execution %s: %v", planID, err)
+		reportError("pipeline", "RESUME_EXECUTION_FAILED", "恢复归档执行失败", err)
+	}
+}
+
+// planAndRunAuto stores the automatic plan (+ a leftover plan for items that need a human) and executes the former.
+func (s *Service) planAndRunAuto(ctx context.Context, job imports.Job, ruleID *string, ready, left []store.PlanItem) {
+	st := s.cfg.Store
+	actor := "ai-auto:" + job.AckBy
+	auto, leftover, err := st.CreateAutoPlans(ctx, job.ID, ruleID, ready, left, actor)
+	if err != nil {
+		reportError("pipeline", "AUTO_PLAN_FAILED", "生成全自动归档计划失败", err)
+		_ = st.FailJob(ctx, job.ID, "生成归档计划失败")
+		return
+	}
+	details := map[string]any{"plan_id": auto.ID, "automation": "auto", "model": job.LLMModel, "auto_items": len(ready), "pending_items": len(left)}
+	summary := fmt.Sprintf("全自动模式：%d 项已由模型 %s 完全确定，将自动归档", len(ready), job.LLMModel)
+	if leftover != nil {
+		details["pending_plan_id"] = leftover.ID
+		summary += fmt.Sprintf("；%d 项未能确定，保留在待审核计划中", len(left))
+	}
+	s.event(ctx, job.ID, "planning", "auto_plan_ready", nil, summary, details)
+	if c, err := st.CancelRequested(ctx, job.ID); err == nil && c {
+		// cancelled while planning: nothing has been written yet
+		_ = st.SetJobStatus(ctx, job.ID, "cancelled")
+		s.event(ctx, job.ID, "cancelled", "task_cancelled", nil, "任务已取消", nil)
+		return
+	}
+	s.runAuto(ctx, job, auto.ID)
+}
+
+// runAuto executes an approved automatic plan under the actor ai-auto:<username> and an idempotency key derived from
+// the task, so a repeated call (crash recovery) can never archive twice.
+func (s *Service) runAuto(ctx context.Context, job imports.Job, planID string) {
+	actor := "ai-auto:" + job.AckBy
+	if _, err := s.executePlan(ctx, planID, "auto:"+job.ID, actor, store.DecisionAIAuto, job.LLMModel); err != nil {
+		reportError("pipeline", "AUTO_EXECUTE_FAILED", "全自动归档执行失败", err)
+		s.event(context.WithoutCancel(ctx), job.ID, "archiving", "auto_archive_failed", nil, "全自动归档未能完成，请在任务中查看并手动处理", map[string]any{"automation": "auto"})
+	}
+}
+
+func (s *Service) resumeAuto(ctx context.Context, ref store.AutoPlanRef) {
+	job, err := s.cfg.Store.GetJob(ctx, ref.TaskID)
+	if err != nil || job.Automation != imports.AutomationAuto {
+		return
+	}
+	s.runAuto(ctx, job, ref.PlanID)
 }
 
 func (s *Service) Rollback(ctx context.Context, opID, actor string) error {
@@ -538,6 +733,15 @@ func (s *Service) Rollback(ctx context.Context, opID, actor string) error {
 	}
 	if op.Status != "completed" {
 		return &api.ExecError{Status: 409, Code: "INVALID_STATE", Msg: "仅已完成的归档操作可以恢复"}
+	}
+	cur, err := s.cfg.Store.OperationLedger(ctx, op.ID)
+	if err != nil {
+		return err
+	}
+	for _, r := range op.Results {
+		if l, ok := cur[r.FileID]; ok && r.Status != archive.StatusFailed && (l.Status != "archived" || l.Path != r.FinalRel) {
+			return &api.ExecError{Status: 409, Code: "FILES_CHANGED", Msg: "部分文件已在文件管理中被移动、重命名或删除，不能整体撤销；请在文件管理中单独处理"}
+		}
 	}
 	res := make([]archive.OpResult, 0, len(op.Results))
 	for _, r := range op.Results {

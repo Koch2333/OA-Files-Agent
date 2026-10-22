@@ -1,0 +1,57 @@
+name: Linux deployment
+on:
+  push:
+    paths: ['deploy/**', '.dockerignore', '.github/workflows/deploy.yml']
+  pull_request:
+    paths: ['deploy/**', '.dockerignore', '.github/workflows/deploy.yml']
+permissions:
+  contents: read
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n and shellcheck
+        run: |
+          for f in deploy/linux/install.sh deploy/linux/oa-agentctl.sh deploy/linux/build-release.sh deploy/linux/test/run.sh; do bash -n "$f"; done
+          shellcheck -x -S warning deploy/linux/install.sh deploy/linux/oa-agentctl.sh deploy/linux/build-release.sh
+      - name: Offline installer / ctl tests (fake docker shims)
+        run: bash deploy/linux/test/run.sh
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config for every layer combination
+        working-directory: deploy/linux
+        run: |
+          cp .env.example .env
+          sed -i -e 's/^OA_POSTGRES_PASSWORD=.*/OA_POSTGRES_PASSWORD=ci0123456789abcdef0123456789abcd/' \
+                 -e 's/^OA_WORKER_TOKEN=.*/OA_WORKER_TOKEN=ci0123456789abcdef0123456789abcdef0123456789ab/' \
+                 -e 's/^OA_SECRET_KEY=.*/OA_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/' .env
+          cp docker-compose.mounts.example.yml docker-compose.mounts.yml
+          touch Caddyfile
+          for cf in \
+            docker-compose.yml:docker-compose.mounts.yml \
+            docker-compose.yml:docker-compose.mounts.yml:docker-compose.build.yml \
+            docker-compose.yml:docker-compose.mounts.yml:docker-compose.https.yml:docker-compose.build.yml; do
+            echo "== $cf"; COMPOSE_FILE="$cf" docker compose config --quiet
+          done
+          # the loopback rule: worker must share the api network namespace and publish nothing
+          COMPOSE_FILE=docker-compose.yml:docker-compose.mounts.yml docker compose config | grep -q 'network_mode: service:api'
+
+  images:
+    # builds only; nothing is pushed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        run: docker build -f deploy/docker/Dockerfile.api -t oa-agent-api:ci --build-arg OA_VERSION=ci .
+      - name: Build worker image
+        run: docker build -f deploy/docker/Dockerfile.worker -t oa-agent-worker:ci --build-arg OA_VERSION=ci .
+      - name: Worker image smoke test (imports)
+        run: docker run --rm --entrypoint python oa-agent-worker:ci -c "import fitz, docx, openpyxl, cv2, onnxruntime, rapidocr_onnxruntime; print('ok')"
+      - name: Release script (needs backend/cmd/oa-agentctl)
+        run: |
+          if [ -d backend/cmd/oa-agentctl ]; then bash deploy/linux/build-release.sh --version ci --out "$RUNNER_TEMP/release"; else echo "backend/cmd/oa-agentctl not present yet: skipped"; fi

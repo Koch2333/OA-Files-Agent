@@ -1,0 +1,83 @@
+[
+  {
+    "id": "deepseek",
+    "name": "DeepSeek（深度求索）",
+    "description": "OpenAI 兼容接口，性价比高，推荐默认选择。",
+    "base_url": "https://api.deepseek.com",
+    "models": [
+      {"id": "deepseek-flash", "label": "deepseek-flash", "note": "V4.1 Flash：快速、低成本，支持工具调用与图片，推荐"},
+      {"id": "deepseek-v4-pro", "label": "deepseek-v4-pro", "note": "V4 Pro：更强推理；不支持图片"}
+    ],
+    "default_model": "deepseek-flash",
+    "needs_api_key": true,
+    "docs_url": "https://api-docs.deepseek.com/",
+    "vision_models": [
+      {"id": "deepseek-flash", "label": "deepseek-flash", "note": "支持图片输入"}
+    ],
+    "checked_at": "2026-10-22",
+    "note": "模型名称更新较快；以“获取模型列表”返回的结果为准。"
+  },
+  {
+    "id": "qwen",
+    "name": "通义千问（阿里云百炼）",
+    "description": "DashScope OpenAI 兼容模式（北京地域）。",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "models": [
+      {"id": "qwen3.8-max", "label": "qwen3.8-max", "note": "旗舰，效果最好"},
+      {"id": "qwen3.7-plus", "label": "qwen3.7-plus", "note": "效果与成本均衡，推荐"},
+      {"id": "qwen3.8-flash", "label": "qwen3.8-flash", "note": "速度快、成本低"}
+    ],
+    "default_model": "qwen3.7-plus",
+    "needs_api_key": true,
+    "docs_url": "https://help.aliyun.com/zh/model-studio/",
+    "vision_models": [
+      {"id": "qwen3.7-plus", "label": "qwen3.7-plus", "note": "支持图片理解"},
+      {"id": "qwen3.8-max", "label": "qwen3.8-max", "note": "支持图片理解"}
+    ],
+    "checked_at": "2026-10-22",
+    "note": "密钥与地域绑定；国际站或专属工作区的 Base URL 不同，请在控制台复制后填入。模型以控制台和“获取模型列表”为准。"
+  },
+  {
+    "id": "openai",
+    "name": "OpenAI",
+    "description": "官方接口。",
+    "base_url": "https://api.openai.com/v1",
+    "models": [],
+    "default_model": "",
+    "needs_api_key": true,
+    "docs_url": "https://platform.openai.com/docs",
+    "vision_models": [],
+    "checked_at": "2026-10-22",
+    "note": "模型更新频繁，这里不预设；请点击“获取模型列表”选择，或直接输入模型名。"
+  },
+  {
+    "id": "ollama",
+    "name": "Ollama（本机模型）",
+    "description": "文档内容不出本机；需先在本机运行 Ollama 并拉取支持工具调用的模型。",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "models": [
+      {"id": "qwen3.8:27b", "label": "qwen3.8:27b", "note": "支持工具调用、图片与思考；需较大显存，可换更小的标签"}
+    ],
+    "default_model": "qwen3.8:27b",
+    "needs_api_key": false,
+    "docs_url": "https://ollama.com/",
+    "vision_models": [
+      {"id": "qwen3.8:27b", "label": "qwen3.8:27b", "note": "支持图片输入"}
+    ],
+    "checked_at": "2026-10-22",
+    "note": "也可使用任何已 ollama pull 且支持工具调用的模型；本机模型的名称以 ollama list 为准。"
+  },
+  {
+    "id": "custom",
+    "name": "自定义（OpenAI 兼容）",
+    "description": "任意提供 /chat/completions 的服务：vLLM、LM Studio、公司内部网关等。",
+    "base_url": "",
+    "models": [],
+    "default_model": "",
+    "needs_api_key": false,
+    "docs_url": "",
+    "vision_models": [],
+    "checked_at": "2026-10-22",
+    "note": "Base URL 通常以 /v1 结尾；公网地址必须使用 https。"
+  }
+]

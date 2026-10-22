@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAuth } from '../stores/auth'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api, ApiError, type ArchivePlan, type ArchivePlanItem } from '../api'
 import { errMsg, useAsync } from '../utils/useAsync'
@@ -8,12 +9,15 @@ import PageHeader from '../components/PageHeader.vue'
 import StateView from '../components/StateView.vue'
 import Icon from '../components/Icon.vue'
 import Dialog from '../components/Dialog.vue'
+import FilePreview from '../components/FilePreview.vue'
 
+const auth = useAuth()
 const props = defineProps<{ id: string }>()
 const ui = useUi()
 const plan = useAsync(() => api.getPlan(props.id))
 const busy = ref<'' | 'approve' | 'execute' | 'save'>('')
 const editing = ref<ArchivePlanItem | null>(null)
+const previewing = ref<ArchivePlanItem | null>(null)
 const form = reactive({ department: '', document_type: '', document_date: '', suggested_name: '', destination_path: '' })
 const formErr = ref<string | null>(null)
 const filter = ref<'all' | 'attention'>('all')
@@ -92,13 +96,13 @@ async function execute() {
           <span class="muted mono">v{{ p.version }}</span>
         </div>
         <div class="seg" role="group" aria-label="筛选"><button :aria-pressed="filter === 'all'" @click="filter = 'all'">全部</button><button :aria-pressed="filter === 'attention'" @click="filter = 'attention'">需关注 {{ attention.length }}</button></div>
-        <button class="btn outlined has-icon" :disabled="p.status !== 'awaiting_review' && p.status !== 'draft' || !!busy || !!blocking" :title="blocking ? '请先处理待人工确认的条目' : ''" @click="approve"><Icon :name="busy === 'approve' ? 'progress_activity' : 'verified'" :class="{ spin: busy === 'approve' }" sm />批准计划</button>
-        <button v-if="p.status === 'executed' && p.operation_id && api.capabilities.rollback" class="btn outlined danger has-icon" :disabled="!!busy" @click="confirmRollback = true"><Icon name="undo" sm />撤销本次归档</button>
-        <button class="btn filled has-icon" :disabled="p.status !== 'approved' || !!busy" :title="p.status !== 'approved' ? '计划批准后才能执行' : ''" @click="confirmExec = true"><Icon :name="busy === 'execute' ? 'progress_activity' : 'inventory_2'" :class="{ spin: busy === 'execute' }" sm />执行归档</button>
+        <button v-if="auth.canWrite" class="btn outlined has-icon" :disabled="p.status !== 'awaiting_review' && p.status !== 'draft' || !!busy || !!blocking" :title="blocking ? '请先处理待人工确认的条目' : ''" @click="approve"><Icon :name="busy === 'approve' ? 'progress_activity' : 'verified'" :class="{ spin: busy === 'approve' }" sm />批准计划</button>
+        <button v-if="auth.canWrite && p.operation_id && api.capabilities.rollback" class="btn outlined danger has-icon" :disabled="!!busy" @click="confirmRollback = true"><Icon name="undo" sm />撤销本次归档</button>
+        <button v-if="auth.canWrite" class="btn filled has-icon" :disabled="p.status !== 'approved' || !!busy" :title="p.status !== 'approved' ? '计划批准后才能执行' : ''" @click="confirmExec = true"><Icon :name="busy === 'execute' ? 'progress_activity' : 'inventory_2'" :class="{ spin: busy === 'execute' }" sm />执行归档</button>
       </section>
 
       <div v-if="blocking" class="banner" style="margin-bottom: 16px"><Icon name="rule" /><div>有 {{ blocking }} 项因置信度低或信息缺失被标为待审核。请点击“修订”补全，系统不会替你虚构字段。</div></div>
-      <div v-if="p.status === 'executed'" class="banner info" style="margin-bottom: 16px"><Icon name="check_circle" /><div>归档已完成。<RouterLink to="/ledger">在台账中查看</RouterLink></div></div>
+      <div v-if="p.status === 'executed'" class="banner info" style="margin-bottom: 16px"><Icon name="check_circle" /><div>归档已完成。<RouterLink to="/ledger">在台账中查看</RouterLink><template v-if="p.items.length"> · <RouterLink :to="{ path: '/manage', query: { path: dirOf(p.items[0].destination_path).replace(/\/$/, '') } }">在文件管理中查看</RouterLink></template></div></div>
 
       <div class="card flat">
         <StateView :empty="!rows.length" empty-title="没有符合筛选条件的条目" empty-icon="fact_check">
@@ -111,7 +115,7 @@ async function execute() {
                   <td class="diff mono"><div class="old"><Icon name="remove" sm /><span class="ellipsis">{{ dirOf(it.source_path) }}{{ baseOf(it.source_path) }}</span></div><div class="new"><Icon name="add" sm /><span class="ellipsis"><span class="muted">{{ dirOf(it.destination_path) }}</span>{{ baseOf(it.destination_path) }}</span></div></td>
                   <td class="nowrap"><div>{{ it.department ?? '—' }} · {{ it.document_type ?? '—' }}</div><div class="muted">{{ it.document_date ?? '日期待审核' }}</div></td>
                   <td><div class="col" style="gap: 4px"><span v-if="it.review_required" class="chip error">待人工确认</span><span v-for="(w, i) in it.warnings" :key="i" class="chip attention" style="height: auto; padding: 2px 10px; white-space: normal">{{ w }}</span></div></td>
-                  <td><button class="btn sm outlined" :disabled="locked" @click="edit(it)">修订</button></td>
+                  <td class="nowrap"><button class="btn icon-only sm" :aria-label="'预览 ' + it.original_name" title="预览原件" data-testid="plan-preview" @click="previewing = it"><Icon name="visibility" sm /></button><button v-if="auth.canWrite" class="btn sm outlined" :disabled="locked" @click="edit(it)">修订</button></td>
                 </tr>
               </tbody>
             </table>
@@ -121,6 +125,7 @@ async function execute() {
     </template>
   </StateView>
 
+  <FilePreview v-if="previewing" :source="{ kind: 'file', id: previewing.file_id }" :name="previewing.original_name" @close="previewing = null" />
   <Dialog v-if="editing" title="人工修订" width="620px" @close="editing = null">
     <p class="muted">{{ editing.original_name }}</p>
     <div class="row wrap">

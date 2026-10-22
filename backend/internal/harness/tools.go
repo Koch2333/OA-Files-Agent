@@ -30,13 +30,32 @@ type Session struct {
 
 	tpl       *Template
 	tplReason string
+
+	// Skill and OCR-rescue state.
+	loaded      map[string]bool // skills unlocked via load_skill
+	emit        func(Event)
+	textFromOCR bool     // the session text came from OCR or vision
+	ocrBest     *ocrCand // best OCR candidate by score
+	ocrAttempts int      // total OCR runs (run_ocr + reruns)
+	reruns      int      // rerun_ocr calls (cap maxOCRReruns)
+	tried       map[string]bool
+	visionReads int // read_page_image calls (cap maxVisionReads)
+	visionUsed  bool
+	verdict     string // last computed OCR verdict
+}
+
+func (s *Session) emitEvent(typ, summary string, details map[string]any) {
+	if s.emit != nil {
+		s.emit(Event{Phase: "analyze", Type: typ, Summary: summary, Details: details})
+	}
 }
 
 func newSession(f FileInput, tpls []Template, ext Extractor, o Options) *Session {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return &Session{file: f, templates: tpls, ext: ext, opts: o, nonce: hex.EncodeToString(b[:]),
-		eng: &engine{departments: o.Departments, types: o.DocumentTypes, now: o.Now()}}
+		eng:    &engine{departments: o.Departments, types: o.DocumentTypes, now: o.Now()},
+		loaded: map[string]bool{}, tried: map[string]bool{}}
 }
 
 // wrapDocument delimits untrusted document text. Forged delimiter sequences
@@ -99,8 +118,13 @@ func (s *Session) runExtract(ctx context.Context, ocr bool, maxChars int) (any, 
 	if err != nil {
 		return nil, err
 	}
-	// OCR output replaces the text only if it adds content.
-	if !ocr || utf8.RuneCountInString(strings.TrimSpace(res.Text)) >= utf8.RuneCountInString(strings.TrimSpace(s.text)) {
+	if ocr {
+		// OCR output replaces the text only if it adds content (first run) or
+		// scores higher than the best OCR text kept so far (repeat runs).
+		s.ocrAttempts++
+		s.tried["default"] = true
+		s.offerOCR(s.newCand(res, "default"))
+	} else if !s.textFromOCR {
 		s.text = res.Text
 		s.pages = len(res.Pages)
 		s.truncated = res.Truncated
@@ -311,5 +335,7 @@ func NewDefaultRegistry(o Options) *Registry {
 				"normalized": map[string]any{"department": res.Department, "document_type": res.DocumentType, "document_date": res.DocumentDate, "evidence": res.Evidence}}, nil
 		},
 	})
+	registerOCRTools(r, o)
+	registerLoadSkill(r, o)
 	return r
 }

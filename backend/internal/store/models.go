@@ -75,11 +75,14 @@ type LedgerEntry struct {
 	SHA256        string    `json:"sha256"`
 	TaskID        string    `json:"task_id"`
 	Status        string    `json:"status"`
+	Decision      string    `json:"decision"`
+	DecisionModel string    `json:"decision_model"`
 	ExecutedAt    time.Time `json:"executed_at"`
 }
 
 type LedgerFilter struct {
 	Q, Department, Type, DateFrom, DateTo, Sort, Order string
+	Decision                                           string // manual | ai_auto | "" (all)
 }
 
 type FileFilter struct {
@@ -159,11 +162,13 @@ type OpResult struct {
 }
 
 type Operation struct {
-	ID      string
-	PlanID  string
-	Key     string
-	Status  string
-	Results []OpResult
+	Decision      string // manual | ai_auto
+	DecisionModel string
+	ID            string
+	PlanID        string
+	Key           string
+	Status        string
+	Results       []OpResult
 }
 
 // AnalysisResult is what the pipeline stores for one analysed file.

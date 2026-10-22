@@ -6,13 +6,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
+	"oa-agent/backend/internal/auth"
+	"oa-agent/backend/internal/diag"
 	"oa-agent/backend/internal/imports"
 	"oa-agent/backend/internal/store"
 )
@@ -52,6 +57,28 @@ type Deps struct {
 	Backend Backend
 	// StaticDir, when set, serves the built frontend (SPA fallback to index.html) for non-API GET requests.
 	StaticDir string
+	// Files enables the file-manager routes (/v1/fs/*).
+	Files FileManager
+	// LLM enables the recognition-engine settings routes (/v1/llm/*).
+	LLM LLMManager
+	// Preview enables the in-app document preview routes.
+	Preview Previewer
+	// Storage enables the optional storage-connection routes (/v1/storage/*, /v1/imports/remote).
+	Storage StorageManager
+	// StrictLocal rejects requests whose Host header is not a loopback name (DNS-rebinding defence); set when
+	// the server listens on a loopback address. AllowedHosts adds extra accepted host names.
+	StrictLocal  bool
+	AllowedHosts []string
+	// Auth enables login, sessions, roles, the setup wizard and the admin-user API. nil means no authentication at all
+	// (unit tests only; cmd/oa-agent always wires it when a database is configured).
+	Auth *auth.Service
+	// TrustedProxy (OA_TRUSTED_PROXY=1) makes X-Forwarded-For / X-Forwarded-Proto count for client address and Secure cookies.
+	TrustedProxy bool
+	// CORSOrigins is the exact-origin allow-list for browser pages served from another origin (e.g. the Vite dev server).
+	// Empty means same-origin only: no CORS headers are sent. Validate with NormalizeOrigins.
+	CORSOrigins []string
+	// Diag carries process facts for the diagnostics routes (/v1/admin/system, the diagnostic bundle).
+	Diag DiagInfo
 }
 
 type ctxKey struct{}
@@ -59,16 +86,25 @@ type ctxKey struct{}
 const maxJSONBody = 1 << 20
 
 type Server struct {
-	d   Deps
-	mux *http.ServeMux
+	d      Deps
+	eng    *gin.Engine
+	routes map[string]map[string]bool // Gin pattern → registered methods (authz and the route-table test)
+
+	clientMu  sync.Mutex
+	clientLim *diag.Limiter
 }
 
 // New keeps the M0 signature: health/readiness/docs only.
 func New(checks ...DependencyCheck) http.Handler { return NewServer(Deps{Checks: checks}) }
 
 func NewServer(d Deps) http.Handler {
-	s := &Server{d: d, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/", s.notFound)
+	s := newServer(d)
+	return http.HandlerFunc(debugRequests(s.serve))
+}
+
+func newServer(d Deps) *Server {
+	s := &Server{d: d, routes: map[string]map[string]bool{}}
+	s.eng = s.newEngine()
 	s.handle("/healthz", map[string]http.HandlerFunc{"GET": s.health})
 	s.handle("/readyz", map[string]http.HandlerFunc{"GET": s.ready})
 	s.handle("/docs", map[string]http.HandlerFunc{"GET": s.docs})
@@ -76,11 +112,40 @@ func NewServer(d Deps) http.Handler {
 	if d.Store != nil && d.Backend != nil && d.Imports != nil {
 		s.business()
 	}
-	return http.HandlerFunc(s.serve)
+	if d.Files != nil {
+		s.fsRoutes()
+	}
+	if d.LLM != nil && d.Store != nil {
+		s.llmRoutes()
+	}
+	if d.Preview != nil {
+		s.previewRoutes()
+	}
+	if d.Storage != nil && d.Store != nil {
+		s.storageRoutes()
+	}
+	if d.Auth != nil && d.Store != nil {
+		s.setupRoutes()
+		s.authRoutes()
+		s.adminUserRoutes()
+		s.diagRoutes()
+		s.faultRoutes()
+	}
+	return s
 }
 
 func (s *Server) handle(pattern string, m map[string]http.HandlerFunc) {
-	s.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+	gp := ginPath(pattern)
+	if s.routes == nil {
+		s.routes = map[string]map[string]bool{}
+	}
+	if s.routes[gp] == nil {
+		s.routes[gp] = map[string]bool{}
+	}
+	for method := range m {
+		s.routes[gp][method] = true
+	}
+	s.eng.Any(ginPath(pattern), wrap(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := m[r.Method]
 		if !ok && r.Method == http.MethodHead {
 			h, ok = m[http.MethodGet]
@@ -96,7 +161,7 @@ func (s *Server) handle(pattern string, m map[string]http.HandlerFunc) {
 			return
 		}
 		h(w, r)
-	})
+	}))
 }
 
 func sortStrings(a []string) {
@@ -116,7 +181,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	rid := hex.EncodeToString(id[:])
 	w.Header().Set("X-Request-ID", rid)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	s.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, rid)))
+	r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, rid))
+	if !s.guard(w, r) {
+		return
+	}
+	s.eng.ServeHTTP(w, r)
 }
 
 func requestID(r *http.Request) string { v, _ := r.Context().Value(ctxKey{}).(string); return v }
@@ -130,6 +199,13 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, status int, code, msg string, details map[string]any) {
+	if status >= 500 && code != "SETUP_REQUIRED" && code != "NOT_SUPPORTED" {
+		details = s.recordServerError(r, status, code, msg, "", details)
+	}
+	s.writeFail(w, r, status, code, msg, details)
+}
+
+func (s *Server) writeFail(w http.ResponseWriter, r *http.Request, status int, code, msg string, details map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	e := map[string]any{"code": code, "message": msg, "request_id": requestID(r)}
@@ -137,6 +213,57 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, status int, code, 
 		e["details"] = details
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": e})
+}
+
+// internal answers 500 INTERNAL and records the underlying error (redacted, with the route) as an error report; the
+// response carries the request id and, in details, the report id.
+func (s *Server) internal(w http.ResponseWriter, r *http.Request, public string, err error) {
+	cause := ""
+	if err != nil {
+		cause = err.Error()
+	}
+	s.writeFail(w, r, 500, "INTERNAL", public, s.recordServerError(r, 500, "INTERNAL", public, cause, nil))
+}
+
+// routeOf is the matched route pattern ("/v1/files/:id"), or the raw path when no route matched.
+func routeOf(r *http.Request) string {
+	if v := r.PathValue("_route"); v != "" {
+		return v
+	}
+	return r.URL.Path
+}
+
+// recordServerError stores a 5xx as an error report (grouped per route + code + message) and returns details with the
+// report id added. Reports are coalesced and rate limited inside diag, so a failing hot path cannot flood the database.
+func (s *Server) recordServerError(r *http.Request, status int, code, msg, cause string, details map[string]any) map[string]any {
+	source := "api"
+	switch code {
+	case "UPSTREAM_ERROR":
+		source = "storage"
+		if strings.HasPrefix(r.URL.Path, "/v1/llm") {
+			source = "llm"
+		}
+	case "PREVIEW_UNAVAILABLE":
+		source = "worker"
+	}
+	text := fmt.Sprintf("%s %s → %d %s: %s", r.Method, routeOf(r), status, code, msg)
+	if cause != "" {
+		text += ": " + cause
+	}
+	user := ""
+	if id, ok := identityOf(r); ok {
+		user = id.User.Username
+	}
+	id := diag.Report(r.Context(), diag.Entry{Source: source, Code: code, Message: text, RequestID: requestID(r), User: user,
+		Details: map[string]any{"route": routeOf(r), "method": r.Method, "status": status}})
+	out := make(map[string]any, len(details)+1)
+	for k, v := range details {
+		out[k] = v
+	}
+	if id != "" {
+		out["report_id"] = id
+	}
+	return out
 }
 
 func (s *Server) ok(w http.ResponseWriter, status int, data any) {
@@ -163,8 +290,7 @@ func (s *Server) storeErr(w http.ResponseWriter, r *http.Request, err error, wha
 	case errors.Is(err, context.Canceled):
 		s.fail(w, r, 499, "CANCELED", "请求已取消", nil)
 	default:
-		log.Printf("internal error (request %s): %v", requestID(r), err)
-		s.fail(w, r, 500, "INTERNAL", "内部错误", nil)
+		s.internal(w, r, "内部错误", err)
 	}
 }
 
@@ -198,8 +324,6 @@ func pageParams(r *http.Request) (int, int) {
 	return page, size
 }
 
-func actorOf(r *http.Request) string { return "本地用户" } // 认证占位：接入 SSO/RBAC 后替换
-
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	s.ok(w, 200, map[string]string{"status": "ok"})
 }
@@ -228,7 +352,11 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		if s.d.Checks[i] != nil {
 			pending++
 			states[i] = "timeout"
-			go func(index int, check DependencyCheck) { results <- result{index, check(ctx)} }(i, s.d.Checks[i])
+			go func(index int, check DependencyCheck) {
+				st := "error"
+				diag.Safe("api.ready_check", func() { st = check(ctx) })
+				results <- result{index, st}
+			}(i, s.d.Checks[i])
 		}
 	}
 	for pending > 0 {

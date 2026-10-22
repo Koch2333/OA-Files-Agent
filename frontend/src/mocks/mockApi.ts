@@ -5,8 +5,16 @@
 import {
   ApiError, type AgentEvent, type Api, type ArchivePlan, type ArchivePlanItem, type ArchiveRule, type AuditLog,
   type CorrectionProposal, type FileQuery, type FileRecord, type ImportJob, type LedgerEntry, type LedgerQuery,
-  type OATemplate, type Page, type PickedFile, type TaskStatus,
+  type LlmConfig, type LlmPreset, type OATemplate, type Page, type PickedFile, type TaskStatus, type ImportOptions,
 } from '../api/types'
+import { MockFs } from './mockFs'
+import { keyHint, validateBaseUrl } from '../utils/llm'
+import { mockPageUrl, mockPreview } from './mockPreview'
+import { basename } from '../utils/fsPaths'
+import { MockStorage } from './mockStorage'
+import { createMockAuth, type MockAuthCtl } from './mockAuth'
+import { createMockAi } from './mockAi'
+import { createMockDiag } from './mockDiag'
 
 const delay = (ms = 250) => new Promise((r) => setTimeout(r, ms))
 const uid = () => crypto.randomUUID()
@@ -31,12 +39,56 @@ const plans = new Map<string, ArchivePlan>()
 const ledger: LedgerEntry[] = []
 const runtime = new Map<string, TaskRuntime>()
 const audit: AuditLog[] = []
+/** 归档操作 → 发布的条目（回滚用）。auto=全自动发布：回滚后条目回到计划中等待人工审核。 */
+const opStore = new Map<string, { planId: string; taskId: string; items: ArchivePlanItem[]; auto: boolean }>()
+const mockFs = new MockFs(ledger)
+const storage = new MockStorage({ importFn: (picked, o) => mockApi.createImport(picked, { options: o?.options }), archivedPaths: () => ledger.map((l) => l.archive_path) })
 const templates: OATemplate[] = [
   { id: uid(), name: '集团通用 OA 模板', enabled: true, priority: 10, created_at: iso(30), match_rules: { filename_keywords: ['通知', '合同', '报表'], text_keywords: ['文号', '签发'] }, field_mappings: { department: '发文部门', document_type: '文种', date_source: 'ocr_text' } },
   { id: uid(), name: '财务报销单模板', enabled: false, priority: 20, created_at: iso(12), match_rules: { filename_keywords: ['报销', '发票'], text_keywords: ['报销人'] }, field_mappings: { department: '报销部门', document_type: '申请', date_source: 'filename' } },
 ]
+interface PresetSpec { id: string; name: string; description: string; note: string; base_url: string; models: [string, string][]; default_model?: string; needs_api_key?: boolean; vision?: [string, string][]; docs_url?: string }
+const preset = (p: PresetSpec): LlmPreset => ({
+  id: p.id, name: p.name, description: p.description, note: p.note, checked_at: '2026-10-22', base_url: p.base_url,
+  models: p.models.map(([id, label]) => ({ id, label })), default_model: p.default_model ?? p.models[0]?.[0] ?? '',
+  needs_api_key: p.needs_api_key ?? true, vision_models: (p.vision ?? []).map(([id, label]) => ({ id, label })), docs_url: p.docs_url ?? '',
+})
+const LLM_PRESETS: LlmPreset[] = [
+  preset({ id: 'deepseek', name: 'DeepSeek', description: '性价比高，中文公文识别效果好', note: '推荐 deepseek-flash（支持工具调用与图片）；deepseek-v4-pro 不支持图片输入。', base_url: 'https://api.deepseek.com', docs_url: 'https://api-docs.deepseek.com',
+    models: [['deepseek-flash', '推荐 · 支持工具与图片'], ['deepseek-v4-pro', '不支持图片']], vision: [['deepseek-flash', '支持图片']] }),
+  preset({ id: 'qwen', name: '通义千问（百炼）', description: '阿里云百炼', note: '国际站或工作空间的 Base URL 因账号而异，请从百炼控制台复制。', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', docs_url: 'https://help.aliyun.com/zh/model-studio/',
+    models: [['qwen3.8-max', '效果最强'], ['qwen3.7-plus', '推荐 · 均衡'], ['qwen3.8-flash', '速度快']], default_model: 'qwen3.7-plus', vision: [['qwen3.7-plus', '视觉均衡'], ['qwen3.8-max', '视觉最强']] }),
+  preset({ id: 'openai', name: 'OpenAI', description: 'OpenAI 官方接口', note: '模型更新很快，未内置建议，请点击刷新获取可用模型或直接输入。', base_url: 'https://api.openai.com/v1', docs_url: 'https://platform.openai.com/docs/models', models: [] }),
+  preset({ id: 'ollama', name: 'Ollama 本机', description: '本地模型，文档不出本机，无需密钥', note: '需先在本机 ollama pull 对应模型。', base_url: 'http://127.0.0.1:11434/v1', docs_url: 'https://ollama.com/library',
+    models: [['qwen3.8:27b', '本地示例']], needs_api_key: false, vision: [['qwen3.8:27b', '本地示例']] }),
+  preset({ id: 'custom', name: '自定义', description: '任意 OpenAI 兼容服务', note: '填写服务商的 Base URL 与模型名。', base_url: '', models: [], needs_api_key: false }),
+]
+let llmKey = ''
+// 浏览器里默认“全局已配置”以便直接演示 AI 工作台；没有 location（单元测试）时为未配置，保持既有测试的前提
+const MOCK_LLM = ((typeof location === 'undefined' ? 'none' : new URLSearchParams(location.search).get('mock_llm')) || 'global') as 'none' | 'global' | 'personal'
+let llmConfig: LlmConfig = MOCK_LLM === 'none'
+  ? { mode: 'heuristic', preset_id: 'deepseek', base_url: '', model: '', api_key_set: false, api_key_hint: '', vision_model: '', allow_vision: false, state: 'ok', updated_at: null }
+  : { mode: 'llm', preset_id: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', api_key_set: true, api_key_hint: '••••demo', vision_model: '', allow_vision: false, state: 'ok', updated_at: iso(2) }
+if (MOCK_LLM !== 'none') llmKey = 'sk-demo-global'
+const authCtl: MockAuthCtl = {}
+const mockAi = createMockAi({
+  role: () => authCtl.currentRole?.() ?? null, globalCfg: () => llmConfig, presets: LLM_PRESETS,
+  models: (url) => (LLM_PRESETS.find((p) => p.base_url.replace(/\/+$/, '') === url.trim().replace(/\/+$/, ''))?.models ?? []).map((m) => m.id),
+  audit: (actor, action, target, summary) => { audit.unshift({ id: uid(), timestamp: now(), actor, action, target, summary }) },
+}, MOCK_LLM)
+const mockDiag = createMockDiag()
+
 const rules: ArchiveRule[] = [
   { id: uid(), name: '默认命名与目录', naming_pattern: '{date}_{department}_{type}_{original}', directory_pattern: '{department}/{year}/{type}', enabled: true },
+]
+
+type Ocr = NonNullable<FileRecord['ocr']>
+/** 演示 OCR 摘要：多数为 null（原生文本无需 OCR），一个“一般”（增强重试 2 次），一个“差”。 */
+const SEED_OCR: (Ocr | null)[] = [
+  null, null,
+  { used: true, quality: 'fair', mean_confidence: 0.74, profile: 'enhanced', attempts: 2, vision_used: false },
+  null, null,
+  { used: true, quality: 'poor', mean_confidence: 0.41, profile: 'binarize', attempts: 3, vision_used: false },
 ]
 
 function seed() {
@@ -47,12 +99,65 @@ function seed() {
     const d = DEPTS[[2, 1, 3, 0, 0, 3][i]], ty = TYPES[[0, 2, 1, 3, 2, 3][i]]
     const date = `2026-0${(i % 3) + 1}-${10 + i}`
     const id = uid()
-    files.set(id, { id, task_id: t.id, source_name: n, source_path: `导入/${n}`, mime_type: mimeOf(n), sha256: sha(), size_bytes: 40000 + i * 13000, detected_department: d, detected_type: ty, detected_date: date, evidence: [`文件名包含“${n.slice(0, 4)}”`, 'OCR/正文抽取：落款部门及日期匹配'], review_required: false, archive_status: 'archived', error: null, created_at: t.created_at })
-    ledger.push({ id: uid(), status: 'archived' as const, original_name: n, canonical_name: `${date}_${d}_${ty}_${n}`, department: d, document_type: ty, document_date: date, archive_path: `归档/${d}/2026/${ty}/${date}_${d}_${ty}_${n}`, sha256: files.get(id)!.sha256, task_id: t.id, executed_at: iso(3) })
+    files.set(id, { id, task_id: t.id, source_name: n, source_path: `导入/${n}`, mime_type: mimeOf(n), sha256: sha(), size_bytes: 40000 + i * 13000, detected_department: d, detected_type: ty, detected_date: date, evidence: [`文件名包含“${n.slice(0, 4)}”`, 'OCR/正文抽取：落款部门及日期匹配'], review_required: false, archive_status: 'archived', error: null, ocr: SEED_OCR[i] ?? null, created_at: t.created_at })
+    ledger.push({ id: uid(), status: 'archived' as const, original_name: n, canonical_name: `${date}_${d}_${ty}_${n}`, department: d, document_type: ty, document_date: date, archive_path: `归档/${d}/2026/${ty}/${date}_${d}_${ty}_${n}`, sha256: files.get(id)!.sha256, task_id: t.id, decision: 'manual', executed_at: iso(3) })
   })
   audit.push({ id: uid(), timestamp: iso(3), actor: '演示用户', action: 'plan.execute', target: t.id, summary: '执行归档计划，6 个文件' })
 }
 seed()
+
+/** 一个已完成的全自动任务：3 个已归档（台账标记“全自动”），1 个留待人工审核，可演示“撤销本次全自动归档”。 */
+function seedAuto() {
+  const model = llmConfig.mode === 'llm' ? llmConfig.model : 'deepseek-flash'
+  const t: ImportJob = { id: uid(), status: 'awaiting_review', total_files: 4, processed_files: 4, success_count: 4, failure_count: 0, plan_id: null, instruction: '只处理采购相关文件，按项目名归档；把扫描件单独标记待审核', automation: 'auto', llm_source: 'global', llm_model: model, created_at: iso(0.2), updated_at: iso(0.2) }
+  tasks.set(t.id, t)
+  const specs: [string, string, string, string, boolean][] = [['采购合同-A项目.docx', '采购部', '合同', '2026-05-12', false], ['供应商报价单.xlsx', '采购部', '报表', '2026-05-20', false], ['验收通知.pdf', '采购部', '通知', '2026-06-01', false], ['扫描件-0618.pdf', '', '', '', true]]
+  const archivedItems: ArchivePlanItem[] = [], left: ArchivePlanItem[] = []
+  for (const [n, d, ty, date, review] of specs) {
+    const id = uid(), name = review ? n : `${date}_${d}_${ty}_${n}`
+    const f: FileRecord = { id, task_id: t.id, source_name: n, source_path: `采购/${n}`, mime_type: mimeOf(n), sha256: sha(), size_bytes: 64000, detected_department: review ? null : d, detected_type: review ? null : ty, detected_date: review ? null : date, evidence: [review ? '按任务说明：扫描件标记为待审核' : `文件名：${n}`], review_required: review, archive_status: review ? 'pending' : 'archived', error: null, ocr: null, created_at: t.created_at }
+    files.set(id, f)
+    const item: ArchivePlanItem = { file_id: id, original_name: n, suggested_name: name, source_path: f.source_path, destination_path: review ? `归档/待审核/${n}` : `归档/${d}/2026/${ty}/${name}`, department: f.detected_department, document_type: f.detected_type, document_date: f.detected_date, warnings: review ? ['按任务说明标记为待审核'] : [], review_required: review }
+    if (review) left.push(item)
+    else {
+      archivedItems.push(item)
+      ledger.push({ id: uid(), status: 'archived' as const, original_name: n, canonical_name: name, department: d, document_type: ty, document_date: date, archive_path: item.destination_path, sha256: f.sha256, task_id: t.id, decision: 'ai_auto', decision_model: model, executed_at: iso(0.2) })
+    }
+  }
+  const op = uid()
+  const plan: ArchivePlan = { id: uid(), task_id: t.id, items: left, status: 'awaiting_review', version: 1, requires_approval: true, approved_by: null, approved_at: null, operation_id: op }
+  plans.set(plan.id, plan)
+  tasks.set(t.id, { ...t, plan_id: plan.id })
+  opStore.set(op, { planId: plan.id, taskId: t.id, items: archivedItems, auto: true })
+  runtime.set(t.id, { events: [], timers: [], listeners: new Set(), seq: 0 })
+  emit(t.id, { phase: 'planning', event_type: 'tool_call', summary: `classify_documents · 模型 ${model}（按任务说明）` })
+  emit(t.id, { phase: 'archiving', event_type: 'archive_completed', summary: '全自动归档完成：已归档 3 个，1 个留待人工审核' })
+}
+
+seedAuto()
+
+/** 开发演示：`?mock_tasks=all` 为每种任务状态各建一个静态任务（含计划），用来查看 AgentProgress 的全部形态。 */
+function seedAllStatuses() {
+  const all: TaskStatus[] = ['queued', 'scanning', 'extracting', 'analyzing', 'planning', 'awaiting_review', 'approved', 'archiving', 'completed', 'partial_failure', 'failed', 'cancelled']
+  all.forEach((status, i) => {
+    const total = 10
+    const processed = { queued: 0, scanning: 2, extracting: 4, analyzing: 6, planning: 10 }[status as string] ?? 10
+    const t: ImportJob = { id: uid(), status, total_files: total, processed_files: processed, success_count: status === 'completed' ? total : 0, failure_count: status === 'partial_failure' ? 2 : status === 'failed' ? 3 : 0, plan_id: null, created_at: iso(0.05 + i * 0.01), updated_at: iso(0.05 + i * 0.01) }
+    tasks.set(t.id, t)
+    runtime.set(t.id, { events: [], timers: [], listeners: new Set(), seq: 0 })
+    if (['awaiting_review', 'approved', 'archiving', 'partial_failure'].includes(status)) {
+      const items: ArchivePlanItem[] = ['采购合同-演示.docx', '会议通知-演示.pdf'].map((n) => {
+        const id = uid()
+        files.set(id, { id, task_id: t.id, source_name: n, source_path: `演示/${status}/${n}`, mime_type: mimeOf(n), sha256: sha(), size_bytes: 52000, detected_department: '采购部', detected_type: '合同', detected_date: '2026-06-01', evidence: [`文件名：${n}`], review_required: false, archive_status: 'pending', error: null, ocr: null, created_at: t.created_at })
+        return { file_id: id, original_name: n, suggested_name: `2026-06-01_采购部_合同_${n}`, source_path: `演示/${status}/${n}`, destination_path: `归档/采购部/2026/合同/2026-06-01_采购部_合同_${n}`, department: '采购部', document_type: '合同', document_date: '2026-06-01', warnings: [], review_required: false }
+      })
+      const plan: ArchivePlan = { id: uid(), task_id: t.id, items, status: status === 'awaiting_review' ? 'awaiting_review' : 'approved', version: 1, requires_approval: true, approved_by: status === 'awaiting_review' ? null : '演示用户', approved_at: status === 'awaiting_review' ? null : now(), operation_id: null }
+      plans.set(plan.id, plan)
+      tasks.set(t.id, { ...t, plan_id: plan.id })
+    }
+  })
+}
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('mock_tasks') === 'all') seedAllStatuses()
 
 const PHASES: { status: TaskStatus; phase: string; summary: string }[] = [
   { status: 'scanning', phase: 'scanning', summary: '扫描导入文件并计算哈希' },
@@ -90,6 +195,8 @@ function simulate(taskId: string) {
           if (cur.error) { emit(taskId, { phase: p.phase, event_type: 'file_failed', file_id: f.id, summary: `${f.source_name}：${cur.error}` }); return }
           emit(taskId, { phase: p.phase, event_type: 'tool_call', file_id: f.id, summary: `read_document · ${f.source_name}`, details: { tool: /image|pdf/.test(f.mime_type) ? 'ocr' : 'parse' } })
         } else if (!cur.error) {
+          const tk = tasks.get(taskId)!
+          if (tk.llm_source && tk.llm_source !== 'none') emit(taskId, { phase: p.phase, event_type: 'tool_call', file_id: f.id, summary: `llm_classify · ${tk.llm_model}（${tk.llm_source === 'personal' ? '个人' : '全局'}）`, details: { tool: 'llm' } })
           emit(taskId, { phase: p.phase, event_type: 'file_classified', file_id: f.id, summary: `${f.source_name} → ${cur.detected_department ?? '待审核'} / ${cur.detected_type ?? '待审核'} / ${cur.detected_date ?? '待审核'}` })
         }
         const t = tasks.get(taskId)!
@@ -105,16 +212,42 @@ function simulate(taskId: string) {
       const ty = f.detected_type ?? '待审核'
       const name = `${date}_${dept}_${ty}_${f.source_name.split('/').pop()}`
       const warnings: string[] = []
+      const flagged = !!tasks.get(taskId)?.instruction && /扫描件|待审核/.test(tasks.get(taskId)!.instruction!) && /pdf|image/.test(f.mime_type) && /扫描|\.(png|jpe?g)$/i.test(f.source_name)
+      if (flagged) { files.set(f.id, { ...f, review_required: true }); warnings.push('按任务说明标记为待审核') }
       if (f.review_required) warnings.push('字段置信度低，需人工确认')
       if (ledger.some((l) => l.canonical_name === name)) warnings.push('目标文件名已存在，将自动追加序号')
-      return { file_id: f.id, original_name: f.source_name, suggested_name: name, source_path: f.source_path, destination_path: `归档/${dept}/${date.slice(0, 4)}/${ty}/${name}`, department: f.detected_department, document_type: f.detected_type, document_date: f.detected_date, warnings, review_required: f.review_required }
+      return { file_id: f.id, original_name: f.source_name, suggested_name: name, source_path: f.source_path, destination_path: `归档/${dept}/${date.slice(0, 4)}/${ty}/${name}`, department: f.detected_department, document_type: f.detected_type, document_date: f.detected_date, warnings, review_required: f.review_required || flagged }
     })
     const plan: ArchivePlan = { id: uid(), task_id: taskId, items, status: 'awaiting_review', version: 1, requires_approval: true, approved_by: null, approved_at: null, operation_id: null }
     plans.set(plan.id, plan)
     const failed = fs().filter((f) => f.error).length
     setStatus(taskId, 'awaiting_review', { plan_id: plan.id, success_count: items.length, failure_count: failed, processed_files: tasks.get(taskId)!.total_files })
     emit(taskId, { phase: 'planning', event_type: 'plan_ready', summary: `归档计划已生成，共 ${items.length} 项，等待审批` })
+    if (tasks.get(taskId)?.automation === 'auto') at(1200, () => autoExecute(taskId, plan))
   })
+}
+
+/** 全自动：模型直接归档不需要确认的条目；需要确认的留在计划中等待人工审核。 */
+function autoExecute(taskId: string, plan: ArchivePlan) {
+  const t = tasks.get(taskId)
+  if (!t || t.status !== 'awaiting_review') return
+  const done = plan.items.filter((i) => !i.review_required)
+  const left = plan.items.filter((i) => i.review_required)
+  setStatus(taskId, 'archiving')
+  for (const it of done) {
+    const f = files.get(it.file_id)!
+    files.set(f.id, { ...f, archive_status: 'archived' })
+    ledger.push({ id: uid(), status: 'archived' as const, original_name: it.original_name, canonical_name: it.suggested_name, department: it.department ?? '', document_type: it.document_type ?? '', document_date: it.document_date ?? '', archive_path: it.destination_path, sha256: f.sha256, task_id: taskId, decision: 'ai_auto', decision_model: t.llm_model, executed_at: now() })
+  }
+  const op = uid()
+  opStore.set(op, { planId: plan.id, taskId, items: structuredClone(done), auto: true })
+  plan.operation_id = op
+  if (left.length) { plan.items = left; plan.status = 'awaiting_review' } else plan.status = 'executed'
+  plan.version += 1
+  const failed = tasks.get(taskId)!.failure_count
+  setStatus(taskId, left.length ? 'awaiting_review' : failed ? 'partial_failure' : 'completed')
+  emit(taskId, { phase: 'archiving', event_type: 'archive_completed', summary: `全自动归档完成：已归档 ${done.length} 个，${left.length} 个留待人工审核（模型 ${t.llm_model}，无人工审批）` })
+  audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'plan.auto_execute', target: plan.id, summary: `全自动归档 ${done.length} 个文件，模型 ${t.llm_model}` })
 }
 
 function classify(name: string, path: string): Partial<FileRecord> {
@@ -141,7 +274,8 @@ const textHit = (q: string | undefined, ...vals: (string | null)[]) => !q || val
 function filterLedger(q?: LedgerQuery) {
   let r = ledger.filter((l) => textHit(q?.q, l.original_name, l.canonical_name, l.department, l.document_type, l.archive_path)
     && (!q?.department || l.department === q.department) && (!q?.type || l.document_type === q.type)
-    && (!q?.date_from || l.document_date >= q.date_from) && (!q?.date_to || l.document_date <= q.date_to))
+    && (!q?.date_from || l.document_date >= q.date_from) && (!q?.date_to || l.document_date <= q.date_to)
+    && (!q?.decision || (l.decision ?? 'manual') === q.decision))
   const key = (q?.sort ?? 'executed_at') as keyof LedgerEntry
   r = [...r].sort((a, b) => String(a[key]).localeCompare(String(b[key])) * (q?.order === 'asc' ? 1 : -1))
   return r
@@ -155,23 +289,26 @@ const getOr404 = <T,>(m: Map<string, T>, id: string, what: string): T => {
 
 export const mockApi: Api = {
   mode: 'mock',
-  capabilities: { retryTask: true, providerStatus: true, rollback: true },
+  capabilities: { retryTask: true, providerStatus: true, rollback: true, webauthn: false },
 
   async readiness() { await delay(150); return { alive: true, ready: true, database: 'ok', worker: 'ok' } },
 
-  async createImport(picked: PickedFile[]) {
+  async createImport(picked: PickedFile[], opts?: { templateId?: string | null; idempotencyKey?: string; options?: ImportOptions }) {
     await delay(500)
     if (!picked.length) throw new ApiError(400, 'INVALID_ARGUMENT', '未选择文件')
+    if (picked.length > 100) throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '每批最多 100 个文件')
+    const resolved = mockAi.ctl.resolveImport(opts?.options) // 与契约一致的服务端规则：可能抛出 403/422
     const id = uid()
-    const job: ImportJob = { id, status: 'queued', total_files: picked.length, processed_files: 0, success_count: 0, failure_count: 0, plan_id: null, created_at: now(), updated_at: now() }
+    const job: ImportJob = { id, status: 'queued', total_files: picked.length, processed_files: 0, success_count: 0, failure_count: 0, plan_id: null, ...resolved, created_at: now(), updated_at: now() }
     tasks.set(id, job)
     runtime.set(id, { events: [], timers: [], listeners: new Set(), seq: 0 })
     for (const p of picked) {
       const fid = uid()
-      files.set(fid, { id: fid, task_id: id, source_name: p.file.name, source_path: p.relativePath, mime_type: p.file.type || mimeOf(p.file.name), sha256: sha(), size_bytes: p.file.size, detected_department: null, detected_type: null, detected_date: null, evidence: [], review_required: false, archive_status: 'pending', error: null, created_at: now(), ...classify(p.file.name, p.relativePath) })
+      files.set(fid, { id: fid, task_id: id, source_name: p.file.name, source_path: p.relativePath, mime_type: p.file.type || mimeOf(p.file.name), sha256: sha(), size_bytes: p.file.size, detected_department: null, detected_type: null, detected_date: null, evidence: [], review_required: false, archive_status: 'pending', error: null, ocr: /\.(png|jpe?g)$/i.test(p.file.name) ? { used: true, quality: 'good', mean_confidence: 0.86, profile: 'default', attempts: 1, vision_used: false } : null, created_at: now(), ...classify(p.file.name, p.relativePath) })
     }
     audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'import.create', target: id, summary: `导入 ${picked.length} 个文件` })
-    emit(id, { phase: 'queued', event_type: 'task_created', summary: `任务已创建，共 ${picked.length} 个文件` })
+    emit(id, { phase: 'queued', event_type: 'task_created', summary: `任务已创建，共 ${picked.length} 个文件${resolved.automation === 'auto' ? '（全自动模式）' : ''}` })
+    if (resolved.instruction) emit(id, { phase: 'queued', event_type: 'phase_started', summary: `已读取任务说明：${resolved.instruction.slice(0, 60)}` })
     simulate(id)
     return job
   },
@@ -261,11 +398,11 @@ export const mockApi: Api = {
     for (const it of p.items) {
       const f = files.get(it.file_id)!
       files.set(f.id, { ...f, archive_status: 'archived', detected_department: it.department, detected_type: it.document_type, detected_date: it.document_date, review_required: false })
-      ledger.push({ id: uid(), status: 'archived' as const, original_name: it.original_name, canonical_name: it.suggested_name, department: it.department ?? '', document_type: it.document_type ?? '', document_date: it.document_date ?? '', archive_path: it.destination_path, sha256: f.sha256, task_id: p.task_id, executed_at: now() })
+      ledger.push({ id: uid(), status: 'archived' as const, original_name: it.original_name, canonical_name: it.suggested_name, department: it.department ?? '', document_type: it.document_type ?? '', document_date: it.document_date ?? '', archive_path: it.destination_path, sha256: f.sha256, task_id: p.task_id, decision: 'manual', executed_at: now() })
     }
     p.status = 'executed'
     p.operation_id = uid()
-    opPlans.set(p.operation_id, p.id)
+    opStore.set(p.operation_id, { planId: p.id, taskId: p.task_id, items: structuredClone(p.items), auto: false })
     const failed = tasks.get(p.task_id)!.failure_count
     setStatus(p.task_id, failed ? 'partial_failure' : 'completed')
     emit(p.task_id, { phase: 'archiving', event_type: 'archive_completed', summary: `已归档 ${p.items.length} 个文件并写入台账` })
@@ -275,23 +412,26 @@ export const mockApi: Api = {
 
   async rollbackOperation(opId) {
     await delay(500)
-    const planId = opPlans.get(opId)
-    const p = planId ? plans.get(planId) : undefined
-    if (!p || p.operation_id !== opId) throw new ApiError(404, "NOT_FOUND", "归档操作不存在或已恢复")
-    for (let i = ledger.length - 1; i >= 0; i--) if (p.items.some((it) => it.suggested_name === ledger[i].canonical_name && ledger[i].task_id === p.task_id)) ledger.splice(i, 1)
-    for (const it of p.items) { const f = files.get(it.file_id); if (f) files.set(f.id, { ...f, archive_status: "pending" }) }
-    p.status = "approved"; p.operation_id = null; p.version += 1
-    setStatus(p.task_id, "approved")
-    audit.unshift({ id: uid(), timestamp: now(), actor: "演示用户", action: "operation.rollback", target: opId, summary: "恢复归档操作" })
+    const op = opStore.get(opId)
+    const p = op ? plans.get(op.planId) : undefined
+    if (!op || !p || p.operation_id !== opId) throw new ApiError(404, "NOT_FOUND", "归档操作不存在或已恢复")
+    for (let i = ledger.length - 1; i >= 0; i--) if (op.items.some((it) => it.suggested_name === ledger[i].canonical_name && ledger[i].task_id === op.taskId)) ledger.splice(i, 1)
+    for (const it of op.items) { const f = files.get(it.file_id); if (f) files.set(f.id, { ...f, archive_status: "pending" }) }
+    // 全自动：撤销后条目回到计划，等待人工审核；人工执行：回到“已批准”
+    if (op.auto) { p.items = [...p.items, ...op.items]; p.status = "awaiting_review" } else p.status = "approved"
+    p.operation_id = null; p.version += 1
+    opStore.delete(opId)
+    setStatus(p.task_id, op.auto ? "awaiting_review" : "approved")
+    audit.unshift({ id: uid(), timestamp: now(), actor: "演示用户", action: "operation.rollback", target: opId, summary: op.auto ? "撤销全自动归档" : "恢复归档操作" })
   },
 
   async listLedger(q) { await delay(); return paginate(filterLedger(q), q) },
   async exportLedger(q) {
     await delay(400)
     const rows = filterLedger({ ...q, page: undefined })
-    const head = ['原文件名', '规范文件名', '部门', '类型', '日期', '归档路径', 'SHA-256', '任务ID', '执行时间']
+    const head = ['原文件名', '规范文件名', '部门', '类型', '日期', '归档路径', 'SHA-256', '任务ID', '决策方式', '执行时间']
     const esc = (s: string) => `"${s.replace(/"/g, '""')}"`
-    const csv = '﻿' + [head, ...rows.map((r) => [r.original_name, r.canonical_name, r.department, r.document_type, r.document_date, r.archive_path, r.sha256, r.task_id, r.executed_at])].map((r) => r.map(esc).join(',')).join('\r\n')
+    const csv = '﻿' + [head, ...rows.map((r) => [r.original_name, r.canonical_name, r.department, r.document_type, r.document_date, r.archive_path, r.sha256, r.task_id, r.decision === 'ai_auto' ? `全自动·${r.decision_model ?? ''}` : '人工审核', r.executed_at])].map((r) => r.map(esc).join(',')).join('\r\n')
     // 演示模式只能给 CSV；真实后端返回 .xlsx
     return { blob: new Blob([csv], { type: 'text/csv;charset=utf-8' }), filename: '归档台账（演示）.csv' }
   },
@@ -343,6 +483,80 @@ export const mockApi: Api = {
     return p
   },
   async providerStatus() { await delay(); return [{ name: '演示 Provider', model: 'demo-model', state: 'ok' as const }] },
+  async listLlmPresets() { await delay(150); return structuredClone(LLM_PRESETS) },
+  async getLlmConfig() { await delay(150); return { ...llmConfig } },
+  async saveLlmConfig(input) {
+    await delay(300)
+    if (input.mode === 'heuristic') {
+      llmConfig = { ...llmConfig, mode: 'heuristic', state: 'ok', updated_at: now() }
+      return { ...llmConfig }
+    }
+    const base_url = (input.base_url ?? '').trim()
+    const model = (input.model ?? '').trim()
+    const urlErr = validateBaseUrl(base_url)
+    if (urlErr) throw new ApiError(422, 'VALIDATION_FAILED', urlErr)
+    if (!model) throw new ApiError(422, 'VALIDATION_FAILED', '模型名称必填')
+    const preset_id = input.preset_id || 'custom'
+    const preset = LLM_PRESETS.find((p) => p.id === preset_id)
+    const typed = input.api_key?.trim()
+    const kept = llmConfig.api_key_set && !input.clear_api_key ? llmKey : ''
+    const key = typed || kept
+    if (preset?.needs_api_key && !key) throw new ApiError(422, 'VALIDATION_FAILED', '该服务需要 API Key')
+    llmKey = key
+    llmConfig = { mode: 'llm', preset_id, base_url, model, api_key_set: !!key, api_key_hint: keyHint(key), vision_model: (input.vision_model ?? '').trim(), allow_vision: !!input.allow_vision, state: 'ok', updated_at: now() }
+    audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'llm.config.update', target: preset_id, summary: `识别引擎切换为 ${model}` })
+    return { ...llmConfig }
+  },
+  async testLlm(input) {
+    await delay(600)
+    const key = input.api_key?.trim() || llmKey
+    if (key === 'bad') return { ok: false, latency_ms: 600, message: '密钥无效（401）', tool_calling: null, vision_ok: null }
+    const vm = input.vision_model?.trim()
+    return { ok: true, latency_ms: 600, message: '连接正常', tool_calling: !/reasoner/i.test(input.model), vision_ok: vm ? !/bad/i.test(vm) : null }
+  },
+  async listLlmModels(input) {
+    await delay(400)
+    const url = input.base_url.trim().replace(/\/+$/, '')
+    return (LLM_PRESETS.find((p) => p.base_url.replace(/\/+$/, '') === url)?.models ?? []).map((m) => m.id)
+  },
+
+  async listFolder(path) { await delay(150); return mockFs.list(path) },
+  contentUrl() { return '#' },
+  async previewFile(id) { await delay(250); const f = getOr404(files, id, '文件'); return mockPreviewOf(f.source_name, f.size_bytes) },
+  async previewArchived(path) {
+    await delay(250)
+    const entry = ledger.find((l) => l.archive_path === path)
+    if (!path || (!entry && !SUPPORTED_PREVIEW.test(path))) throw new ApiError(404, 'NOT_FOUND', '文件不存在')
+    return mockPreviewOf(basename(path), 52000)
+  },
+  previewPageUrl(source, page, maxSide) {
+    const name = source.kind === 'file' ? files.get(source.id)?.source_name ?? '文件' : basename(source.path)
+    return mockPageUrl(name, page, maxSide)
+  },
+  async createFolder(path) { await delay(150); return mockFs.mkdir(path) },
+  async moveEntry(from, to) { await delay(200); return mockFs.move(from, to) },
+  async trashEntry(path) { await delay(200); return mockFs.trashEntry(path) },
+  async listTrash() { await delay(150); return mockFs.listTrash() },
+  async restoreTrash(id) { await delay(200); return mockFs.restore(id) },
+  async revealInExplorer() { await delay(100); throw new ApiError(501, 'NOT_IMPLEMENTED', '演示模式不支持在资源管理器中显示') },
+
+  listStorageKinds: () => storage.listKinds(),
+  listStorageConnections: () => storage.list(),
+  getStorageConnection: (id) => storage.getConn(id),
+  createStorageConnection: (input) => storage.create(input),
+  updateStorageConnection: (id, patch) => storage.update(id, patch),
+  deleteStorageConnection: (id) => storage.remove(id),
+  testStorageDraft: (input) => storage.testDraft(input),
+  testStorageConnection: (id, opts) => storage.testConn(id, opts),
+  browseStorage: (id, path) => storage.browse(id, path),
+  replicateToStorage: (id, opts) => storage.replicate(id, opts),
+  listReplications: (q) => storage.listReps(q),
+  retryReplication: (id) => storage.retry(id),
+  createRemoteImport: (connectionId, paths, opts) => storage.remoteImport(connectionId, paths, opts),
+  ...mockAi.api,
+  ...mockDiag.api,
+  ...createMockAuth((actor, action, target, summary) => { audit.unshift({ id: uid(), timestamp: now(), actor, action, target, summary }) }, authCtl),
 }
+const SUPPORTED_PREVIEW = /\.(docx?|xlsx?|pdf|png|jpe?g)$/i
+const mockPreviewOf = mockPreview
 const pendingCorrections = new Map<string, CorrectionProposal>()
-const opPlans = new Map<string, string>()

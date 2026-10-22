@@ -73,6 +73,10 @@ func getPlan(ctx context.Context, q rowQuerier, id string, lock bool) (Plan, err
 		return p, err
 	}
 	_ = q.QueryRow(ctx, `SELECT id::text FROM archive_operations WHERE plan_id=$1 AND status='completed' ORDER BY created_at DESC LIMIT 1`, id).Scan(&p.OperationID)
+	if p.OperationID == nil && p.Status == "awaiting_review" {
+		// the leftover plan of an automatic task points at the automatic operation that archived the rest
+		_ = q.QueryRow(ctx, `SELECT o.id::text FROM archive_operations o JOIN archive_plans sp ON sp.id=o.plan_id WHERE sp.task_id=$1 AND o.status='completed' AND o.decision='ai_auto' ORDER BY o.created_at DESC LIMIT 1`, p.TaskID).Scan(&p.OperationID)
+	}
 	rows, err := q.Query(ctx, `SELECT file_id::text, original_name, suggested_name, source_path, destination_path, department, document_type, to_char(document_date,'YYYY-MM-DD'), warnings, review_required FROM archive_plan_items WHERE plan_id=$1 ORDER BY position`, id)
 	if err != nil {
 		return p, err
@@ -189,6 +193,14 @@ func (s *Store) ApprovePlan(ctx context.Context, id string, version int, actor s
 	if p.Status != "awaiting_review" && p.Status != "draft" {
 		return p, ErrState
 	}
+	// While an automatic plan of the same task is being executed, the leftover plan must not be approved concurrently.
+	var jobStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM import_jobs WHERE id=$1 FOR UPDATE`, p.TaskID).Scan(&jobStatus); err != nil {
+		return p, err
+	}
+	if jobStatus == "approved" || jobStatus == "archiving" {
+		return p, ErrState
+	}
 	for _, it := range p.Items {
 		if it.ReviewRequired {
 			return p, ErrReviewRequired
@@ -211,6 +223,21 @@ var ErrReviewRequired = errors.New("plan has items requiring review")
 // BeginExecution claims the plan for execution. replay=true means the plan was already executed
 // (idempotent re-request) and the existing plan should be returned unchanged.
 func (s *Store) BeginExecution(ctx context.Context, planID, key string) (op Operation, plan Plan, replay bool, err error) {
+	return s.BeginExecutionAs(ctx, planID, key, DecisionManual, "")
+}
+
+// Decision values recorded on operations and ledger rows.
+const (
+	DecisionManual = "manual"
+	DecisionAIAuto = "ai_auto"
+)
+
+// BeginExecutionAs is BeginExecution with the decision mode (manual | ai_auto) and, for ai_auto, the model name
+// that decided; both are stored with the operation and copied onto its ledger rows.
+func (s *Store) BeginExecutionAs(ctx context.Context, planID, key, decision, model string) (op Operation, plan Plan, replay bool, err error) {
+	if decision == "" {
+		decision = DecisionManual
+	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return
@@ -230,7 +257,7 @@ func (s *Store) BeginExecution(ctx context.Context, planID, key string) (op Oper
 		return
 	}
 	var results []byte
-	err = tx.QueryRow(ctx, `SELECT id::text, status, results FROM archive_operations WHERE plan_id=$1 AND idempotency_key=$2`, planID, key).Scan(&op.ID, &op.Status, &results)
+	err = tx.QueryRow(ctx, `SELECT id::text, status, results, decision, decision_model FROM archive_operations WHERE plan_id=$1 AND idempotency_key=$2`, planID, key).Scan(&op.ID, &op.Status, &results, &op.Decision, &op.DecisionModel)
 	if err == nil {
 		op.PlanID, op.Key = planID, key
 		_ = json.Unmarshal(results, &op.Results)
@@ -250,8 +277,8 @@ func (s *Store) BeginExecution(ctx context.Context, planID, key string) (op Oper
 	if err != nil {
 		return
 	}
-	op.PlanID, op.Key, op.Status = planID, key, "running"
-	if _, err = tx.Exec(ctx, `INSERT INTO archive_operations(id,plan_id,idempotency_key,status) VALUES ($1,$2,$3,'running')`, op.ID, planID, key); err != nil {
+	op.PlanID, op.Key, op.Status, op.Decision, op.DecisionModel = planID, key, "running", decision, model
+	if _, err = tx.Exec(ctx, `INSERT INTO archive_operations(id,plan_id,idempotency_key,status,decision,decision_model) VALUES ($1,$2,$3,'running',$4,$5)`, op.ID, planID, key, decision, model); err != nil {
 		return
 	}
 	if _, err = tx.Exec(ctx, `UPDATE archive_plans SET status='executing', updated_at=now() WHERE id=$1`, planID); err != nil {
@@ -287,9 +314,9 @@ func (s *Store) FinishExecution(ctx context.Context, op Operation, plan Plan, re
 		}
 		canonical := r.FinalRel[strings.LastIndex(r.FinalRel, "/")+1:]
 		lid, _ := imports.NewID()
-		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries(id,file_id,task_id,plan_id,operation_id,original_name,canonical_name,department,document_type,document_date,archive_path,sha256,executed_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now()) ON CONFLICT (plan_id,file_id) DO NOTHING`,
-			lid, r.FileID, plan.TaskID, plan.ID, op.ID, it.OriginalName, canonical, deref(it.Department), deref(it.DocumentType), deref(it.DocumentDate), r.FinalRel, r.SHA256); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO ledger_entries(id,file_id,task_id,plan_id,operation_id,original_name,canonical_name,department,document_type,document_date,archive_path,sha256,decision,decision_model,executed_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()) ON CONFLICT (plan_id,file_id) DO NOTHING`,
+			lid, r.FileID, plan.TaskID, plan.ID, op.ID, it.OriginalName, canonical, deref(it.Department), deref(it.DocumentType), deref(it.DocumentDate), r.FinalRel, r.SHA256, decisionOr(op.Decision), op.DecisionModel); err != nil {
 			return plan, err
 		}
 		if _, err = tx.Exec(ctx, `UPDATE file_records SET archive_status='archived', detected_department=$2, detected_type=$3, detected_date=$4::date, review_required=false WHERE id=$1`, r.FileID, it.Department, it.DocumentType, it.DocumentDate); err != nil {
@@ -312,6 +339,18 @@ func (s *Store) FinishExecution(ctx context.Context, op Operation, plan Plan, re
 	if _, err = tx.Exec(ctx, `UPDATE archive_plans SET status=$2, executed_at=now(), updated_at=now() WHERE id=$1`, plan.ID, planStatus); err != nil {
 		return plan, err
 	}
+	// Automatic mode may leave a separate plan with the items the model could not settle: the task then keeps
+	// waiting for a human on that plan instead of being reported as completed.
+	var leftover *string
+	_ = tx.QueryRow(ctx, `SELECT id::text FROM archive_plans WHERE task_id=$1 AND status='awaiting_review' AND id<>$2 LIMIT 1`, plan.TaskID, plan.ID).Scan(&leftover)
+	if leftover != nil {
+		if _, err = tx.Exec(ctx, `UPDATE import_jobs SET plan_id=$2 WHERE id=$1`, plan.TaskID, *leftover); err != nil {
+			return plan, err
+		}
+		if failed == 0 {
+			jobStatus = "awaiting_review"
+		}
+	}
 	if _, err = tx.Exec(ctx, `UPDATE import_jobs SET status=$2, updated_at=now() WHERE id=$1`, plan.TaskID, jobStatus); err != nil {
 		return plan, err
 	}
@@ -319,6 +358,13 @@ func (s *Store) FinishExecution(ctx context.Context, op Operation, plan Plan, re
 		return plan, err
 	}
 	return s.GetPlan(ctx, plan.ID)
+}
+
+func decisionOr(d string) string {
+	if d == DecisionAIAuto {
+		return d
+	}
+	return DecisionManual
 }
 
 // RetryExecution lets a failed plan be executed again under a new key (only failed files are redone by the journal).
@@ -333,7 +379,7 @@ func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
 	if !validUUID(id) {
 		return op, ErrNotFound
 	}
-	err := s.Pool.QueryRow(ctx, `SELECT id::text, plan_id::text, idempotency_key, status, results FROM archive_operations WHERE id=$1`, id).Scan(&op.ID, &op.PlanID, &op.Key, &op.Status, &res)
+	err := s.Pool.QueryRow(ctx, `SELECT id::text, plan_id::text, idempotency_key, status, results, decision, decision_model FROM archive_operations WHERE id=$1`, id).Scan(&op.ID, &op.PlanID, &op.Key, &op.Status, &res, &op.Decision, &op.DecisionModel)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return op, ErrNotFound
 	}
@@ -360,7 +406,7 @@ func (s *Store) MarkRolledBack(ctx context.Context, op Operation) error {
 	if _, err = tx.Exec(ctx, `UPDATE archive_plans SET status='approved', updated_at=now() WHERE id=$1`, op.PlanID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE import_jobs SET status='approved', updated_at=now() WHERE id=(SELECT task_id FROM archive_plans WHERE id=$1)`, op.PlanID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE import_jobs SET updated_at=now(), status=CASE WHEN EXISTS (SELECT 1 FROM archive_plans x WHERE x.task_id=import_jobs.id AND x.status='awaiting_review') THEN 'awaiting_review' ELSE 'approved' END WHERE id=(SELECT task_id FROM archive_plans WHERE id=$1)`, op.PlanID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -399,6 +445,9 @@ func ledgerWhere(f LedgerFilter) (string, []any) {
 	if f.DateTo != "" {
 		add(`document_date<=$$`, f.DateTo)
 	}
+	if f.Decision != "" {
+		add(`decision=$$`, f.Decision)
+	}
 	return "WHERE " + strings.Join(conds, " AND "), args
 }
 
@@ -414,14 +463,14 @@ func ledgerOrder(f LedgerFilter) string {
 	return fmt.Sprintf("ORDER BY %s %s, id", col, dir)
 }
 
-const ledgerCols = `id::text, original_name, canonical_name, department, document_type, document_date, archive_path, sha256, task_id::text, status, executed_at`
+const ledgerCols = `id::text, original_name, canonical_name, department, document_type, document_date, archive_path, sha256, task_id::text, status, decision, decision_model, executed_at`
 
 func scanLedger(rows pgx.Rows) ([]LedgerEntry, error) {
 	defer rows.Close()
 	out := []LedgerEntry{}
 	for rows.Next() {
 		var e LedgerEntry
-		if err := rows.Scan(&e.ID, &e.OriginalName, &e.CanonicalName, &e.Department, &e.DocumentType, &e.DocumentDate, &e.ArchivePath, &e.SHA256, &e.TaskID, &e.Status, &e.ExecutedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.OriginalName, &e.CanonicalName, &e.Department, &e.DocumentType, &e.DocumentDate, &e.ArchivePath, &e.SHA256, &e.TaskID, &e.Status, &e.Decision, &e.DecisionModel, &e.ExecutedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -472,7 +521,7 @@ var _ = time.Now
 func (s *Store) RunningOperation(ctx context.Context, planID string) (Operation, error) {
 	var op Operation
 	var res []byte
-	err := s.Pool.QueryRow(ctx, `SELECT id::text, plan_id::text, idempotency_key, status, results FROM archive_operations WHERE plan_id=$1 AND status='running' ORDER BY created_at DESC LIMIT 1`, planID).Scan(&op.ID, &op.PlanID, &op.Key, &op.Status, &res)
+	err := s.Pool.QueryRow(ctx, `SELECT id::text, plan_id::text, idempotency_key, status, results, decision, decision_model FROM archive_operations WHERE plan_id=$1 AND status='running' ORDER BY created_at DESC LIMIT 1`, planID).Scan(&op.ID, &op.PlanID, &op.Key, &op.Status, &res, &op.Decision, &op.DecisionModel)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return op, ErrNotFound
 	}

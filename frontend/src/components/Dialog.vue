@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-const props = defineProps<{ title: string; width?: string; labelledby?: string }>()
+const props = defineProps<{ title: string; width?: string; labelledby?: string; /** role=alertdialog：点击遮罩不关闭，仅取消/确认按钮或 Esc */ alert?: boolean; describedby?: string; testid?: string }>()
 const emit = defineEmits<{ close: [] }>()
 const el = ref<HTMLElement>()
 let prev: HTMLElement | null = null
@@ -21,8 +21,8 @@ void props
 </script>
 <template>
   <Teleport to="body">
-    <div class="scrim" @mousedown.self="emit('close')">
-      <div ref="el" class="dlg" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1" :style="{ width: width ?? '560px' }" @keydown="onKey">
+    <div class="scrim" @mousedown.self="!alert && emit('close')">
+      <div ref="el" class="dlg" :role="alert ? 'alertdialog' : 'dialog'" aria-modal="true" :aria-label="title" :aria-describedby="describedby" :data-testid="testid" tabindex="-1" :style="{ width: width ?? '560px' }" @keydown="onKey">
         <h2 class="t-title">{{ title }}</h2>
         <div class="body"><slot /></div>
         <div class="row actions"><slot name="actions" /></div>

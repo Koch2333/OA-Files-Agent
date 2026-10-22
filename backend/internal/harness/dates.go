@@ -6,10 +6,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var (
-	reDateCN    = regexp.MustCompile(`(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]`)
+	reDateCN    = regexp.MustCompile(`(\d(?:[ \t\x{3000}]?\d){3})\s*年\s*(\d(?:[ \t\x{3000}]?\d)?)\s*月\s*(\d(?:[ \t\x{3000}]?\d)?)\s*[日号]`)
 	reDateSep   = regexp.MustCompile(`(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})`)
 	reDate8     = regexp.MustCompile(`(?:^|[^\d])(\d{8})(?:[^\d]|$)`)
 	reDateCNNum = regexp.MustCompile(`([〇零○一二三四五六七八九]{4})年([〇零一二三四五六七八九十]{1,3})月([〇零一二三四五六七八九十]{1,3})[日号]`)
@@ -19,13 +20,14 @@ var (
 )
 
 type dateHit struct {
-	t       time.Time
-	raw     string
-	start   int
-	end     int
-	label   string // generation-date label immediately before the date
-	alone   bool   // the date is the only content of its line (落款)
-	exclude bool   // e.g. 有效日期, not a generation date
+	t         time.Time
+	raw       string
+	start     int
+	end       int
+	label     string // generation-date label immediately before the date
+	alone     bool   // the date is the only content of its line (落款)
+	exclude   bool   // e.g. 有效日期, not a generation date
+	corrected bool   // matched only after OCR-confusion normalisation
 }
 
 func (h dateHit) iso() string { return h.t.Format("2006-01-02") }
@@ -117,32 +119,97 @@ func parseCNSmall(s string) int {
 	return n
 }
 
-// findDates returns every valid calendar date in s in textual order.
+// normalizeOCR maps common OCR confusions to digits for date matching only:
+// full-width digits, and O/o→0, l/I/|/!→1 inside digit runs. A confusable is
+// converted only when its run (digits and confusables) contains at least one
+// real digit and is not glued to ASCII letters, so ordinary words ("Oll",
+// "Hello", "lO月") stay untouched. oStart/oEnd map each normalized byte to the
+// byte range of the original rune it came from.
+func normalizeOCR(s string) (n string, oStart, oEnd []int) {
+	rs := []rune(s)
+	pos := make([]int, len(rs)+1)
+	for i, r := range rs {
+		pos[i+1] = pos[i] + utf8.RuneLen(r)
+	}
+	isFW := func(r rune) bool { return r >= '０' && r <= '９' }
+	isDig := func(r rune) bool { return (r >= '0' && r <= '9') || isFW(r) }
+	isConf := func(r rune) bool { return strings.ContainsRune("OolI|!", r) }
+	isLetter := func(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }
+	out := make([]rune, len(rs))
+	copy(out, rs)
+	for i := 0; i < len(rs); {
+		if !isDig(rs[i]) && !isConf(rs[i]) {
+			i++
+			continue
+		}
+		j, digits := i, 0
+		for j < len(rs) && (isDig(rs[j]) || isConf(rs[j])) {
+			if isDig(rs[j]) {
+				digits++
+			}
+			j++
+		}
+		glued := (i > 0 && isLetter(rs[i-1])) || (j < len(rs) && isLetter(rs[j]))
+		for k := i; k < j; k++ {
+			switch {
+			case isFW(rs[k]):
+				out[k] = rs[k] - '０' + '0'
+			case isConf(rs[k]) && digits > 0 && !glued:
+				if rs[k] == 'O' || rs[k] == 'o' {
+					out[k] = '0'
+				} else {
+					out[k] = '1'
+				}
+			}
+		}
+		i = j
+	}
+	var b strings.Builder
+	for i, r := range out {
+		w := utf8.RuneLen(r)
+		b.WriteRune(r)
+		for k := 0; k < w; k++ {
+			oStart = append(oStart, pos[i])
+			oEnd = append(oEnd, pos[i+1])
+		}
+	}
+	return b.String(), oStart, oEnd
+}
+
+var reSpacedDigit = regexp.MustCompile(`\d[ \t\x{3000}]\d`)
+
+// findDates returns every valid calendar date in s in textual order. OCR
+// confusions are tolerated in numeric contexts; such hits have corrected=true.
 func findDates(s string, now time.Time) []dateHit {
 	var hits []dateHit
+	n, oStart, oEnd := normalizeOCR(s)
 	add := func(start, end, y, m, d int) {
 		t, ok := validCalendarDate(y, m, d, now)
 		if !ok {
 			return
 		}
-		hits = append(hits, dateHit{t: t, raw: s[start:end], start: start, end: end})
+		os, oe := oStart[start], oEnd[end-1]
+		raw := s[os:oe]
+		hits = append(hits, dateHit{t: t, raw: raw, start: os, end: oe,
+			corrected: n[start:end] != raw || reSpacedDigit.MatchString(raw)})
 	}
-	for _, m := range reDateCN.FindAllStringSubmatchIndex(s, -1) {
-		add(m[0], m[1], atoi(s[m[2]:m[3]]), atoi(s[m[4]:m[5]]), atoi(s[m[6]:m[7]]))
+	sp := func(v string) int { return atoi(strings.Join(strings.Fields(strings.ReplaceAll(v, "　", " ")), "")) }
+	for _, m := range reDateCN.FindAllStringSubmatchIndex(n, -1) {
+		add(m[0], m[1], sp(n[m[2]:m[3]]), sp(n[m[4]:m[5]]), sp(n[m[6]:m[7]]))
 	}
-	for _, m := range reDateSep.FindAllStringSubmatchIndex(s, -1) {
-		add(m[0], m[1], atoi(s[m[2]:m[3]]), atoi(s[m[4]:m[5]]), atoi(s[m[6]:m[7]]))
+	for _, m := range reDateSep.FindAllStringSubmatchIndex(n, -1) {
+		add(m[0], m[1], atoi(n[m[2]:m[3]]), atoi(n[m[4]:m[5]]), atoi(n[m[6]:m[7]]))
 	}
-	for _, m := range reDate8.FindAllStringSubmatchIndex(s, -1) {
-		v := s[m[2]:m[3]]
+	for _, m := range reDate8.FindAllStringSubmatchIndex(n, -1) {
+		v := n[m[2]:m[3]]
 		add(m[2], m[3], atoi(v[:4]), atoi(v[4:6]), atoi(v[6:8]))
 	}
-	for _, m := range reDateCNNum.FindAllStringSubmatchIndex(s, -1) {
+	for _, m := range reDateCNNum.FindAllStringSubmatchIndex(n, -1) {
 		y := 0
-		for _, r := range s[m[2]:m[3]] {
+		for _, r := range n[m[2]:m[3]] {
 			y = y*10 + cnDigit(r)
 		}
-		add(m[0], m[1], y, parseCNSmall(s[m[4]:m[5]]), parseCNSmall(s[m[6]:m[7]]))
+		add(m[0], m[1], y, parseCNSmall(n[m[4]:m[5]]), parseCNSmall(n[m[6]:m[7]]))
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].start < hits[j].start })
 	// Drop overlaps (e.g. 2026-03-15 also matched by another pattern).
@@ -185,3 +252,12 @@ func findDates(s string, now time.Time) []dateHit {
 // reDateTail marks dates that are deadlines or effective dates ("自…起",
 // "…前完成"), not the document's generation date.
 var reDateTail = regexp.MustCompile(`^\s*(起|止|前|至|后|之前|之后|到|截止)`)
+
+// disp is the fragment as shown in evidence: OCR-corrected hits say so and
+// keep the original text.
+func (h dateHit) disp() string {
+	if h.corrected {
+		return "OCR 纠错：" + h.raw
+	}
+	return h.raw
+}

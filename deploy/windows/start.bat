@@ -1,14 +1,14 @@
 @echo off
+rem ASCII only on purpose: cmd.exe mis-parses multi-byte characters in batch files after chcp 65001.
+rem The Chinese texts live in start-banner.txt / start-stopped.txt and are printed with "type".
 chcp 65001 >nul
 cd /d "%~dp0"
-title OA 文件智能归档（关闭此窗口即停止服务）
+title OA Agent (close this window to stop the service)
 set OA_STANDALONE=1
-echo ============================================================
-echo   OA 文件智能归档 —— 正在启动，浏览器会自动打开
-echo   首次启动需要初始化数据库，约需 30 秒，请勿关闭本窗口。
-echo   使用结束后关闭本窗口即可停止全部服务。
-echo ============================================================
+type "%~dp0start-banner.txt"
 oa-agent.exe
+set "RC=%ERRORLEVEL%"
 echo.
-echo 服务已停止。如非主动关闭，请查看 data\logs 目录下的日志。
+type "%~dp0start-stopped.txt"
+echo (exit code %RC%)
 pause

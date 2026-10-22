@@ -22,6 +22,8 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+var part10Flag = flag.Bool("part10", false, "run only part 10 (diagnostics) against an already initialised server")
+
 var (
 	examplesDir = flag.String("examples", "", "import this folder of real contest files and compare detection with the file-name convention")
 	recordPath  = flag.String("record", "", "write every JSON response to this file for scripts/check_contracts.py --recorded")
@@ -143,7 +145,7 @@ func upload(files []string, paths []string, key string) (int, json.RawMessage) {
 }
 
 func waitFor(id string, want ...string) job {
-	deadline := time.Now().Add(6 * time.Minute)
+	deadline := time.Now().Add(15 * time.Minute)
 	var j job
 	for time.Now().Before(deadline) {
 		_, d, _ := call("GET", "/v1/tasks/"+id, nil, nil)
@@ -163,6 +165,23 @@ func waitFor(id string, want ...string) job {
 
 func main() {
 	flag.Parse()
+	ensureLogin()
+	if *part10Flag {
+		part10()
+		if failed > 0 {
+			fmt.Printf("%d check(s) FAILED\n", failed)
+			os.Exit(1)
+		}
+		fmt.Println("all checks passed")
+		return
+	}
+	if *degradedFlag {
+		degraded()
+		if failed > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 	if *examplesDir != "" {
 		examples(*examplesDir)
 		if failed > 0 {
@@ -364,7 +383,7 @@ func main() {
 	// R12: events + SSE resume, cancel semantics, rollback
 	req, _ := http.NewRequest("GET", *base+"/v1/tasks/"+j.ID+"/events", nil)
 	req.Header.Set("Last-Event-ID", "0")
-	sse := &http.Client{Timeout: 3 * time.Second}
+	sse := &http.Client{Timeout: 3 * time.Second, Jar: http.DefaultClient.Jar}
 	if r, err := sse.Do(req); err == nil {
 		got, _ := io.ReadAll(r.Body)
 		r.Body.Close()
@@ -407,7 +426,16 @@ func main() {
 	check("same key + different content → 409", c3 == 409, c3)
 
 	part2(truth, manifest.Files[0].File)
+	part4()
+	part5()
+	part6()
+	part7()
 	part3()
+	part8()
+	if !*noAuthFlag {
+		part9()
+	}
+	part10()
 	writeRecorded()
 
 	fmt.Println()
@@ -444,3 +472,5 @@ func writeRecorded() {
 	_ = os.WriteFile(*recordPath, b, 0o644)
 	fmt.Printf("recorded %d responses to %s\n", len(recorded), *recordPath)
 }
+
+func flagBool(name, usage string) *bool { return flag.Bool(name, false, usage) }

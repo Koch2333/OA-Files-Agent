@@ -1,0 +1,30 @@
+# install.sh / "oa-agentctl domain" render this file to ./Caddyfile (__DOMAIN__ and __EMAIL_LINE__ are replaced).
+{
+	__EMAIL_LINE__
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+__DOMAIN__ {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	reverse_proxy api:8080 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+		flush_interval -1          # keep SSE (task progress) streaming
+		transport http {
+			response_header_timeout 10m
+		}
+	}
+}

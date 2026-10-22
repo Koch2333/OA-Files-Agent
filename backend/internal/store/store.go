@@ -35,23 +35,23 @@ func Open(ctx context.Context, url string) (*Store, error) {
 
 func (s *Store) Close() { s.Pool.Close() }
 
-const jobCols = `id::text, status, total_files, processed_files, success_count, failure_count, plan_id::text, template_id::text, created_at, updated_at`
+const jobCols = `id::text, status, total_files, processed_files, success_count, failure_count, plan_id::text, template_id::text, instruction, automation, llm_source, llm_model, llm_owner, auto_ack_version, auto_ack_at, auto_ack_by, created_at, updated_at`
 
 func scanJob(r pgx.Row) (imports.Job, error) {
 	var j imports.Job
-	err := r.Scan(&j.ID, &j.Status, &j.TotalFiles, &j.ProcessedFiles, &j.SuccessCount, &j.FailureCount, &j.PlanID, &j.TemplateID, &j.CreatedAt, &j.UpdatedAt)
+	err := r.Scan(&j.ID, &j.Status, &j.TotalFiles, &j.ProcessedFiles, &j.SuccessCount, &j.FailureCount, &j.PlanID, &j.TemplateID, &j.Instruction, &j.Automation, &j.LLMSource, &j.LLMModel, &j.LLMOwner, &j.AckVersion, &j.AckAt, &j.AckBy, &j.CreatedAt, &j.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return j, ErrNotFound
 	}
 	return j, err
 }
 
-const fileCols = `id::text, task_id::text, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, to_char(detected_date,'YYYY-MM-DD'), evidence, review_required, archive_status, error, created_at, COALESCE(stored_path,''), ocr_used, template_id::text`
+const fileCols = `id::text, task_id::text, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, to_char(detected_date,'YYYY-MM-DD'), evidence, review_required, archive_status, error, created_at, COALESCE(stored_path,''), ocr_used, template_id::text, analysis->'ocr'`
 
 func scanFile(r pgx.Row) (imports.File, error) {
 	var f imports.File
-	var ev []byte
-	err := r.Scan(&f.ID, &f.TaskID, &f.SourceName, &f.SourcePath, &f.MIMEType, &f.SHA256, &f.SizeBytes, &f.Department, &f.DocumentType, &f.Date, &ev, &f.ReviewRequired, &f.ArchiveStatus, &f.Error, &f.CreatedAt, &f.StoredPath, &f.OCRUsed, &f.TemplateID)
+	var ev, ocr []byte
+	err := r.Scan(&f.ID, &f.TaskID, &f.SourceName, &f.SourcePath, &f.MIMEType, &f.SHA256, &f.SizeBytes, &f.Department, &f.DocumentType, &f.Date, &ev, &f.ReviewRequired, &f.ArchiveStatus, &f.Error, &f.CreatedAt, &f.StoredPath, &f.OCRUsed, &f.TemplateID, &ocr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return f, ErrNotFound
 	}
@@ -60,6 +60,12 @@ func scanFile(r pgx.Row) (imports.File, error) {
 	}
 	if json.Unmarshal(ev, &f.Evidence) != nil || f.Evidence == nil {
 		f.Evidence = []string{}
+	}
+	if len(ocr) > 0 && string(ocr) != "null" {
+		var info imports.OCRInfo
+		if json.Unmarshal(ocr, &info) == nil && info.Used {
+			f.OCR = &info
+		}
 	}
 	return f, nil
 }
@@ -97,8 +103,16 @@ func (s *Store) Save(ctx context.Context, b imports.Batch) (imports.Batch, bool,
 		}
 	}
 	j := b.Job
-	if _, err = tx.Exec(ctx, `INSERT INTO import_jobs(id,status,total_files,processed_files,success_count,failure_count,template_id,idempotency_key,request_fingerprint,created_at,updated_at) VALUES ($1,$2,$3,$4,0,$5,$6::uuid,$7,$8,$9,$9)`,
-		j.ID, j.Status, j.TotalFiles, j.ProcessedFiles, j.FailureCount, nullStr(b.TemplateID), nullStr(b.Key), nullStr(b.Fingerprint), j.CreatedAt); err != nil {
+	automation, source := j.Automation, j.LLMSource
+	if automation == "" {
+		automation = imports.AutomationReview
+	}
+	if source == "" {
+		source = imports.SourceNone
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO import_jobs(id,status,total_files,processed_files,success_count,failure_count,template_id,idempotency_key,request_fingerprint,created_at,updated_at,instruction,automation,llm_source,llm_owner,llm_model,auto_ack_version,auto_ack_at,auto_ack_by) VALUES ($1,$2,$3,$4,0,$5,$6::uuid,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		j.ID, j.Status, j.TotalFiles, j.ProcessedFiles, j.FailureCount, nullStr(b.TemplateID), nullStr(b.Key), nullStr(b.Fingerprint), j.CreatedAt,
+		j.Instruction, automation, source, j.LLMOwner, j.LLMModel, j.AckVersion, j.AckAt, j.AckBy); err != nil {
 		return b, false, err
 	}
 	for _, f := range b.Files {

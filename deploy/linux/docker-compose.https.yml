@@ -1,0 +1,36 @@
+# Layer: Caddy reverse proxy with automatic HTTPS (enabled by COMPOSE_FILE containing this file; see "oa-agentctl domain").
+# Caddyfile is rendered from Caddyfile.template. The API is then published on 127.0.0.1 only (OA_BIND_ADDR).
+services:
+  caddy:
+    image: ${OA_CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "${OA_LOG_MAX_SIZE:-10m}"
+        max-file: "${OA_LOG_MAX_FILE:-5}"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    read_only: true
+    depends_on:
+      api: {condition: service_healthy}
+    ports:
+      - "${OA_HTTP_PORT:-80}:80"
+      - "${OA_HTTPS_PORT:-443}:443"
+      - "${OA_HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${OA_DATA_DIR:-./data}/caddy/data:/data
+      - ${OA_DATA_DIR:-./data}/caddy/config:/config
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: {memory: "${OA_CADDY_MEM:-256m}"}

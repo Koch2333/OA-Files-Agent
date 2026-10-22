@@ -60,7 +60,7 @@ func TestToolInputValidation(t *testing.T) {
 
 func TestRegistryHasNoWriteOrShell(t *testing.T) {
 	reg := NewDefaultRegistry(Options{CheckDuplicates: func(context.Context, FileInput) ([]DuplicateRef, error) { return nil, nil }})
-	want := "check_duplicates,detect_template,extract_metadata,extract_text,inspect_file,run_ocr,validate_plan"
+	want := "assess_ocr,check_duplicates,detect_template,extract_metadata,extract_text,inspect_file,load_skill,read_page_image,rerun_ocr,run_ocr,validate_plan"
 	if got := strings.Join(reg.Names(), ","); got != want {
 		t.Fatalf("tools = %s", got)
 	}

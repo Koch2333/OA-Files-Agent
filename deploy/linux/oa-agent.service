@@ -1,0 +1,25 @@
+# Optional: start the OA Agent stack at boot. Containers already have "restart: unless-stopped", so this is only
+# needed if you stop the Docker restart policy from working (e.g. after "oa-agentctl stop" and a reboot you want it back).
+# install.sh renders __DIR__ and installs this to /etc/systemd/system when you agree.
+[Unit]
+Description=OA Agent (docker compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__DIR__
+ExecStart=/usr/bin/env bash -c 'exec /usr/local/bin/oa-agentctl.sh --dir __DIR__ --yes start'
+ExecStop=/usr/bin/env bash -c 'exec /usr/local/bin/oa-agentctl.sh --dir __DIR__ --yes stop'
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+
+# Logs: containers use Docker's json-file driver with rotation (OA_LOG_MAX_SIZE x OA_LOG_MAX_FILE, default 5 x 10 MB).
+# The service's own output goes to the journal: journalctl -u oa-agent. Cap journald with SystemMaxUse= if desired.
+# /var/log/oa-agent-install.log (installer log, no secrets) can be rotated with a logrotate stanza:
+#   /var/log/oa-agent-install.log { monthly rotate 6 compress missingok notifempty create 0600 root root }

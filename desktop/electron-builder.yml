@@ -1,0 +1,50 @@
+# electron-builder configuration. Version comes from the VERSION file (scripts pass -c.extraMetadata.version).
+# The server bundle (dist/server, built by scripts/build-server-bundle.ps1) is copied to resources/app-server.
+appId: com.oaagent.desktop
+productName: OA 文件智能归档
+copyright: AGPL-3.0-or-later
+executableName: OA-Agent-Desktop
+compression: maximum
+npmRebuild: false
+nodeGypRebuild: false
+asar: true
+electronLanguages: [zh-CN, en-US]
+directories:
+  buildResources: build
+  output: ../dist/desktop
+files:
+  - package.json
+  - src/**
+  - build/icon.png
+  - "!**/*.map"
+extraResources:
+  - from: ${env.OA_SERVER_BUNDLE}
+    to: app-server
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: oa-agent-${version}-windows-x64.${ext}
+  # Code signing is optional: set CSC_LINK + CSC_KEY_PASSWORD (or WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD) to sign.
+  signAndEditExecutable: true
+  verifyUpdateCodeSignature: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: OA 文件智能归档
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  unicode: true
+  displayLanguageSelector: true
+  installerLanguages: [zh_CN, en_US]
+  language: "2052"
+  artifactName: oa-agent-${version}-windows-x64-setup.${ext}
+  include: build/installer.nsh
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  uninstallDisplayName: OA 文件智能归档

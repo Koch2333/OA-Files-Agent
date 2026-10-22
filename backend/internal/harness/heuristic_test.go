@@ -20,7 +20,7 @@ func TestHeuristicAccuracy(t *testing.T) {
 		review   bool
 		evidence []string // substrings that must appear in evidence
 	}{
-		{name: "filename only", filename: "财务部报销申请_20260315.docx", text: "金额合计一百元整", dept: "财务部", typ: "申请", date: "2026-03-15", evidence: []string{"文件名含“财务部”", "文件名含“20260315”"}},
+		{name: "filename only", filename: "财务部报销申请_20260315.docx", text: "金额合计一百元整，请财务核对并按流程办理报销事宜，谢谢。", dept: "财务部", typ: "申请", date: "2026-03-15", evidence: []string{"文件名含“财务部”", "文件名含“20260315”"}},
 		{name: "body only labels", filename: "scan001.pdf", text: "发文部门：人事部\n关于2026年度招聘计划的通知\n" + longPad + "日期：2026-03-15", dept: "人事部", typ: "通知", date: "2026-03-15", evidence: []string{"正文含“发文部门：人事部”", "正文标题含“通知”"}},
 		{name: "date slash standalone", filename: "x.docx", text: "采购部\n关于办公用品采购的通知\n" + longPad + "2026/3/15", dept: "采购部", typ: "通知", date: "2026-03-15"},
 		{name: "date 8 digits filename", filename: "行政部_通知_20260315.pdf", text: longPad, dept: "行政部", typ: "通知", date: "2026-03-15"},
@@ -32,6 +32,8 @@ func TestHeuristicAccuracy(t *testing.T) {
 		{name: "filename convention beats body keywords", filename: "法务部_原材料采购框架合同_2025-10-01.pdf", text: longPad + "采购 采购 付款", dept: "法务部", typ: "合同", date: "2025-10-01"},
 		{name: "open vocabulary department from filename", filename: "研发部_新一代智能检测系统研发项目进度推进会会议纪要_2026-03-12.docx", text: longPad, dept: "研发部", typ: "会议纪要", date: "2026-03-12"},
 		{name: "literal 人力资源部 is not renamed", filename: "人力资源部_2026年3月全公司员工考勤汇总表_2026-03-31.xlsx", text: longPad, dept: "人力资源部", typ: "报表", date: "2026-03-31"},
+		{name: "OCR-merged label and value is not a department", filename: "scan002.png", mime: "image/png", text: "劳动合同续签协议\n用人部门人事部\n员工姓名：张伟\n签订日期：2026年1月5日\n" + longPad, dept: "人事部", typ: "合同", date: "2026-01-05", review: true},
+		{name: "label word in a standalone line is ignored", filename: "scan003.png", mime: "image/png", text: "申请部门\n" + longPad, dept: "", typ: "申请", date: "", review: true},
 		{name: "letterhead names department", filename: "scan001.pdf", text: "销售部\n" + longPad, dept: "销售部", typ: "", date: "", review: true},
 		{name: "conflict dept filename vs label", filename: "财务部通知.docx", text: "发文部门：人事部\n" + longPad, dept: "", typ: "通知", date: "", review: true, evidence: nil},
 		{name: "conflict date filename vs body", filename: "财务部报销申请_20260301.docx", text: "日期：2026年3月15日\n" + longPad, dept: "财务部", typ: "申请", date: "", review: true},

@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,7 +29,7 @@ func testStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema := "oa_store_" + time.Now().Format("150405_000000000")
+	schema := "oa_store_" + fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Int63())
 	q := pgx.Identifier{schema}.Sanitize()
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+q); err != nil {
 		t.Fatal(err)

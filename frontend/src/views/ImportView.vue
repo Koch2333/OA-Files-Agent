@@ -1,52 +1,48 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { useAuth } from '../stores/auth'
+import { useAi } from '../stores/ai'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type PickedFile } from '../api'
-import { collectDropped, fromInput } from '../utils/paths'
+import { api, type StorageConnection } from '../api'
 import { errMsg, useAsync } from '../utils/useAsync'
-import { fmtBytes } from '../utils/format'
+import { useImportFlow } from '../utils/useImportFlow'
 import { useUi } from '../stores/ui'
 import PageHeader from '../components/PageHeader.vue'
 import Icon from '../components/Icon.vue'
+import FilePicker from '../components/FilePicker.vue'
+import ErrorBanner from '../components/ErrorBanner.vue'
+import AutomationSelector from '../components/AutomationSelector.vue'
+import AutoRiskDialog from '../components/AutoRiskDialog.vue'
+import RemoteBrowserDialog from '../components/RemoteBrowserDialog.vue'
 
+const auth = useAuth()
+const ai = useAi()
 const router = useRouter()
 const ui = useUi()
-const picked = ref<PickedFile[]>([])
-const dragging = ref(false)
-const scanning = ref(false)
-const submitting = ref(false)
-const err = ref<string | null>(null)
-const templateId = ref<string>('')
+// 选择/校验/运行方式/提交与工作台拖入区共用同一份逻辑（utils/useImportFlow.ts）
+const flow = useImportFlow()
+const { picked, templateId, instruction, submitting, err, auto, summary, llmOk } = flow
+const instrOpen = ref(false)
 const tpls = useAsync(() => api.listTemplates())
-onMounted(tpls.run)
+watch(() => ai.status, () => auto.revalidate())
+// 存储连接是可选功能：接口不可用或没有可导入的连接时，不渲染来源面板
+const remoteConns = ref<StorageConnection[]>([])
+const remoteOpen = ref(false)
+const remoteBusy = ref(false)
+const remoteErr = ref<string | null>(null)
+const importable = computed(() => remoteConns.value.filter((c) => c.enabled && c.use_for_import))
+onMounted(() => { void tpls.run(); void ai.refresh(); if (auth.isAdmin) api.listStorageConnections().then((l) => { remoteConns.value = l }, () => { remoteConns.value = [] }) })
 
-const SUPPORTED = /\.(docx|xlsx|pdf|png|jpe?g)$/i
-const LEGACY = /\.(doc|xls)$/i
-const supported = computed(() => picked.value.filter((p) => SUPPORTED.test(p.file.name)))
-const unsupported = computed(() => picked.value.filter((p) => !SUPPORTED.test(p.file.name)))
-const total = computed(() => picked.value.reduce((n, p) => n + p.file.size, 0))
-
-function add(list: PickedFile[]) {
-  const seen = new Set(picked.value.map((p) => p.relativePath))
-  picked.value.push(...list.filter((p) => !seen.has(p.relativePath)))
-}
-async function onDrop(e: DragEvent) {
-  dragging.value = false
-  if (!e.dataTransfer) return
-  scanning.value = true
-  try { add(await collectDropped(e.dataTransfer)) } catch (x) { err.value = '读取拖入内容失败：' + errMsg(x) } finally { scanning.value = false }
-}
-function onPick(e: Event) { const el = e.target as HTMLInputElement; if (el.files) add(fromInput(el.files)); el.value = '' }
-function remove(p: PickedFile) { picked.value = picked.value.filter((x) => x !== p) }
-
-async function submit() {
-  submitting.value = true; err.value = null
+async function importRemote(p: { connectionId: string; paths: string[] }) {
+  remoteBusy.value = true; remoteErr.value = null
   try {
-    const job = await api.createImport(picked.value, { templateId: templateId.value || null })
+    const job = await api.createRemoteImport(p.connectionId, p.paths, { templateId: templateId.value || null, idempotencyKey: crypto.randomUUID(), options: flow.currentOptions() })
+    remoteOpen.value = false
     ui.toast('已创建归档任务', 'success')
     await router.push(`/tasks/${job.id}`)
-  } catch (e) { err.value = errMsg(e) } finally { submitting.value = false }
+  } catch (e) { remoteErr.value = errMsg(e); await flow.afterError(e) } finally { remoteBusy.value = false }
 }
+const submit = () => flow.submit()
 </script>
 
 <template>
@@ -54,37 +50,15 @@ async function submit() {
 
   <div class="layout">
     <section class="col">
-      <div class="drop" :class="{ on: dragging }" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="onDrop">
-        <Icon name="cloud_upload" class="big" />
-        <div class="t-title-m">{{ scanning ? '正在读取文件夹…' : '把文件或整个文件夹拖到这里' }}</div>
-        <p class="muted">子文件夹会被递归读取，并保留相对路径</p>
-        <div class="row wrap" style="justify-content: center">
-          <label class="btn filled has-icon"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.doc,.xls" @change="onPick" /></label>
-          <label class="btn tonal has-icon"><Icon name="folder_open" sm />选择文件夹<input type="file" hidden webkitdirectory @change="onPick" /></label>
-        </div>
+      <FilePicker v-model="picked" />
+
+      <div v-if="importable.length" class="card outlined row" data-testid="remote-source">
+        <Icon name="cloud_sync" class="big-s" />
+        <div class="grow"><div class="t-title-m">从存储连接导入</div><p class="muted" style="margin: 2px 0 0">直接从云存储或企业内部存储选择文件/文件夹，拉取到本机后走同样的识别与审批流程。</p></div>
+        <button class="btn tonal has-icon" data-testid="remote-open" @click="remoteErr = null; remoteOpen = true"><Icon name="folder_open" sm />选择远端文件</button>
       </div>
 
-      <div v-if="err" class="banner error" role="alert"><Icon name="error" />{{ err }}</div>
-
-      <div v-if="picked.length" class="card flat">
-        <div class="row hd">
-          <div class="grow"><b>{{ picked.length }}</b> 个文件 · {{ fmtBytes(total) }}<span v-if="unsupported.length" class="chip attention" style="margin-left: 8px">{{ unsupported.length }} 个格式不支持</span></div>
-          <button class="btn sm" @click="picked = []">清空</button>
-        </div>
-        <div class="table-wrap" style="max-height: 360px">
-          <table class="tbl">
-            <thead><tr><th>相对路径</th><th>大小</th><th>状态</th><th /></tr></thead>
-            <tbody>
-              <tr v-for="p in picked" :key="p.relativePath">
-                <td class="ellipsis" style="max-width: 420px" :title="p.relativePath">{{ p.relativePath }}</td>
-                <td class="nowrap muted">{{ fmtBytes(p.file.size) }}</td>
-                <td><span v-if="SUPPORTED.test(p.file.name)" class="chip success">可处理</span><span v-else-if="LEGACY.test(p.file.name)" class="chip attention">旧版 Office，需转换</span><span v-else class="chip error">不支持</span></td>
-                <td><button class="btn icon-only sm" :aria-label="`移除 ${p.file.name}`" @click="remove(p)"><Icon name="close" sm /></button></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ErrorBanner :message="err" />
     </section>
 
     <aside class="col">
@@ -98,10 +72,21 @@ async function submit() {
           </select>
           <span v-if="tpls.error.value" class="muted" style="color: var(--md-sys-color-error)">模板列表加载失败：{{ tpls.error.value }}</span>
         </div>
-        <button class="btn filled has-icon" :disabled="!picked.length || submitting || scanning" @click="submit">
+
+        <AutomationSelector :mode="auto.mode.value" :gate="auto.gate.value" @select="auto.select" />
+
+        <div class="field">
+          <button class="adv-toggle" type="button" :aria-expanded="instrOpen" aria-controls="imp-instr" data-testid="instr-toggle" @click="instrOpen = !instrOpen"><Icon :name="instrOpen ? 'expand_more' : 'chevron_right'" sm />给 AI 的说明（可选）</button>
+          <div v-show="instrOpen" id="imp-instr" class="col">
+            <textarea id="imp-instr-text" v-model="instruction" class="input" rows="3" maxlength="2000" :disabled="!llmOk" placeholder="例如：只处理采购相关文件，按项目名归档" aria-label="给 AI 的说明" data-testid="import-instruction" />
+            <span class="muted hint">{{ llmOk ? `${instruction.length} / 2000。说明只用于指导分类与命名，不会授予额外权限。` : '需要先配置大模型才能使用任务说明（设置 → 大模型），目前将使用离线规则。' }}</span>
+          </div>
+        </div>
+
+        <button class="btn filled has-icon" :disabled="!picked.length || submitting || summary.blocking" data-testid="import-submit" @click="submit">
           <Icon :name="submitting ? 'progress_activity' : 'auto_awesome'" :class="{ spin: submitting }" sm />{{ submitting ? '正在提交…' : `开始智能归档（${picked.length}）` }}
         </button>
-        <p v-if="unsupported.length" class="muted">格式不支持的文件仍会提交，并在任务中显示“格式错误”，不会导致整批失败。</p>
+        <p v-if="summary.rejected" class="muted">格式不支持的文件仍会提交，并在任务中显示“格式错误”，不会导致整批失败。</p>
       </section>
       <section class="card outlined col">
         <h2 class="t-title-m">支持的格式</h2>
@@ -111,13 +96,15 @@ async function submit() {
       </section>
     </aside>
   </div>
+  <RemoteBrowserDialog v-if="remoteOpen" :connections="importable" :busy="remoteBusy" :error="remoteErr" @close="remoteOpen = false" @import="importRemote" />
+  <AutoRiskDialog v-if="auto.dialogOpen.value && ai.status" v-model:checked="auto.checked.value" :status="ai.status" :remaining-sec="auto.remainingSec.value" :can-confirm="auto.canConfirm.value" @confirm="auto.confirm" @cancel="auto.cancel" />
 </template>
 
 <style scoped>
+.big-s { font-size: 36px; color: var(--md-sys-color-primary); }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
-.drop { border: 2px dashed var(--md-sys-color-outline); border-radius: var(--shape-xl); padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; transition: all var(--dur-s); background: var(--c-surface-1); }
-.drop.on { border-color: var(--md-sys-color-primary); background: var(--md-sys-color-primary-container); transform: scale(1.005); }
-.big { font-size: 56px; color: var(--md-sys-color-primary); }
-.hd { padding: 12px 16px; border-bottom: 1px solid var(--md-sys-color-outline-variant); }
+.adv-toggle { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 8px; margin-left: -8px; border-radius: var(--shape-sm); font-weight: 500; }
+.adv-toggle:hover { background: var(--c-surface-3); } .adv-toggle:focus-visible { outline: 3px solid var(--md-sys-color-primary); }
+.hint { font-size: 12px; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
 </style>

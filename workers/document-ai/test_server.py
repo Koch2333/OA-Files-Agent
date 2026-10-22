@@ -254,5 +254,22 @@ class GarbageOutputTest(ChildIsolationBase):
         self.assertEqual((status, body["error"]["code"]), (422, "UNREADABLE_FILE"))
 
 
+class TransientCrashIsRetriedTest(ChildIsolationBase):
+    # fails on the first call (marker file absent), succeeds afterwards
+    script = (
+        "import json, os, sys\n"
+        "marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seen')\n"
+        "if not os.path.exists(marker):\n"
+        "    open(marker, 'w').close()\n"
+        "    os._exit(1)\n"
+        "print(json.dumps({'data': {'text': 'ok', 'pages': [], 'ocr_used': False, 'truncated': False, 'warnings': [], 'metadata': {}}}))\n"
+    )
+
+    def test_one_transient_crash_does_not_make_the_file_unreadable(self):
+        status, body = self.extract(self.sample("办公电脑采购合同.pdf"))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["data"]["text"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()
