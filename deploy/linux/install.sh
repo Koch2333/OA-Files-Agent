@@ -29,18 +29,23 @@ OPEN_FW=ask
 SKIP_VERIFY=0
 ARCHIVE_DIR=''; SPOOL_DIR=''; APP_DIR=''; PG_DIR=''
 EXTRA_MOUNTS=()
+PENDING_CORE=()
+PENDING_EXTRA=()
 UI=''
+PROJECT=''           # compose project name (default oa-agent); also the local image namespace
 
 # Test-only overrides (honoured only when OA_TEST_MODE=1; lets the offline test-suite run unprivileged).
 TEST_MODE="${OA_TEST_MODE:-0}"
 LOG_FILE='/var/log/oa-agent-install.log'
 BIN_DIR='/usr/local/bin'
 UNIT_DIR='/etc/systemd/system'
+ETC_MARKER='/etc/oa-agent/install_dir'   # read by the Go oa-agentctl when neither --dir nor OA_AGENT_DIR is given
 OS_RELEASE='/etc/os-release'
 MEMINFO='/proc/meminfo'
 TTY_DEV='/dev/tty'
 if [ "$TEST_MODE" = 1 ]; then
     LOG_FILE="${OA_INSTALL_LOG:-$LOG_FILE}"; BIN_DIR="${OA_INSTALL_BIN_DIR:-$BIN_DIR}"; UNIT_DIR="${OA_INSTALL_UNIT_DIR:-$UNIT_DIR}"
+    ETC_MARKER="${OA_INSTALL_ETC_MARKER:-$ETC_MARKER}"
     OS_RELEASE="${OA_OS_RELEASE:-$OS_RELEASE}"; MEMINFO="${OA_MEMINFO:-$MEMINFO}"; TTY_DEV="${OA_INSTALL_TTY:-$TTY_DEV}"
 fi
 
@@ -87,6 +92,7 @@ usage() {
   --version <版本>    发行版本（默认 latest）
   --repo-url <URL>    发行包下载地址前缀（占位，环境变量 OA_REPO_URL）；从检出的仓库运行时不需要
   --registry <地址>   使用预构建镜像 <地址>/oa-agent-api:<版本> 而非本地构建（OA_IMAGE_REGISTRY）
+  --project <名称>    Docker Compose 项目名（默认 oa-agent；同一台机器装多套时必须不同），也是本地镜像名前缀
   --archive-dir <路径>  归档根目录（宿主机绝对路径，可为挂载盘/NAS；默认 <安装目录>/data/archive）
   --spool-dir <路径>    导入暂存目录
   --data-dir <路径>     应用数据目录（含 secret.key）
@@ -116,6 +122,7 @@ Usage: install.sh [options]
   --version <ver>     release version (default latest)
   --repo-url <URL>    release download base (PLACEHOLDER, env OA_REPO_URL); not needed from a checkout
   --registry <addr>   use pre-built images <addr>/oa-agent-api:<ver> instead of building locally (OA_IMAGE_REGISTRY)
+  --project <name>    Docker Compose project name (default oa-agent; must differ per install on one host), also the local image prefix
   --archive-dir <path>  archive root (absolute host path, e.g. a mounted disk/NAS; default <dir>/data/archive)
   --spool-dir <path>    import spool directory
   --data-dir <path>     application data directory (holds secret.key)
@@ -163,6 +170,7 @@ while [ $# -gt 0 ]; do
         --version) need_val "$@"; VERSION="$2"; shift 2 ;;
         --repo-url) need_val "$@"; REPO_URL="$2"; shift 2 ;;
         --registry) need_val "$@"; REGISTRY="$2"; shift 2 ;;
+        --project) need_val "$@"; PROJECT="$2"; shift 2 ;;
         --lang) need_val "$@"; case "$2" in zh*) UI=zh ;; *) UI=en ;; esac; shift 2 ;;
         --archive-dir) need_val "$@"; ARCHIVE_DIR="$2"; shift 2 ;;
         --spool-dir) need_val "$@"; SPOOL_DIR="$2"; shift 2 ;;
@@ -208,6 +216,68 @@ ask() {
     IFS= read -r ans <&9 || ans=''
     if [ -n "$ans" ]; then printf -v "$var" '%s' "$ans"; else printf -v "$var" '%s' "${!var:-$4}"; fi
 }
+# ask_valid VAR "中文" "English" default CHECKFN: like ask, but CHECKFN VALUE must succeed. CHECKFN prints the reason
+# on failure; interactively the question is asked again, otherwise (flags / --yes) the installer stops.
+ask_valid() {
+    local var="$1" zh="$2" en="$3" def="$4" chk="$5" why tries=0
+    while :; do
+        ask "$var" "$zh" "$en" "$def"
+        if why="$("$chk" "${!var}")"; then return 0; fi
+        if [ "$ASSUME_YES" = 1 ] || ! have_tty; then die "$zh: $why" "$en: $why"; fi
+        printf '%s[!]%s %s\n' "$C_R" "$C_0" "$why" >&2
+        printf -v "$var" '%s' "$def"
+        tries=$((tries + 1))
+        [ "$tries" -lt 5 ] || die "输入无效次数过多，已中止。" "Too many invalid answers, aborting."
+    done
+}
+chk_install_dir() { valid_dir "$1" || { m "须为绝对路径，只能包含字母、数字和 _ . / -（不支持空格/中文），且不能是 / /etc /opt /var 等系统目录本身" "must be an absolute path with only letters, digits and _ . / - (no spaces), and not a system directory such as / /etc /opt /var itself"; return 1; }; }
+chk_new_install_dir() {
+    chk_install_dir "$1" || return 1
+    if [ -f "${1%/}/.env" ]; then m "${1%/} 中已有安装；要修复/升级它，请重新运行 install.sh --dir ${1%/}（或加 --upgrade）" "${1%/} already holds an installation; to repair/upgrade it re-run install.sh --dir ${1%/} (or add --upgrade)"; return 1; fi
+}
+chk_port() {
+    valid_port "$1" || { m "端口须为 1-65535 的数字" "the port must be a number from 1 to 65535"; return 1; }
+    if port_in_use "$1"; then m "端口 $1 已被占用（ss -ltnp | grep :$1 查看占用者），请换一个" "port $1 is already in use (ss -ltnp | grep :$1 shows who), choose another"; return 1; fi
+}
+chk_domain() { [ -z "$1" ] || valid_domain "$1" || { m "需要完整域名（如 oa.example.com），不能是 IP；留空表示仅 HTTP" "a full domain name is required (e.g. oa.example.com), not an IP; leave empty for HTTP only"; return 1; }; }
+chk_email() { [ -z "$1" ] || valid_email "$1" || { m "邮箱格式不正确" "invalid e-mail address"; return 1; }; }
+chk_mirror() { case "$1" in cn | default) ;; *) m "只能输入 cn 或 default" "enter cn or default"; return 1 ;; esac; }
+# storage_problem PATH: why PATH cannot be a storage directory (prints the reason, returns 1), or nothing
+storage_problem() {
+    local p="${1%/}" a
+    if ! mount_path_ok "$p"; then
+        m "须为绝对路径，只能包含字母、数字和 _ . / -（不支持空格/中文），不能是 / /etc /usr /var /tmp /home 等系统目录（或其中的 /etc /usr /proc /var/lib/docker 之下）" \
+            "must be an absolute path with only letters, digits and _ . / - (no spaces), and not a system directory (/ /etc /usr /var /tmp /home ..., nor below /etc /usr /proc /var/lib/docker)"
+        return 1
+    fi
+    case "$DIR/" in "$p"/*) m "不能包含安装目录 $DIR（其中的 .env 存放密钥）" "must not contain the install directory $DIR (its .env holds the secrets)"; return 1 ;; esac
+    if [ -e "$p" ] && [ ! -d "$p" ]; then m "$p 已存在但不是目录" "$p exists but is not a directory"; return 1; fi
+    a="$p"; while [ ! -e "$a" ] && [ "$a" != / ]; do a="$(dirname -- "$a")"; done
+    if [ ! -w "$a" ]; then
+        if [ "$a" = "$p" ]; then m "$p 不可写（只读文件系统或权限不足）" "$p is not writable (read-only filesystem or permissions)"
+        else m "无法创建 $p：上级目录 $a 不可写（只读文件系统或权限不足）" "cannot create $p: parent $a is not writable (read-only filesystem or permissions)"; fi
+        return 1
+    fi
+}
+# space_note PATH: one line with the free space and filesystem of PATH (or its nearest existing parent)
+space_note() {
+    local a="${1%/}" kb fst
+    while [ ! -e "$a" ] && [ "$a" != / ]; do a="$(dirname -- "$a")"; done
+    kb="$(df -Pk "$a" 2>/dev/null | awk 'NR==2{print $4}' || echo 0)"; kb="${kb:-0}"
+    fst="$(stat -f -c %T "$a" 2>/dev/null || echo unknown)"
+    say "  -> $1：可用 $((kb / 1024 / 1024)) GiB（$fst）" "  -> $1: $((kb / 1024 / 1024)) GiB free ($fst)"
+    if [ "$kb" -lt 20971520 ]; then warn "  该磁盘剩余不足 20 GiB，归档文件会持续增长。" "  Less than 20 GiB free there; the archive keeps growing."; fi
+}
+chk_extra() { # chk_extra SPEC (empty = done)
+    [ -n "$1" ] || return 0
+    local name host
+    if [[ "$1" =~ ^([a-z0-9][a-z0-9_-]{0,30})=(/[A-Za-z0-9_./-]+)(:(ro|rw))?$ ]]; then name="${BASH_REMATCH[1]}"; host="${BASH_REMATCH[2]}"
+    else m "格式应为 名称=/宿主机/路径[:ro|:rw]，名称为小写字母/数字/-/_，例如 nas1=/mnt/nas:ro" "use name=/host/path[:ro|:rw] with a lowercase name, e.g. nas1=/mnt/nas:ro"; return 1; fi
+    mount_path_ok "$host" || { m "路径不合法: $host（不能是系统目录，不能含空格）" "unacceptable path: $host (no system directories, no spaces)"; return 1; }
+    [ -d "$host" ] || { m "目录不存在: $host（请先挂载磁盘/NAS）" "directory does not exist: $host (mount the disk/NAS first)"; return 1; }
+    local i; for i in "${!EX_NAME[@]}"; do [ "${EX_NAME[$i]}" != "$name" ] || { m "名称重复: $name" "duplicate name: $name"; return 1; }; done
+}
+
 # confirm "中文" "English" [default y|n]   -> 0 yes
 confirm() {
     local ans='' def="${3:-n}" hint='[y/N]'
@@ -339,7 +409,7 @@ ctl_running_port() { # does an existing OA install already publish this port?
     local cur_port cur_http cur_https
     cur_port="$(env_get OA_PORT)"; cur_http="$(env_get OA_HTTP_PORT)"; cur_https="$(env_get OA_HTTPS_PORT)"
     [ "$1" = "${cur_port:-}" ] || [ "$1" = "${cur_http:-80}" ] || [ "$1" = "${cur_https:-443}" ] || return 1
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^oa-agent-' || return 1
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROJECT:-oa-agent}-" || return 1
 }
 
 # ---------------------------------------------------------------------------------------------- docker
@@ -462,7 +532,7 @@ sync_source() { # copy source tree + deploy files into the install dir
     mkdir -p "$DIR/src"
     if [ "$(cd "$SRC_ROOT" && pwd)" != "$(cd "$DIR/src" && pwd)" ]; then
         (cd "$SRC_ROOT" && tar --exclude=./.git --exclude=node_modules --exclude=.venv --exclude=__pycache__ --exclude=./frontend/dist --exclude=./dist --exclude=./data --exclude=./backend/bin --exclude=./tests/samples -cf - .) |
-            (cd "$DIR/src" && tar -xf -)
+            (umask 022; cd "$DIR/src" && tar --no-same-owner --no-same-permissions -xf -) # never inherit lax modes (e.g. 0777 from a Windows share)
     fi
     local f
     for f in docker-compose.yml docker-compose.build.yml docker-compose.https.yml Caddyfile.template; do
@@ -492,14 +562,16 @@ install_ctl() {
             die "发行包缺少 bin/SHA256SUMS，无法校验预编译二进制（可加 --skip-verify）。" "bin/SHA256SUMS missing; cannot verify the prebuilt binary (add --skip-verify to override)."
         fi
         built="$pre"
-    elif [ -d "$SRC_ROOT/backend/cmd/oa-agentctl" ] && command -v docker >/dev/null 2>&1; then
+    elif [ -d "$DIR/src/backend/cmd/oa-agentctl" ] && command -v docker >/dev/null 2>&1; then
+        # build from the copy in the install dir (synced above): the same tree the images are built from, and a
+        # path the Docker daemon can bind even when the checkout or download dir lives elsewhere
         say "没有预编译二进制，使用 golang 容器编译 oa-agentctl …" "No prebuilt binary; building oa-agentctl in a golang container ..."
         TMP="${TMP:-$(mktemp -d)}"
         mkdir -p "$TMP/ctl-out"
         local goproxy='https://proxy.golang.org,direct'
         [ "$MIRROR" != cn ] || goproxy='https://goproxy.cn,direct'
         if docker run --rm -e CGO_ENABLED=0 -e GOOS=linux -e "GOARCH=$ARCH" -e GOFLAGS=-mod=readonly -e "GOPROXY=$goproxy" -e GOCACHE=/tmp/gocache \
-            -v "$SRC_ROOT:/src:ro" -v "$TMP/ctl-out:/out" -w /src/backend golang:1.26 \
+            -v "$DIR/src:/src:ro" -v "$TMP/ctl-out:/out" -w /src/backend golang:1.26 \
             go build -trimpath -ldflags "-s -w" -o /out/oa-agentctl ./cmd/oa-agentctl 2>&1 | tee -a "$LOG_FILE" && [ -s "$TMP/ctl-out/oa-agentctl" ]; then
             built="$TMP/ctl-out/oa-agentctl"
         else
@@ -576,28 +648,45 @@ parse_extra_mount() {
 collect_mounts() { # new installs only: prompts (or flags / defaults) for the host paths
     local x=''
     ARCHIVE_DIR="${ARCHIVE_DIR:-$DIR/data/archive}"
-    say "归档文件存放位置可以是任意本机绝对路径（例如已挂载的数据盘或 NAS 挂载点）。" "The archive can live at any absolute local path (e.g. a mounted data disk or a NAS mount point)."
-    ask ARCHIVE_DIR "归档根目录" "Archive root directory" "$ARCHIVE_DIR"
+    say "工作目录（归档根目录）：归档后的文件都存放在这里。可以是任意本机绝对路径，例如已挂载的数据盘或 NAS 挂载点。" \
+        "Working directory (archive root): every archived file is stored here. Any absolute local path works, e.g. a mounted data disk or a NAS mount point."
+    ask_valid ARCHIVE_DIR "归档根目录" "Archive root directory" "$ARCHIVE_DIR" storage_problem
+    space_note "${ARCHIVE_DIR%/}"
     SPOOL_DIR="${SPOOL_DIR:-$DIR/data/spool}"; APP_DIR="${APP_DIR:-$DIR/data/app}"; PG_DIR="${PG_DIR:-$DIR/data/pg}"
-    if [ "$ASSUME_YES" != 1 ] && have_tty && confirm "是否自定义导入暂存/应用数据/数据库目录？" "Customize the spool / app-data / database directories?" n; then
-        ask SPOOL_DIR "导入暂存目录" "Import spool directory" "$SPOOL_DIR"
-        ask APP_DIR "应用数据目录（含 secret.key）" "Application data directory (holds secret.key)" "$APP_DIR"
-        ask PG_DIR "PostgreSQL 数据目录" "PostgreSQL data directory" "$PG_DIR"
+    if [ "$ASSUME_YES" != 1 ] && have_tty && confirm "是否自定义导入暂存/应用数据/数据库目录（默认都在安装目录的 data/ 下）？" "Customize the spool / app-data / database directories (default: under data/ in the install directory)?" n; then
+        ask_valid SPOOL_DIR "导入暂存目录" "Import spool directory" "$SPOOL_DIR" storage_problem
+        ask_valid APP_DIR "应用数据目录（含 secret.key）" "Application data directory (holds secret.key)" "$APP_DIR" storage_problem
+        ask_valid PG_DIR "PostgreSQL 数据目录" "PostgreSQL data directory" "$PG_DIR" storage_problem
     fi
-    local spec
+    local spec why
     for spec in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do parse_extra_mount "$spec"; done
     if [ "$ASSUME_YES" != 1 ] && have_tty; then
+        say "可选：把其他本地目录/NAS 挂载给系统读取（例如待归档的共享盘），容器内路径为 /mnt/storage/<名称>，默认只读。" \
+            "Optional: expose other local directories / NAS mounts to the system (e.g. a share to import from) at /mnt/storage/<name>, read-only by default."
         while :; do
             x=''
-            ask x "额外本地存储（名称=/宿主机/路径[:ro|:rw]，直接回车结束）" "Extra local storage (name=/host/path[:ro|:rw], empty to finish)" ""
+            ask_valid x "额外本地存储（名称=/宿主机/路径[:ro|:rw]，直接回车结束）" "Extra local storage (name=/host/path[:ro|:rw], empty to finish)" "" chk_extra
             [ -n "$x" ] || break
             parse_extra_mount "$x"
         done
     fi
     ARCHIVE_DIR="${ARCHIVE_DIR%/}"; SPOOL_DIR="${SPOOL_DIR%/}"; APP_DIR="${APP_DIR%/}"; PG_DIR="${PG_DIR%/}"
-    if [ "$ARCHIVE_DIR" = "$SPOOL_DIR" ] || [ "$ARCHIVE_DIR" = "$APP_DIR" ] || [ "$ARCHIVE_DIR" = "$PG_DIR" ] || [ "$SPOOL_DIR" = "$APP_DIR" ] || [ "$SPOOL_DIR" = "$PG_DIR" ] || [ "$APP_DIR" = "$PG_DIR" ]; then
-        die "归档/暂存/应用数据/数据库目录必须互不相同" "The archive / spool / app-data / database directories must all be different"
-    fi
+    if why="$(storage_overlap)"; then die "$why" "$why"; fi
+}
+
+# storage_overlap: prints a message and succeeds when two storage directories are equal or nested
+storage_overlap() {
+    local -a n=(archive spool app pgdata) v=("$ARCHIVE_DIR" "$SPOOL_DIR" "$APP_DIR" "$PG_DIR")
+    local i j
+    for i in "${!EX_NAME[@]}"; do n+=("${EX_NAME[$i]}"); v+=("${EX_HOST[$i]}"); done
+    for ((i = 0; i < ${#v[@]}; i++)); do
+        for ((j = i + 1; j < ${#v[@]}; j++)); do
+            case "${v[$j]}/" in "${v[$i]}"/*) ;; *) case "${v[$i]}/" in "${v[$j]}"/*) ;; *) continue ;; esac ;; esac
+            m "存储目录不能相同或互相嵌套：${n[$i]}=${v[$i]} 与 ${n[$j]}=${v[$j]}" "storage directories must not be equal or nested: ${n[$i]}=${v[$i]} and ${n[$j]}=${v[$j]}"
+            return 0
+        done
+    done
+    return 1
 }
 
 # validate and prepare the mount directories (also for an existing install: top-level mkdir/chown only)
@@ -656,6 +745,28 @@ mounts_are_default() {
         { [ ! -f "$DIR/mounts.json" ] || ! grep -q '"name"' "$DIR/mounts.json"; }
 }
 
+# Existing install + storage flags: change the working directory / extra mounts through the Go oa-agentctl
+# (it validates, keeps mounts.json and .env in sync and never moves or deletes data).
+apply_pending_storage() {
+    [ "${#PENDING_CORE[@]}" -gt 0 ] || [ "${#PENDING_EXTRA[@]}" -gt 0 ] || return 0
+    local bin="$BIN_DIR/oa-agentctl"
+    if [ "$CTL_BINARY" != 1 ] || [ ! -x "$bin" ]; then
+        die "更改存储目录需要 Go 版 oa-agentctl，但它未能安装。" "Changing storage paths needs the Go oa-agentctl, which could not be installed."
+    fi
+    local kv role path spec name rest mode
+    for kv in ${PENDING_CORE[@]+"${PENDING_CORE[@]}"}; do
+        role="${kv%%=*}"; path="${kv#*=}"
+        say "更改 $role 目录 → $path" "Changing the $role directory to $path"
+        "$bin" --dir "$DIR" --yes mounts set "$role" "$path" || die "oa-agentctl mounts set $role 失败（已有数据不会被移动或删除；需要迁移请用 oa-agentctl mounts set $role <路径> --copy）" "oa-agentctl mounts set $role failed (existing data is never moved or deleted; use oa-agentctl mounts set $role <path> --copy to copy it)"
+    done
+    for spec in ${PENDING_EXTRA[@]+"${PENDING_EXTRA[@]}"}; do
+        name="${spec%%=*}"; rest="${spec#*=}"; mode=--ro
+        case "$rest" in *:rw) mode=--rw; rest="${rest%:rw}" ;; *:ro) rest="${rest%:ro}" ;; esac
+        say "添加/更新外部挂载 $name → $rest" "Adding/updating extra mount $name -> $rest"
+        "$bin" --dir "$DIR" --yes mounts add "$name" "$rest" "$mode" --replace || die "oa-agentctl mounts add $name 失败" "oa-agentctl mounts add $name failed"
+    done
+}
+
 apply_mounts() { # generate docker-compose.mounts.yml via the Go binary (never in shell)
     local bin="$BIN_DIR/oa-agentctl"
     if [ "$CTL_BINARY" = 1 ] && [ -x "$bin" ]; then
@@ -678,6 +789,25 @@ prepare_dirs() {
     chmod 750 "$DIR/data"
 }
 
+# record DIR as the default install dir of oa-agentctl, unless another live install already owns the marker
+CTL_HINT='oa-agentctl'
+write_marker() {
+    local cur=''
+    [ -f "$ETC_MARKER" ] && cur="$(head -n 1 "$ETC_MARKER" 2>/dev/null || true)"
+    if [ -n "$cur" ] && [ "$cur" != "$DIR" ] && [ -f "$cur/.env" ]; then
+        CTL_HINT="oa-agentctl --dir $DIR"
+        warn "本机已有另一套安装 $cur 是 oa-agentctl 的默认目录；管理本安装请加 --dir $DIR。" "Another install ($cur) is oa-agentctl's default; manage this one with --dir $DIR."
+        return 0
+    fi
+    if mkdir -p "$(dirname -- "$ETC_MARKER")" 2>/dev/null && printf '%s\n' "$DIR" >"$ETC_MARKER" 2>/dev/null; then
+        chmod 755 "$(dirname -- "$ETC_MARKER")" 2>/dev/null || true
+        chmod 644 "$ETC_MARKER" 2>/dev/null || true
+    else
+        [ "$DIR" = /opt/oa-agent ] || CTL_HINT="oa-agentctl --dir $DIR"
+        warn "无法写入 $ETC_MARKER；管理本安装请加 --dir $DIR。" "Cannot write $ETC_MARKER; manage this install with --dir $DIR."
+    fi
+}
+
 write_new_env() {
     local pub tmp
     umask 077
@@ -686,12 +816,13 @@ write_new_env() {
         printf '# Generated by install.sh on %s. Mode 0600. NEVER share; back up OA_SECRET_KEY separately.\n' "$(date -u +%FT%TZ)"
         printf '# See %s/.env.example for the meaning of every variable.\n' "$DIR"
         printf 'COMPOSE_FILE=%s\n' "$COMPOSE_FILES"
+        printf 'COMPOSE_PROJECT_NAME=%s\n' "$PROJECT"
         printf 'OA_DATA_DIR=./data\n'
         printf 'OA_ARCHIVE_DIR=%s\nOA_SPOOL_DIR=%s\nOA_APP_DIR=%s\nOA_PG_DIR=%s\n' "$ARCHIVE_DIR" "$SPOOL_DIR" "$APP_DIR" "$PG_DIR"
         printf 'OA_SRC_DIR=./src\n'
         printf 'OA_VERSION=%s\n' "$VERSION"
         printf 'OA_COMMIT=unknown\n'
-        printf 'OA_IMAGE_REGISTRY=%s\n' "${REGISTRY:-oa-agent}"
+        printf 'OA_IMAGE_REGISTRY=%s\n' "${REGISTRY:-$PROJECT}"
         printf 'OA_REPO_URL=%s\n' "$REPO_URL"
         printf 'OA_BUILD_GOPROXY=%s\n' "$B_GOPROXY"
         printf 'OA_BUILD_NPM_REGISTRY=%s\n' "$B_NPM"
@@ -776,9 +907,16 @@ summary() {
     printf '  %s %s\n' "$(m '访问地址:    ' 'URL:            ')" "$url"
     printf '  %s %s\n' "$(m '初始化令牌:  ' 'SETUP TOKEN:    ')" "$token"
     printf '  %s %s\n' "$(m '安装目录:    ' 'Install dir:    ')" "$DIR"
-    printf '  %s %s\n' "$(m '归档目录:    ' 'Archive dir:    ')" "$ARCHIVE_DIR"
+    printf '  %s %s\n' "$(m '归档目录:    ' 'Archive dir:    ')" "$ARCHIVE_DIR  $(m '（工作目录：归档后的文件存放在这里）' '(working directory: archived files are stored here)')"
+    printf '  %s %s\n' "$(m '其他数据:    ' 'Other data:     ')" "$(m '暂存' 'spool') $SPOOL_DIR | $(m '应用数据' 'app data') $APP_DIR | PostgreSQL $PG_DIR"
+    local i
+    for i in "${!EX_NAME[@]}"; do
+        printf '  %s %s\n' "$(m '额外挂载:    ' 'Extra mount:    ')" "${EX_NAME[$i]}: ${EX_HOST[$i]} -> /mnt/storage/${EX_NAME[$i]} (${EX_RO[$i]})"
+    done
     printf '  %s %s\n' "$(m '配置目录:    ' 'Config dir:     ')" "$DIR (.env, mounts.json)"
-    printf '  %s %s\n' "$(m '管理命令:    ' 'Management:     ')" "oa-agentctl status | logs | backup | upgrade | doctor | help"
+    printf '  %s %s\n' "$(m '管理命令:    ' 'Management:     ')" "$CTL_HINT  $(m '（不带参数进入交互界面）' '(no arguments: interactive UI)')"
+    printf '  %s %s\n' "$(m '             ' '                ')" "$CTL_HINT status | logs | doctor | backup | upgrade | setup-token | help"
+    printf '  %s %s\n' "$(m '更换目录:    ' 'Change dirs:    ')" "$CTL_HINT mounts list | mounts set archive <$(m '新路径' 'new path')> --copy | mounts add <$(m '名称' 'name')> <$(m '路径' 'path')>"
     printf '  %s %s\n' "$(m '安装日志:    ' 'Install log:    ')" "$([ "$LOG_OK" = 1 ] && echo "$LOG_FILE" || echo '-')"
     printf '\n%s%s%s\n' "$C_Y" "$(m '  【重要】' '  [IMPORTANT]')" "$C_0"
     printf '  %s\n' "$(m '1. 实例已对外暴露：请立即打开上面的地址完成初始化向导（创建管理员 + 绑定二次验证），' '1. The instance is exposed: open the URL above NOW and finish the setup wizard (create the admin + enroll MFA);')"
@@ -819,15 +957,15 @@ main() {
     # ---- interactive questions (flags win; --yes uses defaults)
     if [ "$existing" = 0 ] && [ "$DO_UPGRADE" = 0 ]; then
         step "配置" "Configuration"
-        ask DIR "安装目录" "Install directory" "$DIR"
-        valid_dir "$DIR" || die "安装目录不合法: $DIR" "Invalid install dir: $DIR"
+        if [ "$ASSUME_YES" != 1 ] && have_tty; then say "直接回车使用方括号中的默认值。" "Press Enter to accept the default shown in brackets."; fi
+        ask_valid DIR "安装目录（程序、配置 .env 与 mounts.json）" "Install directory (program, .env and mounts.json)" "$DIR" chk_new_install_dir
         DIR="${DIR%/}"
-        ask PORT "HTTP 端口" "HTTP port" "$PORT"
-        ask DOMAIN "域名（留空 = 仅 HTTP，无 Passkey）" "Domain (empty = HTTP only, no Passkeys)" "$DOMAIN"
-        if [ -n "$DOMAIN" ]; then ask EMAIL "证书邮箱（可选）" "Certificate e-mail (optional)" "$EMAIL"; fi
+        ask_valid PORT "HTTP 端口" "HTTP port" "$PORT" chk_port
+        ask_valid DOMAIN "域名（留空 = 仅 HTTP，无 Passkey）" "Domain (empty = HTTP only, no Passkeys)" "$DOMAIN" chk_domain
+        if [ -n "$DOMAIN" ]; then ask_valid EMAIL "证书邮箱（可选）" "Certificate e-mail (optional)" "$EMAIL" chk_email; fi
         if [ -z "$MIRROR" ]; then
             local mdef=default; [ "$UI" = zh ] && mdef=cn
-            ask MIRROR "镜像源 cn(中国大陆)/default" "Mirror cn(China)/default" "$mdef"
+            ask_valid MIRROR "镜像源 cn(中国大陆)/default" "Mirror cn(China)/default" "$mdef" chk_mirror
         fi
         collect_mounts
     else
@@ -839,10 +977,24 @@ main() {
         local old_domain; old_domain="$(env_get OA_DOMAIN)"
         [ -z "$DOMAIN" ] && DOMAIN="$old_domain"
         [ -z "$EMAIL" ] && EMAIL="$(env_get OA_ACME_EMAIL)"
-        local _ign="$ARCHIVE_DIR$SPOOL_DIR$APP_DIR$PG_DIR"
+        # Storage flags on an existing install are APPLIED (changing the working directory later is allowed):
+        # remember them, load the current layout, and let oa-agentctl change the paths once it is installed.
+        PENDING_CORE=()
+        [ -n "$ARCHIVE_DIR" ] && PENDING_CORE+=("archive=$ARCHIVE_DIR")
+        [ -n "$SPOOL_DIR" ] && PENDING_CORE+=("spool=$SPOOL_DIR")
+        [ -n "$APP_DIR" ] && PENDING_CORE+=("app=$APP_DIR")
+        [ -n "$PG_DIR" ] && PENDING_CORE+=("pgdata=$PG_DIR")
+        PENDING_EXTRA=(${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"})
         load_mounts_from_env
-        if [ -n "$_ign" ] || [ "${#EXTRA_MOUNTS[@]}" -gt 0 ]; then warn "已有安装：忽略存储目录参数（请用 oa-agentctl 的 mounts 命令修改）。" "Existing install: storage path flags are ignored (use the mounts commands of oa-agentctl)."; fi
     fi
+    # ---- compose project: fixed at first install (renaming it would orphan the running containers)
+    if [ "$existing" = 1 ]; then
+        local cur_proj; cur_proj="$(env_get COMPOSE_PROJECT_NAME)"; cur_proj="${cur_proj:-oa-agent}"
+        if [ -n "$PROJECT" ] && [ "$PROJECT" != "$cur_proj" ]; then warn "已有安装：忽略 --project（保持 $cur_proj）。" "Existing install: --project ignored (keeping $cur_proj)."; fi
+        PROJECT="$cur_proj"
+    fi
+    PROJECT="${PROJECT:-oa-agent}"
+    [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]{0,30}$ ]] || die "项目名不合法: $PROJECT（小写字母/数字/-/_，最多 31 个字符）" "Invalid project name: $PROJECT (lowercase letters/digits/-/_, at most 31 characters)"
     [ -z "$MIRROR" ] && MIRROR=default
     case "$MIRROR" in cn | default) ;; *) die "--mirror 只能是 cn 或 default" "--mirror must be cn or default" ;; esac
     valid_port "$PORT" || die "端口不合法: $PORT" "Invalid port: $PORT"
@@ -883,6 +1035,7 @@ main() {
     step "准备文件" "Preparing files"
     if find_local_source; then say "使用本地源码: $SRC_ROOT" "Using local source: $SRC_ROOT"; else download_source; fi
     prepare_dirs
+    write_marker
     sync_source
     install_ctl
     prepare_mounts
@@ -902,6 +1055,7 @@ main() {
         fi
         ok "保留现有 .env（密钥未改动）" "Kept existing .env (secrets untouched)"
     fi
+    apply_pending_storage
     apply_mounts
 
     offer_systemd

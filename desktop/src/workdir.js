@@ -106,7 +106,7 @@ async function walk(root) {
 }
 
 /**
- * Copy src -> dst (dst must not exist or be empty), verifying every file's size and a final full pass.
+ * Copy src -> dst (merging into a non-empty dst is fine; existing files are never overwritten), verifying every file's size and a final full pass.
  * Never deletes anything. onProgress({files, totalFiles, bytes, totalBytes}).
  */
 async function copyVerify(src, dst, { onProgress, signal, exclude } = {}) {
@@ -117,9 +117,18 @@ async function copyVerify(src, dst, { onProgress, signal, exclude } = {}) {
     await fsp.mkdir(dst, { recursive: true })
     return { files: 0, bytes: 0 }
   }
-  if (fs.existsSync(dst) && (await fsp.readdir(dst)).length > 0) throw Object.assign(new Error('目标文件夹不是空的。'), { code: 'TARGET_NOT_EMPTY' })
   const entries = (await walk(src)).filter((e) => !exclude || !exclude(e.rel))
   const files = entries.filter((e) => !e.dir)
+  // A non-empty target is allowed (merge): files already there with the same size are kept as they are; a same-named file
+  // with a DIFFERENT size is a conflict and nothing is copied at all — an existing file is never overwritten.
+  if (fs.existsSync(dst) && (await fsp.readdir(dst)).length > 0) {
+    const conflicts = []
+    for (const f of files) {
+      const st = await fsp.stat(path.join(dst, f.rel)).catch(() => null)
+      if (st && (!st.isFile() || st.size !== f.size)) conflicts.push(f.rel)
+    }
+    if (conflicts.length) throw Object.assign(new Error(`目标文件夹里有 ${conflicts.length} 个同名但内容不同的文件（例如 ${conflicts[0]}）。为避免覆盖，已中止，未复制任何文件。`), { code: 'CONFLICT', conflicts })
+  }
   const totalBytes = files.reduce((n, f) => n + f.size, 0)
   const free = freeBytes(dst)
   if (free !== null && free < totalBytes * 1.02 + 64 * 1024 * 1024) throw Object.assign(new Error('目标磁盘剩余空间不足。'), { code: 'NO_SPACE' })
@@ -130,10 +139,12 @@ async function copyVerify(src, dst, { onProgress, signal, exclude } = {}) {
   for (const f of files) {
     if (signal && signal.aborted) throw new Error('已取消。')
     const to = path.join(dst, f.rel)
-    await fsp.copyFile(path.join(src, f.rel), to, fs.constants.COPYFILE_EXCL)
-    const st = await fsp.stat(to)
-    if (st.size !== f.size) throw new Error(`校验失败（大小不一致）：${f.rel}`)
-    await fsp.utimes(to, f.mtime, f.mtime).catch(() => {})
+    if (!fs.existsSync(to)) {
+      await fsp.copyFile(path.join(src, f.rel), to, fs.constants.COPYFILE_EXCL)
+      const st = await fsp.stat(to)
+      if (st.size !== f.size) throw new Error(`校验失败（大小不一致）：${f.rel}`)
+      await fsp.utimes(to, f.mtime, f.mtime).catch(() => {})
+    }
     n += 1
     bytes += f.size
     if (onProgress) onProgress({ files: n, totalFiles: files.length, bytes, totalBytes })
@@ -176,4 +187,15 @@ async function switchWorkdir({ oldRoot, newRoot, mode, stopBackend, copy, setRoo
   return { ok: true }
 }
 
-module.exports = { validateDir, copyVerify, switchWorkdir, isInside, freeBytes, nearestExisting, walk }
+/**
+ * Folders an archive/data directory must not be placed in (installDirs) or must not be exactly (exact).
+ * Installed build: anything under the install dir (upgrades/uninstall replace it). Portable build: the extracted folder
+ * belongs to the user and its default archive folder is <exe dir>\归档, so only the program's own sub-folders
+ * (resources, locales) are off limits, plus the program folder itself.
+ */
+function programDirs({ portable, exeDir, serverDir }) {
+  if (portable) return { installDirs: [path.join(exeDir, 'resources'), path.join(exeDir, 'locales'), serverDir], exact: [exeDir] }
+  return { installDirs: [exeDir, serverDir], exact: [] }
+}
+
+module.exports = { validateDir, copyVerify, switchWorkdir, isInside, freeBytes, nearestExisting, walk, programDirs }

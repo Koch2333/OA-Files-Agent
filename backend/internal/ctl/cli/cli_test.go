@@ -362,12 +362,12 @@ func TestMountsAdd(t *testing.T) {
 	r.exitIs(t, ExitFail, "mounts", "add", "inner", "/srv/oa/archive/sub", "--yes") // nested in archive
 	r.exitIs(t, ExitFail, "mounts", "add", "up", "/mnt/../etc", "--yes")            // ..
 	r.exitIs(t, ExitUsage, "mounts", "add", "onlyname")
-	// ro -> rw on an existing extra needs the typed acknowledgement (not available without a TTY)
-	r.exitIs(t, ExitRefused, "mounts", "add", "nas1", "/mnt/nas1", "--rw", "--replace", "--yes")
+	// ro -> rw on an existing extra needs an ordinary confirmation (--yes); without a TTY and without --yes it is refused
+	r.exitIs(t, ExitRefused, "mounts", "add", "nas1", "/mnt/nas1", "--rw", "--replace")
 	if !r.mountsJSON(t).Extra[0].ReadOnly {
 		t.Error("ro->rw must not have been applied")
 	}
-	r.exitIs(t, 0, "mounts", "add", "nas1", "/mnt/nas1", "--rw", "--replace", "--yes", "--accept-data-move")
+	r.exitIs(t, 0, "mounts", "add", "nas1", "/mnt/nas1", "--rw", "--replace", "--yes")
 	if r.mountsJSON(t).Extra[0].ReadOnly {
 		t.Error("explicit ack should allow rw")
 	}
@@ -386,15 +386,15 @@ func TestMountsSetArchiveSafety(t *testing.T) {
 	full := mounts.Probe{Exists: true, IsDir: true, Mode: 0o750, UID: 10001, GID: 10001, Empty: false, FreeBytes: 500 << 30, TotalBytes: 900 << 30}
 	r.prober["/srv/oa/archive"] = full
 	before := r.mountsJSON(t)
-	// non-empty old archive: refused without explicit acknowledgement, nothing changes, nothing is moved
-	r.exitIs(t, ExitRefused, "mounts", "set", "archive", "/srv/new/archive", "--yes")
+	// non-empty old archive: needs a confirmation (--yes); without it nothing changes and nothing is moved
+	r.exitIs(t, ExitRefused, "mounts", "set", "archive", "/srv/new/archive")
 	if r.mountsJSON(t).Archive.Host != before.Archive.Host || len(r.execs) != 0 {
 		t.Error("state changed without ack")
 	}
 	if !strings.Contains(r.err.String(), "不会】移动或删除") || !strings.Contains(r.err.String(), "/srv/oa/archive") {
 		t.Errorf("warning must explain and name the old path:\n%s", r.err)
 	}
-	r.exitIs(t, 0, "mounts", "set", "archive", "/srv/new/archive", "--yes", "--accept-data-move")
+	r.exitIs(t, 0, "mounts", "set", "archive", "/srv/new/archive", "--yes")
 	if r.mountsJSON(t).Archive.Host != "/srv/new/archive" {
 		t.Error("not applied with ack")
 	}
@@ -454,10 +454,10 @@ func TestMountsSetPgdata(t *testing.T) {
 	if r.mountsJSON(t).PGData.Host != "/srv/newpg" {
 		t.Error("stopped stack with empty old pgdata should work")
 	}
-	// non-empty old db requires acknowledgement even when stopped
+	// non-empty old db still needs a confirmation (--yes) even when stopped; without it, refused
 	r.prober["/srv/newpg"] = mounts.Probe{Exists: true, IsDir: true, Empty: false, Mode: 0o700, UID: 70, GID: 70}
 	r.prober["/srv/other"] = mounts.Probe{Exists: true, IsDir: true, Empty: true, Mode: 0o700, UID: 70, GID: 70}
-	r.exitIs(t, ExitRefused, "mounts", "set", "pgdata", "/srv/other", "--yes")
+	r.exitIs(t, ExitRefused, "mounts", "set", "pgdata", "/srv/other")
 }
 
 func TestMountsApplyUnattended(t *testing.T) {

@@ -1,7 +1,7 @@
 // End-to-end smoke test of the desktop shell with puppeteer-core over CDP (Windows, run with node).
 //   SMOKE_EXE      Electron/packaged exe (required)         SMOKE_APP   app dir to pass as first argument (dev run only)
 //   SMOKE_WORK     scratch directory (required, wiped)      SMOKE_SERVER_DIR  override backend bundle dir (optional)
-//   SMOKE_PORT     remote debugging port (default 9333)     SMOKE_SHOTS screenshot dir (default <work>/shots)
+//   SMOKE_PORT     remote debugging port (default 19333)     SMOKE_SHOTS screenshot dir (default <work>/shots)
 // Asserts: splash appears before the main window, main window loads the UI from 127.0.0.1, splash disappears after,
 // data dir layout, a second launch keeps a single instance, quitting leaves no oa-agent/postgres/worker processes.
 import { spawn, execFileSync } from 'node:child_process'
@@ -17,7 +17,7 @@ const puppeteer = require(path.resolve(here, '..', '..', 'frontend', 'node_modul
 const exe = process.env.SMOKE_EXE
 const work = path.resolve(process.env.SMOKE_WORK || '')
 if (!exe || !process.env.SMOKE_WORK) throw new Error('SMOKE_EXE and SMOKE_WORK are required')
-const port = Number(process.env.SMOKE_PORT || 9333)
+const port = Number(process.env.SMOKE_PORT || 19333)
 const shots = process.env.SMOKE_SHOTS || path.join(work, 'shots')
 const portable = process.env.SMOKE_PORTABLE === '1'
 const firstRun = process.env.SMOKE_FIRSTRUN === '1'

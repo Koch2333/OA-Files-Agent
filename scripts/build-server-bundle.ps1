@@ -64,7 +64,7 @@ Copy-Item (Join-Path $RepoRoot "LICENSE") (Join-Path $Out "LICENSE.txt") -ErrorA
 Write-Utf8 (Join-Path $Out "VERSION.txt") ("version=$env:OA_VERSION`r`ncommit=$env:OA_COMMIT`r`nmode=$Mode`r`n")
 if ($Extras) {
   Copy-Item (Join-Path $RepoRoot "deploy\windows\start.bat") $Out
-  foreach ($f in "start-banner.txt", "start-stopped.txt") { Copy-Item (Join-Path $RepoRoot "deploy\windows\$f") $Out }
+  foreach ($f in "start-banner.txt", "start-stopped.txt", "first-run.ps1", "change-workdir.bat") { Copy-Item (Join-Path $RepoRoot "deploy\windows\$f") $Out }
   Copy-Item (Join-Path $RepoRoot "docs\用户手册.md") $Out -ErrorAction SilentlyContinue
   Copy-Item -Recurse (Join-Path $RepoRoot "tests\samples") (Join-Path $Out "演示样本") -ErrorAction SilentlyContinue
 }

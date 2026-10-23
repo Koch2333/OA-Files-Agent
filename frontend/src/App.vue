@@ -11,6 +11,7 @@ import { badgeText } from './utils/diagnostics'
 import { ROLE_LABEL } from './utils/authz'
 import { buildNav, groupBadge, inSettingsGroup, SETTINGS_GROUP_LABEL, settingsExpanded, type NavItem } from './utils/navModel'
 import Icon from './components/Icon.vue'
+import { desktop } from './utils/desktop'
 import Toasts from './components/Toasts.vue'
 import ReauthDialog from './components/ReauthDialog.vue'
 import BackendBanner from './components/BackendBanner.vue'
@@ -58,6 +59,8 @@ watch(() => route.fullPath, () => { if (auth.canWrite && !restricted.value) void
 watch(() => auth.user?.id, () => ai.reset())
 onBeforeUnmount(() => { diag.stop(); attention.stop() })
 function go(p: string) { menuOpen.value = false; void router.push(p) }
+const desk = desktop()
+function openDesktopSettings() { menuOpen.value = false; void desk?.openSettings() }
 
 const reviewCount = computed(() => (auth.canWrite && attention.reviewTasks > 0 ? badgeText(attention.reviewTasks) : ''))
 const badges = computed(() => ({ review: reviewCount.value, diag: openReports.value ?? '' }))
@@ -105,6 +108,7 @@ function badgeTest(n: NavItem): string | undefined { return n.badge === 'diag' ?
           <div v-if="menuOpen" class="menu card" role="menu" aria-label="用户菜单" @keydown.esc="menuOpen = false">
             <div class="mhead"><div class="t-title-m ellipsis">{{ auth.user.display_name }}</div><div class="muted t-label ellipsis">{{ auth.user.username }}</div><span class="chip" :class="auth.user.role === 'admin' ? 'progress' : ''" data-testid="role-chip">{{ ROLE_LABEL[auth.user.role] }}</span></div>
             <button class="mi" role="menuitem" @click="go('/account/security')"><Icon name="manage_accounts" sm />账号安全</button>
+            <button v-if="desk" class="mi" role="menuitem" data-testid="desktop-settings" @click="openDesktopSettings"><Icon name="settings" sm />桌面版设置…</button>
             <button class="mi" role="menuitem" @click="cycleTheme"><Icon name="contrast" sm />配色：{{ themeLabel }}</button>
             <button class="mi" role="menuitem" data-testid="density-toggle" @click="toggleDensity"><Icon name="density_small" sm />表格行高：{{ ui.density === 'compact' ? '紧凑' : '舒适' }}</button>
             <button v-if="!auth.isLocalMode" class="mi" role="menuitem" data-testid="logout" @click="logout"><Icon name="logout" sm />退出登录</button>

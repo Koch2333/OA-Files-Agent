@@ -1,9 +1,11 @@
 'use strict'
 const fs = require('fs')
 const path = require('path')
-const { app, BrowserWindow, Menu, Tray, dialog, shell, session, screen, nativeImage, Notification } = require('electron')
+const os = require('os')
+const { app, BrowserWindow, Menu, Tray, dialog, shell, session, screen, nativeImage, Notification, clipboard, ipcMain } = require('electron')
 const { resolveDataDir, resolveServerDir, defaultArchiveRoot, isPortable, exeDir, readInstallPreset, writePointer, dataDirLocked } = require('./paths')
-const { validateDir, copyVerify, switchWorkdir, isInside } = require('./workdir')
+const { validateDir, copyVerify, switchWorkdir, isInside, programDirs, freeBytes } = require('./workdir')
+const { createSettings } = require('./settings-ctl')
 const { runSetup } = require('./setup-ctl')
 const { Config } = require('./config')
 const { createLogger } = require('./logger')
@@ -52,26 +54,60 @@ app.on('second-instance', () => {
 function validateCtx(kind) {
   const env = (k) => process.env[k] || ''
   const docs = (() => { try { return app.getPath('documents') } catch { return '' } })()
+  // Portable build: the default archive folder is <exe dir>\归档, so only the program's own sub-folders are off limits.
+  const prog = programDirs({ portable: isPortable(), exeDir: exeDir(), serverDir })
   return {
     kind,
-    installDirs: [exeDir(), serverDir],
+    installDirs: prog.installDirs,
     dataDir,
     archiveRoot: config.get('archiveRoot'),
     protectedDirs: [env('SystemRoot'), env('ProgramFiles'), env('ProgramFiles(x86)')].filter(Boolean),
-    exactProtected: [env('ProgramData'), env('USERPROFILE'), docs, path.join(env('USERPROFILE') || '', 'Desktop'), path.join(env('USERPROFILE') || '', 'Downloads')].filter(Boolean),
+    exactProtected: [env('ProgramData'), env('USERPROFILE'), docs, path.join(env('USERPROFILE') || '', 'Desktop'), path.join(env('USERPROFILE') || '', 'Downloads'), ...prog.exact].filter(Boolean),
+  }
+}
+
+// The saved working directory is used as is on every launch. If it is temporarily unusable (disk unplugged, network
+// location offline, no permission) the user gets a retry / change / quit dialog; the setting itself is never cleared and
+// the first-run folder dialog is not shown again.
+async function ensureArchiveAvailable(root) {
+  for (;;) {
+    try {
+      fs.mkdirSync(root, { recursive: true })
+      fs.accessSync(root, fs.constants.W_OK)
+      return root
+    } catch (e) {
+      log.warn(`archive root unavailable: ${root}: ${e.code || e.message}`)
+      const r = await dialog.showMessageBox({
+        type: 'warning', title: PRODUCT, message: '工作目录暂时无法使用',
+        detail: `${root}\n（${e.code || e.message}）\n\n可能是磁盘未连接、网络位置已断开或没有写入权限。你的设置没有被改动。`,
+        buttons: ['重试', '更改工作目录…', '退出'], defaultId: 0, cancelId: 2, noLink: true,
+      })
+      if (r.response === 0) continue
+      if (r.response === 2) {
+        quitting = true
+        app.exit(0)
+        return new Promise(() => {})
+      }
+      const pick = await runSetup({ mode: 'change', defaultArchive: root, currentArchive: root, currentData: dataDir, canData: false, ctxFor: validateCtx })
+      if (pick) {
+        config.set('archiveRoot', pick.archive)
+        root = pick.archive
+      }
+    }
   }
 }
 
 async function resolveArchiveRoot() {
-  if (process.env.OA_AGENT_ARCHIVE_ROOT) return path.resolve(process.env.OA_AGENT_ARCHIVE_ROOT)
+  if (process.env.OA_AGENT_ARCHIVE_ROOT) return ensureArchiveAvailable(path.resolve(process.env.OA_AGENT_ARCHIVE_ROOT))
   let root = config.get('archiveRoot')
-  if (root) return root
+  if (root) return ensureArchiveAvailable(root)
   const preset = readInstallPreset() // chosen on the installer's working-directory page (or /ARCHIVE=)
   if (preset && (await validateDir(preset, validateCtx('archive'))).ok) {
     config.set('archiveRoot', preset)
     log.info(`archive root from installer preset: ${preset}`)
     return preset
   }
+  const hadData = fs.existsSync(path.join(dataDir, 'pg', 'PG_VERSION'))
   const r = await runSetup({
     mode: 'first',
     defaultArchive: defaultArchiveRoot(),
@@ -79,6 +115,7 @@ async function resolveArchiveRoot() {
     currentData: dataDir,
     canData: !dataDirLocked(),
     ctxFor: validateCtx,
+    note: hadData ? '检测到已有数据，但没有找到已保存的工作目录设置。请选择之前使用的归档文件夹（选择后会保存，以后不再询问）。' : '',
   })
   if (!r) {
     log.info('first-run folder dialog cancelled: quitting')
@@ -98,7 +135,7 @@ async function resolveArchiveRoot() {
     return new Promise(() => {})
   }
   config.set('archiveRoot', r.archive)
-  return r.archive
+  return ensureArchiveAvailable(r.archive)
 }
 
 const fmtBytes = (n) => (n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GB' : (n / 1024 ** 2).toFixed(1) + ' MB')
@@ -114,18 +151,15 @@ async function changeArchiveRoot() {
   if (!r) return
   const newRoot = r.archive
   if (path.resolve(newRoot).toLowerCase() === path.resolve(oldRoot).toLowerCase()) return
-  if (isInside(newRoot, oldRoot) || isInside(oldRoot, newRoot)) {
-    dialog.showMessageBox(win || undefined, { type: 'warning', message: '新旧文件夹不能互相包含。' })
+  // Copying a folder into itself would never end; merely switching to a nested folder is harmless.
+  if (r.mode === 'migrate' && (isInside(newRoot, oldRoot) || isInside(oldRoot, newRoot))) {
+    dialog.showMessageBox(win || undefined, { type: 'warning', message: '迁移时新旧文件夹不能互相包含。', detail: '请选择另一个位置，或改用“直接使用新位置”（不复制文件）。' })
     return
   }
   const nonEmpty = fs.existsSync(newRoot) && fs.readdirSync(newRoot).length > 0
-  if (r.mode === 'migrate' && nonEmpty) {
-    dialog.showMessageBox(win || undefined, { type: 'warning', message: '迁移需要一个空的目标文件夹', detail: '所选文件夹不是空的。请选择空文件夹；如果它已经是现有的归档副本，请改用“直接使用新位置”。' })
-    return
-  }
   const detail =
     r.mode === 'migrate'
-      ? `将把\n${oldRoot}\n中的归档文件复制到\n${newRoot}\n逐文件校验大小，全部成功后才切换；旧文件夹会保留。\n\n过程中后台服务会暂停，请勿关闭程序。`
+      ? `将把\n${oldRoot}\n中的归档文件复制到\n${newRoot}\n逐文件校验大小，全部成功后才切换；旧文件夹会保留。${nonEmpty ? '\n\n目标文件夹已有内容：会合并进去，已存在的同名同大小文件保持不动；若有同名但内容不同的文件会中止，绝不覆盖。' : ''}\n\n过程中后台服务会暂停，请勿关闭程序。`
       : `将直接使用\n${newRoot}\n不会复制任何文件。\n${nonEmpty ? '' : '\n警告：该文件夹是空的，台账中所有文件都会显示为“缺失”。\n'}\n台账中在新位置找不到的文件会显示为“缺失”。`
   const c = await dialog.showMessageBox(win || undefined, {
     type: nonEmpty || r.mode === 'migrate' ? 'question' : 'warning', title: PRODUCT, message: r.mode === 'migrate' ? '迁移工作目录' : '直接使用新位置', detail,
@@ -263,8 +297,96 @@ function handleAction(url) {
     case 'quit':
       app.quit()
       break
+    case 'settings':
+      settings.show()
+      break
   }
 }
+
+// ---------- settings window + the small window.oaDesktop bridge of the web UI ----------
+async function settingsState() {
+  const root = (backend && backend.archiveRoot) || config.get('archiveRoot', '') || ''
+  const state = {
+    version: app.getVersion(),
+    portable: isPortable(),
+    dataDir,
+    dataLocked: dataDirLocked(),
+    archiveRoot: root,
+    archiveLocked: !!process.env.OA_AGENT_ARCHIVE_ROOT,
+    archiveFree: root ? freeBytes(root) : null,
+    autoStart: false,
+    minimizeToTray: !!config.get('minimizeToTray', false),
+    fixedPort: Number(config.get('fixedPort', 0)) || 0,
+    port: backend ? backend.port : 0,
+    backendVersion: (backend && backend.version) || '',
+    logsDir: log.dir,
+  }
+  try {
+    state.autoStart = !!app.getLoginItemSettings().openAtLogin
+  } catch {
+    /* not supported on this platform */
+  }
+  return state
+}
+
+function diagnosticsText() {
+  return [
+    `${PRODUCT} ${app.getVersion()}${isPortable() ? '（便携版）' : ''}`,
+    backend && backend.version ? `后端：${backend.version}` : '',
+    `系统：${os.type()} ${os.release()} ${os.arch()}`,
+    `Electron ${process.versions.electron} / Chromium ${process.versions.chrome} / Node ${process.versions.node}`,
+    `数据目录：${dataDir}`,
+    `工作目录：${(backend && backend.archiveRoot) || config.get('archiveRoot', '')}`,
+    `本机服务端口：${backend ? backend.port : '未运行'}`,
+    `日志：${log.dir}`,
+  ].filter(Boolean).join('\n')
+}
+
+const settings = createSettings({
+  parent: () => win,
+  getState: settingsState,
+  changeArchive: async () => {
+    await changeArchiveRoot()
+    settings.refresh()
+  },
+  migrateData: migrateDataDir,
+  open: (what) => {
+    if (what === 'archive' && backend) return shell.openPath(backend.archiveRoot)
+    if (what === 'data') return shell.openPath(dataDir)
+    if (what === 'logs') return openLogs()
+    throw new Error('无法打开。')
+  },
+  setOption: async (key, value) => {
+    if (key === 'autoStart') {
+      app.setLoginItemSettings({ openAtLogin: value, path: process.execPath })
+      config.set('autoStart', value)
+    } else if (key === 'minimizeToTray') {
+      config.set('minimizeToTray', value)
+    } else if (key === 'fixedPort') {
+      config.set('fixedPort', value)
+      if (backend && !starting) {
+        restarts = []
+        boot().then(() => settings.refresh())
+      }
+    }
+  },
+  copyDiagnostics: () => clipboard.writeText(diagnosticsText()),
+})
+
+// window.oaDesktop (app-preload.js): only the app window on the app origin may call these.
+const fromApp = (e) => !!win && !win.isDestroyed() && e.sender === win.webContents && isInternalUrl(e.senderFrame ? e.senderFrame.url : '')
+ipcMain.handle('desktop:info', (e) => {
+  if (!fromApp(e)) return null
+  return { version: app.getVersion(), archiveRoot: (backend && backend.archiveRoot) || config.get('archiveRoot', ''), dataDir, portable: isPortable() }
+})
+ipcMain.handle('desktop:open-settings', (e) => {
+  if (fromApp(e)) settings.show()
+})
+ipcMain.handle('desktop:open-folder', (e, what) => {
+  if (!fromApp(e)) return
+  if (what === 'archive' && backend) shell.openPath(backend.archiveRoot)
+  else if (what === 'logs') openLogs()
+})
 
 function createWindow() {
   const saved = saneBounds(config.get('bounds'))
@@ -278,8 +400,15 @@ function createWindow() {
     title: PRODUCT,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     backgroundColor: '#f6f7fb',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false, devTools: !app.isPackaged || process.argv.includes('--devtools') },
+    autoHideMenuBar: true,
+    webPreferences: {
+      // The preload only exposes a few fixed, origin-checked IPC calls (window.oaDesktop): open the settings window, read the
+      // working directory, open folders. No Node, no file access from the page.
+      preload: path.join(__dirname, 'app-preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false, devTools: !app.isPackaged || process.argv.includes('--devtools'),
+    },
   })
+  win.removeMenu()
   if (config.get('maximized')) win.maximize()
 
   const wc = win.webContents
@@ -303,11 +432,21 @@ function createWindow() {
     log.error('renderer gone: ' + JSON.stringify(d))
     if (!quitting && appOrigin) wc.loadURL(appOrigin)
   })
+  // Keyboard shortcuts (there is no native menu bar any more).
   wc.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r'))) {
+    if (input.type !== 'keyDown') return
+    const k = String(input.key || '').toLowerCase()
+    const ctrl = input.control || input.meta
+    const act = (fn) => {
       e.preventDefault()
-      wc.reload()
+      fn()
     }
+    if (k === 'f5' || (ctrl && k === 'r')) act(() => wc.reload())
+    else if (ctrl && (k === '=' || k === '+')) act(() => zoomBy(0.5))
+    else if (ctrl && k === '-') act(() => zoomBy(-0.5))
+    else if (ctrl && k === '0') act(() => zoomBy(0))
+    else if (ctrl && k === ',') act(() => settings.show())
+    else if (k === 'f11') act(() => win.setFullScreen(!win.isFullScreen()))
   })
 
   let t
@@ -376,48 +515,18 @@ function hardenSession(ses) {
 }
 
 // ---------- menu / tray ----------
+// No native menu bar: the window shows only the web UI. Everything that used to live in the File/View/Window menus is
+// reachable inside the app (user menu → 桌面版设置, Settings page, tray menu) or by keyboard (see before-input-event).
 function buildMenu() {
-  const zoom = (delta) => {
-    if (!win) return
-    const wc = win.webContents
-    const z = delta === 0 ? 0 : Math.max(-3, Math.min(5, wc.getZoomLevel() + delta))
-    wc.setZoomLevel(z)
-    config.set('zoom', z)
-  }
-  return Menu.buildFromTemplate([
-    {
-      label: '文件',
-      submenu: [
-        { label: '打开数据文件夹', click: () => shell.openPath(dataDir) },
-        { label: backend ? `打开归档文件夹（${shortPath(backend.archiveRoot)}）` : '打开归档文件夹', click: () => backend && shell.openPath(backend.archiveRoot) },
-        { label: '更改工作目录…', click: changeArchiveRoot },
-        { label: '迁移数据目录…', enabled: !dataDirLocked(), click: migrateDataDir },
-        { label: '查看日志', click: openLogs },
-        { type: 'separator' },
-        { label: '退出', accelerator: 'Alt+F4', click: () => app.quit() },
-      ],
-    },
-    {
-      label: '视图',
-      submenu: [
-        { label: '重新加载', accelerator: 'CmdOrCtrl+R', click: () => win && win.webContents.reload() },
-        { type: 'separator' },
-        { label: '放大', accelerator: 'CmdOrCtrl+=', click: () => zoom(0.5) },
-        { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => zoom(-0.5) },
-        { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: () => zoom(0) },
-        { type: 'separator' },
-        { label: '全屏', role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: '窗口',
-      submenu: [
-        { label: '最小化', role: 'minimize' },
-        { label: '关闭窗口时最小化到托盘', type: 'checkbox', checked: !!config.get('minimizeToTray', false), click: (mi) => config.set('minimizeToTray', mi.checked) },
-      ],
-    },
-    { label: '帮助', submenu: [{ label: `关于 ${PRODUCT}`, click: showAbout }] },
-  ])
+  return null
+}
+
+function zoomBy(delta) {
+  if (!win) return
+  const wc = win.webContents
+  const z = delta === 0 ? 0 : Math.max(-3, Math.min(5, wc.getZoomLevel() + delta))
+  wc.setZoomLevel(z)
+  config.set('zoom', z)
 }
 
 const shortPath = (p) => (p.length > 48 ? p.slice(0, 20) + '…' + p.slice(-26) : p)
@@ -444,7 +553,7 @@ function createTray() {
     win.show()
     win.focus()
   }
-  tray.setContextMenu(Menu.buildFromTemplate([{ label: '显示窗口', click: show }, { label: '更改工作目录…', click: changeArchiveRoot }, { label: '打开归档文件夹', click: () => backend && shell.openPath(backend.archiveRoot) }, { label: '查看日志', click: openLogs }, { type: 'separator' }, { label: '退出', click: () => app.quit() }]))
+  tray.setContextMenu(Menu.buildFromTemplate([{ label: '显示窗口', click: show }, { label: '设置…', click: () => settings.show() }, { label: '更改工作目录…', click: changeArchiveRoot }, { label: '打开归档文件夹', click: () => backend && shell.openPath(backend.archiveRoot) }, { label: '查看日志', click: openLogs }, { type: 'separator' }, { label: '退出', click: () => app.quit() }]))
   tray.on('click', show)
 }
 
@@ -460,7 +569,8 @@ async function boot() {
     splash.hide()
     const archiveRoot = await resolveArchiveRoot() // may show the first-run folder dialog
     splash.unhide()
-    const preferred = backend ? backend.preferredPort : Number(config.get('port', 0)) || 0
+    const fixedPort = Number(config.get('fixedPort', 0)) || 0 // chosen in the settings window; 0 = automatic (reuse the last port)
+    const preferred = fixedPort || (backend ? backend.preferredPort : Number(config.get('port', 0)) || 0)
     backend = new Backend({
       serverDir,
       dataDir,
@@ -495,6 +605,7 @@ async function boot() {
       return false
     }
     win.setTitle(PRODUCT)
+    settings.refresh()
     if (!win.isVisible()) win.show()
     win.focus()
     await splash.close() // hand-off: only after the UI has finished loading in the (hidden) main window

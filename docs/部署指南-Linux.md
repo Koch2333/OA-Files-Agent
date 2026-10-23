@@ -20,6 +20,8 @@ sudo bash install.sh --yes --domain oa.example.com --email admin@example.com \
 
 常用参数：`--dir`（默认 `/opt/oa-agent`）、`--port`、`--domain`、`--email`、`--mirror cn|default`、`--version`、`--archive-dir`、`--spool-dir`、`--data-dir`（应用数据，含 `secret.key`）、`--pg-dir`、`--extra-mount name=/宿主机/路径[:ro|:rw]`（可重复，默认只读）、`--install-docker`（`--yes` 下允许自动安装 Docker）、`--systemd`、`--open-firewall`、`--no-start`、`--upgrade`、`--uninstall [--purge]`、`--help`。
 
+**已有安装也可以更改存储目录**：对已安装的目录再次运行安装脚本并带上 `--archive-dir` / `--spool-dir` / `--data-dir` / `--pg-dir` / `--extra-mount`，脚本会通过 oa-agentctl 应用这些更改（等同于 `oa-agentctl mounts set/add`）；已有数据不会被移动或删除，需要迁移请用 `oa-agentctl mounts set archive <新路径> --copy`。
+
 安装结束会打印访问地址、**初始化令牌**、目录与管理命令。**请立即完成初始化向导**：实例已对外暴露，拿到令牌的人可以抢先成为管理员；令牌每次重启都会更换（`oa-agentctl setup-token` 可重新查看）。
 
 ## 2. 系统要求

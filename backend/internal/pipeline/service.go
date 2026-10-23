@@ -120,16 +120,26 @@ func (s *Service) Run(ctx context.Context) {
 func (s *Service) loop(ctx context.Context) {
 	t := time.NewTicker(s.cfg.Poll)
 	defer t.Stop()
+	var bo diag.Backoff
 	for {
 		for {
 			job, err := s.cfg.Store.ClaimJob(ctx)
 			if err != nil {
-				if !errors.Is(err, store.ErrNotFound) && ctx.Err() == nil {
-					log.Printf("claim job: %v", err)
+				if errors.Is(err, store.ErrNotFound) || ctx.Err() != nil {
+					bo.OK("claim job")
+					break
+				}
+				// database unreachable: back off instead of hammering it (and the log) every poll
+				wait, first := bo.Fail("claim job", err)
+				if first {
 					reportError("pipeline", "CLAIM_JOB_FAILED", "领取任务失败（数据库不可用？）", err)
+				}
+				if !diag.Sleep(ctx, wait) {
+					return
 				}
 				break
 			}
+			bo.OK("claim job")
 			// A panic while processing fails this one task with a numbered message; the worker loop and the process live on.
 			if id := diag.SafeD("pipeline.process", map[string]any{"task_id": job.ID}, func() { s.process(ctx, job) }); id != "" {
 				msg := diag.UserMessage(id)

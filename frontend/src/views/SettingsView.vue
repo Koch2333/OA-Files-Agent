@@ -15,6 +15,7 @@ import Icon from '../components/Icon.vue'
 import LlmSettings from '../components/LlmSettings.vue'
 import AiPolicyCard from '../components/AiPolicyCard.vue'
 import ErrorBanner from '../components/ErrorBanner.vue'
+import { desktop, type DesktopInfo } from '../utils/desktop'
 
 const ui = useUi()
 const auth = useAuth()
@@ -22,6 +23,9 @@ const ai = useAi()
 const route = useRoute()
 const llmEl = ref<HTMLElement>()
 const ready = useAsync(() => api.readiness())
+// 桌面版（Electron）才有：工作目录等本机设置在桌面设置窗口里修改；这里只展示并提供入口
+const desk = desktop()
+const deskInfo = ref<DesktopInfo | null>(null)
 const audit = useAsync(() => api.listAuditLogs({ page_size: 10 }))
 /** 深链 /settings#llm：等状态与卡片就绪后滚动到“大模型”区域并把焦点放到其标题上 */
 function scrollToLlm() {
@@ -32,6 +36,7 @@ function scrollToLlm() {
 }
 onMounted(async () => {
   void ready.run()
+  if (desk) void desk.info().then((i) => { deskInfo.value = i })
   if (auth.isAdmin) void audit.run()
   await ai.refresh()
   if (route.hash === '#llm') { await nextTick(); setTimeout(scrollToLlm, 150); setTimeout(scrollToLlm, 800) }
@@ -42,6 +47,16 @@ const dep = (s?: string) => (s === 'ok' ? ['正常', 'success'] : s ? [s, 'error
 <template>
   <PageHeader title="设置" />
   <div class="grid cols">
+    <section v-if="desk" class="card col span" data-testid="desktop-card">
+      <h2 class="t-title-m">桌面版（本机）</h2>
+      <div class="field"><span class="lbl">工作目录（归档文件夹）</span><div class="mono" data-testid="desktop-archive-root">{{ deskInfo?.archiveRoot || '…' }}</div></div>
+      <div class="row wrap">
+        <button class="btn tonal has-icon" data-testid="desktop-open-settings" @click="desk?.openSettings()"><Icon name="settings" sm />更改工作目录与启动选项…</button>
+        <button class="btn has-icon" @click="desk?.openFolder('archive')"><Icon name="folder_open" sm />在资源管理器中打开</button>
+      </div>
+      <p class="muted t-label">设置会自动保存，下次启动不需要重新设置。</p>
+    </section>
+
     <section class="card col">
       <h2 class="t-title-m">外观</h2>
       <div class="field"><span class="lbl">配色模式</span>

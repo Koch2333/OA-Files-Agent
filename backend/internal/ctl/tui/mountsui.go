@@ -42,12 +42,11 @@ type mountsScreen struct {
 
 	// review
 	as  ops.Assessment
-	ack textinput.Model
 	run runView
 }
 
 func newMountsScreen(b *Backend) *mountsScreen {
-	s := &mountsScreen{b: b, name: newInput(), path: newInput(), ack: newInput()}
+	s := &mountsScreen{b: b, name: newInput(), path: newInput()}
 	s.name.CharLimit = 32
 	s.path.CharLimit = 512
 	s.reload()
@@ -179,8 +178,6 @@ func (s *mountsScreen) toReview(next mounts.Config) {
 			s.as.Issues = append(s.as.Issues, mounts.Issue{Sev: mounts.Error, Text: fmt.Sprintf(sMissingDirHint, f.Command())})
 		}
 	}
-	s.ack.SetValue("")
-	s.ack.Focus()
 	s.st = mReview
 }
 
@@ -237,22 +234,8 @@ func (s *mountsScreen) Update(msg tea.Msg) (screen, tea.Cmd) {
 			if s.as.Block {
 				return s, nil
 			}
-			if s.as.NeedAck && strings.TrimSpace(s.ack.Value()) != "I-UNDERSTAND" {
-				if key == "enter" || key == "y" || key == "w" {
-					var c tea.Cmd
-					if key != "enter" {
-						s.ack, c = s.ack.Update(k)
-					}
-					return s, c
-				}
-			}
+			// Warnings about existing data are shown on this page; confirming it (Enter / y / w) is the acknowledgement.
 			return s, s.startApply(key != "w")
-		default:
-			if s.as.NeedAck {
-				var c tea.Cmd
-				s.ack, c = s.ack.Update(k)
-				return s, c
-			}
 		}
 	case mForm:
 		return s.formKey(k)
@@ -390,7 +373,7 @@ func (s *mountsScreen) View(w, h int) string {
 		case s.as.Block:
 			b.WriteString("\n" + styBad.Render(sReviewBlocked) + "\n")
 		case s.as.NeedAck:
-			b.WriteString("\n" + styWarn.Render(fmt.Sprintf(sReviewAckNeeded, "I-UNDERSTAND")) + "\n" + s.ack.View() + "\n")
+			b.WriteString("\n" + styWarn.Render(sReviewAckInfo) + "\n")
 		}
 		return b.String()
 	case mForm:

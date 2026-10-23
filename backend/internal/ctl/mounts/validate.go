@@ -20,7 +20,7 @@ const (
 func (s Severity) String() string { return [...]string{"info", "warn", "error"}[s] }
 
 // Issue is one finding. Ack means the change is only allowed after an explicit acknowledgement
-// (typed word in the TUI, --accept-data-move on the command line).
+// (an ordinary confirmation: Enter on the TUI review page, y/N or --yes on the command line).
 type Issue struct {
 	Code    string
 	Sev     Severity

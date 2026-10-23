@@ -94,11 +94,17 @@ func (s *Service) Run(ctx context.Context) {
 func (s *Service) reconcileLoop(ctx context.Context) {
 	t := time.NewTicker(reconcileEach)
 	defer t.Stop()
+	var bo diag.Backoff
 	for {
 		conns, err := s.cfg.Store.AutoConnections(ctx)
 		if err != nil && ctx.Err() == nil {
-			log.Printf("storage: reconcile: %v", err)
+			wait, _ := bo.Fail("storage: reconcile", err)
+			if !diag.Sleep(ctx, wait) {
+				return
+			}
+			continue
 		}
+		bo.OK("storage: reconcile")
 		for _, c := range conns {
 			// only files archived after the policy was switched on: history is added explicitly (manual run)
 			if _, err := s.cfg.Store.EnqueueMissing(ctx, c.ID, "", c.AutoSince); err != nil && ctx.Err() == nil {
@@ -117,15 +123,22 @@ func (s *Service) reconcileLoop(ctx context.Context) {
 func (s *Service) workLoop(ctx context.Context) {
 	t := time.NewTicker(pollEach)
 	defer t.Stop()
+	var bo diag.Backoff
 	for {
 		for {
 			r, err := s.cfg.Store.ClaimReplication(ctx)
 			if err != nil {
-				if !errors.Is(err, store.ErrNotFound) && ctx.Err() == nil {
-					log.Printf("storage: claim: %v", err)
+				if errors.Is(err, store.ErrNotFound) || ctx.Err() != nil {
+					bo.OK("storage: claim")
+					break
+				}
+				wait, _ := bo.Fail("storage: claim", err)
+				if !diag.Sleep(ctx, wait) {
+					return
 				}
 				break
 			}
+			bo.OK("storage: claim")
 			// A panic fails this one replication with a numbered message; the loop and the process live on.
 			if id := diag.SafeD("storage.replicate", map[string]any{"replication_id": r.ID, "connection_id": r.ConnectionID, "ledger_id": r.LedgerID}, func() { s.replicateOne(ctx, r) }); id != "" {
 				s.fail(ctx, r, errors.New("internal error"), diag.UserMessage(id))

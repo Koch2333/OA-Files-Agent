@@ -84,7 +84,7 @@ SH
 }
 
 run_install() { # run_install args... ; output in $SB/out.txt, status in RC
-    OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" \
+    OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
         OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 \
         PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" --lang en "$@" >"$SB/out.txt" 2>&1
     RC=$?
@@ -187,7 +187,7 @@ t_missing_docker() {
 
 t_port_conflict() {
     new_sandbox port; FAKE_PORTS="18080" run_install --yes --dir "$SB/oa" --port 18080
-    assert_rc_nz; assert_has "$SB/out.txt" 'Port 18080 is already in use'; assert_nofile "$SB/oa/.env"
+    assert_rc_nz; assert_has "$SB/out.txt" '[Pp]ort 18080 is already in use'; assert_nofile "$SB/oa/.env"
     new_sandbox port2; FAKE_PORTS="443" run_install --yes --dir "$SB/oa" --domain oa.example.com
     assert_rc_nz; assert_has "$SB/out.txt" 'Port 443 is already in use'
 }
@@ -209,9 +209,9 @@ t_https() {
 }
 
 t_mounts() {
-    new_sandbox mounts; mkdir -p "$SB/nas1" "$SB/disk"
+    new_sandbox mounts; mkdir -p "$SB/nas1" "$SB/scans" "$SB/disk"
     run_install --yes --dir "$SB/oa" --archive-dir "$SB/disk/archive" --pg-dir "$SB/disk/pg" --spool-dir "$SB/disk/spool" --data-dir "$SB/disk/app" \
-        --extra-mount "nas1=$SB/nas1" --extra-mount "scans=$SB/nas1:rw"
+        --extra-mount "nas1=$SB/nas1" --extra-mount "scans=$SB/scans:rw"
     assert_rc 0
     assert_dir() { [ -d "$1" ] && ok_ || bad_ "missing dir $1"; }
     assert_dir "$SB/disk/archive"; assert_eq "$(mode "$SB/disk/archive")" 750 "created 0750"

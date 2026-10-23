@@ -22,7 +22,16 @@ func announceSetup(ctx context.Context, svc *auth.Service, addr string) {
 		return
 	}
 	log.Printf("SETUP TOKEN: %s", tok)
-	log.Printf("the system is not initialised: open http://%s/setup and enter the setup token above (or run: oa-admin setup-token)", strings.Replace(addr, "0.0.0.0", "localhost", 1))
+	log.Printf("the system is not initialised: open %s/setup and enter the setup token above (or run: oa-admin setup-token)", setupBase(svc.PublicURL, addr))
+}
+
+// setupBase is where an operator reaches the wizard: OA_PUBLIC_URL when set (in Docker the listen address is the
+// container's own 0.0.0.0:8080, which is neither the published port nor the host name), else the listen address.
+func setupBase(publicURL, addr string) string {
+	if u := strings.TrimRight(strings.TrimSpace(publicURL), "/"); u != "" {
+		return u
+	}
+	return "http://" + strings.Replace(addr, "0.0.0.0", "localhost", 1)
 }
 
 // purgeAuth removes expired sessions, challenges and old invitations periodically.

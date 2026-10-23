@@ -227,10 +227,9 @@ func (a *App) mountsMutate(ctx context.Context, c *ctxt, cur, next mounts.Config
 			return fmt.Errorf("目录不存在")
 		}
 	}
-	if as.NeedAck && !c.g.dry {
-		if f.accept {
-			// explicit flag: the operator has read the warnings above
-		} else if err := a.typed("上面的警告涉及已有数据，本工具不会移动或删除它们。", "I-UNDERSTAND"); err != nil {
+	if as.NeedAck && !c.g.dry && !f.accept {
+		// An ordinary y/N (or --yes): the warnings above are information, not a lock. --accept-data-move is kept as an alias.
+		if err := a.confirm(c.g, "上面的警告涉及已有数据，本工具不会移动或删除它们。继续更改？"); err != nil {
 			return err
 		}
 	}

@@ -25,7 +25,7 @@ function runSetup(opts) {
       if (!win.isDestroyed()) win.destroy()
       resolve(v)
     }
-    ipcMain.handle('setup:init', (e) => mine(e) && { mode: opts.mode, defaultArchive: opts.defaultArchive, currentArchive: opts.currentArchive, currentData: opts.currentData, canData: opts.canData })
+    ipcMain.handle('setup:init', (e) => mine(e) && { mode: opts.mode, defaultArchive: opts.defaultArchive, currentArchive: opts.currentArchive, currentData: opts.currentData, canData: opts.canData, note: opts.note || '' })
     ipcMain.handle('setup:browse', async (e, kind) => {
       if (!mine(e)) return null
       win.setAlwaysOnTop(false)

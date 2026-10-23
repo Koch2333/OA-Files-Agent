@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设置</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+<style>
+  :root { color-scheme: light dark; --bg:#fdf8ff; --fg:#1d1a22; --muted:#5f5b69; --card:#f3edf7; --pri:#6750a4; --on-pri:#fff; --bd:#cac4d0; --err:#b3261e; --warn:#8a5100; --ok:#1c7c4d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141218; --fg:#e6e0e9; --muted:#cac4d0; --card:#211f26; --pri:#d0bcff; --on-pri:#381e72; --bd:#49454f; --err:#f2b8b5; --warn:#ffb870; --ok:#6fd6a0; } }
+  html,body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.55 "Segoe UI","Microsoft YaHei UI",sans-serif; }
+  .wrap { padding:20px 24px 28px; }
+  h1 { font-size:22px; font-weight:500; margin:0 0 2px; } p.lead { margin:0 0 16px; color:var(--muted); }
+  section { background:var(--card); border-radius:16px; padding:14px 18px; margin:0 0 14px; }
+  h2 { font-size:15px; font-weight:600; margin:0 0 8px; display:flex; align-items:center; gap:8px; }
+  .k { color:var(--muted); font-size:12px; } .v { word-break:break-all; font-family:Consolas,"Cascadia Mono",monospace; font-size:13px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  button { font:inherit; padding:6px 16px; border-radius:999px; border:1px solid var(--bd); background:transparent; color:var(--fg); cursor:pointer; }
+  button:hover:not(:disabled) { background:color-mix(in srgb, var(--pri) 10%, transparent); }
+  button.pri { background:var(--pri); border-color:var(--pri); color:var(--on-pri); } button:disabled { opacity:.45; cursor:default; }
+  label.sw { display:flex; gap:10px; align-items:flex-start; margin:8px 0; cursor:pointer; } label.sw input { margin-top:4px; width:16px; height:16px; accent-color:var(--pri); }
+  label.sw span small { display:block; color:var(--muted); }
+  input[type=number] { width:110px; padding:6px 10px; border-radius:8px; border:1px solid var(--bd); background:var(--bg); color:var(--fg); font:inherit; }
+  .chip { font-size:12px; padding:1px 10px; border-radius:999px; background:color-mix(in srgb, var(--warn) 18%, transparent); color:var(--warn); font-weight:500; }
+  .msg { min-height:20px; font-size:13px; margin-top:6px; } .err { color:var(--err); } .ok { color:var(--ok); } .muted { color:var(--muted); }
+  .foot { display:flex; justify-content:flex-end; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>设置</h1>
+  <p class="lead">这里的选择会自动保存，下次启动不需要重新设置。</p>
+
+  <section aria-labelledby="h-arch">
+    <h2 id="h-arch">工作目录（归档文件夹）<span class="chip" id="arch-lock" hidden>由环境变量固定</span></h2>
+    <div class="k">归档后的文件存放位置</div>
+    <div class="v" id="arch-path">…</div>
+    <div class="k" id="arch-free"></div>
+    <div class="row">
+      <button class="pri" id="b-arch">更改…</button>
+      <button id="b-open-arch">在资源管理器中打开</button>
+    </div>
+    <div class="msg muted">更改时可选择“迁移”（复制已有文件并逐个校验，旧文件夹保留）或“直接使用新位置”。</div>
+  </section>
+
+  <section aria-labelledby="h-data">
+    <h2 id="h-data">数据目录（数据库、设置与日志）<span class="chip" id="data-lock" hidden>固定</span></h2>
+    <div class="v" id="data-path">…</div>
+    <div class="row">
+      <button id="b-data">迁移…</button>
+      <button id="b-open-data">在资源管理器中打开</button>
+    </div>
+    <div class="msg muted" id="data-note">通常无需更改。迁移会先安全停止内置数据库，校验后自动重启程序。</div>
+  </section>
+
+  <section aria-labelledby="h-start">
+    <h2 id="h-start">启动与窗口</h2>
+    <label class="sw"><input type="checkbox" id="o-autostart"><span>登录 Windows 时自动启动<small>开机后在后台启动并打开主窗口。</small></span></label>
+    <label class="sw"><input type="checkbox" id="o-tray"><span>关闭窗口时最小化到托盘<small>关闭按钮只隐藏窗口，服务继续运行；从托盘图标可以再次打开或退出。</small></span></label>
+  </section>
+
+  <section aria-labelledby="h-net">
+    <h2 id="h-net">本机服务端口</h2>
+    <div class="k">默认自动选择空闲端口（上次使用的端口仍可用时会沿用）。需要固定端口时填写 1024–65535。</div>
+    <div class="row">
+      <input type="number" id="o-port" min="0" max="65535" placeholder="自动" aria-label="固定端口（0 或留空表示自动）">
+      <button id="b-port">应用并重启服务</button>
+      <span class="k" id="port-now"></span>
+    </div>
+    <div class="msg" id="m-port"></div>
+  </section>
+
+  <section aria-labelledby="h-about">
+    <h2 id="h-about">诊断与关于</h2>
+    <div class="k" id="about"></div>
+    <div class="row">
+      <button id="b-logs">打开日志文件夹</button>
+      <button id="b-copy">复制诊断信息</button>
+    </div>
+    <div class="msg" id="m-about"></div>
+  </section>
+
+  <div class="msg" id="m-global" role="status"></div>
+  <div class="foot"><button id="b-close">关闭</button></div>
+</div>
+<script src="settings.js"></script>
+</body>
+</html>

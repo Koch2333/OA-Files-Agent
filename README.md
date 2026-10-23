@@ -68,7 +68,7 @@ powershell -ExecutionPolicy Bypass -File scripts\dist-windows.ps1 [-SkipTests]
 - **安装版**：`oa-agent-<版本>-windows-x64-setup.exe`（当前用户/所有用户可选，可自选安装目录与归档工作目录）。
 - **便携版**：`oa-agent-<版本>-windows-x64.zip`，解压后运行 `OA-Agent-Desktop.exe`，数据在程序旁 `data\`。
 - **服务端版**：`oa-agent-<版本>-windows-x64-server.zip`（无 Electron，`start.bat` 启动，浏览器访问）；旧入口 `deploy\windows\build.ps1` 仍可单独生成该文件夹。
-- 归档工作目录可随时在菜单“文件 → 更改工作目录…”修改（迁移并校验，失败自动回滚）。
+- 归档工作目录可随时在“设置 → 桌面版设置…”（用户菜单、设置页卡片或托盘图标）修改（迁移并校验，失败自动回滚）。
 - 前置条件、各脚本说明、签名（可选，未签名会触发 SmartScreen 提示）、发布清单见 [docs/构建与发布.md](docs/构建与发布.md)，桌面外壳说明见 [desktop/README.md](desktop/README.md)。**在目标环境发布前请查看 [docs/THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)（PyMuPDF 为 AGPL）。**
 
 ## 关键设计

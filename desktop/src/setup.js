@@ -41,7 +41,7 @@ async function init() {
     $('adv').style.display = 'none'
     $('arch').value = ''
   } else {
-    $('lead').textContent = '归档后的文件会按“部门/类型/日期”存放到这个文件夹，建议选择空间充足的磁盘。以后可在菜单“文件 → 更改工作目录”中修改。'
+    $('lead').textContent = (ctx.note ? ctx.note + '\n' : '') + '归档后的文件会按“部门/类型/日期”存放到这个文件夹，建议选择空间充足的磁盘。以后可在应用内“设置”中修改。'
     $('arch').value = ctx.defaultArchive
     $('b-def').addEventListener('click', () => submit(true))
     if (!ctx.canData) $('adv').style.display = 'none'

@@ -103,7 +103,7 @@ oa-agentctl domain <域名> | --none [--no-start]
  ✘ archive（/srv/oa/archive）与 nas1（/srv/oa/archive/sub）互相嵌套或重合……
 ```
 
-提交后进入“确认变更”页（差异摘要、全部警告与可复制的修复命令）；涉及已有数据时必须输入 `I-UNDERSTAND`。`Enter/y` 应用并重启，`w` 只写入不重启。应用时有进度视图；`docker compose up` 失败，或 api 在超时内没有变健康，会**自动回滚**到之前的 mounts.json / 覆盖文件 / .env 并用旧配置重新启动 api+worker。
+提交后进入“确认变更”页（差异摘要、全部警告与可复制的修复命令）；涉及已有数据时页面会显示警告（不再需要输入确认词）。`Enter/y` 应用并重启，`w` 只写入不重启。应用时有进度视图；`docker compose up` 失败，或 api 在超时内没有变健康，会**自动回滚**到之前的 mounts.json / 覆盖文件 / .env 并用旧配置重新启动 api+worker。
 
 **服务管理**：启动、停止（输入 `STOP`）、重启全部、重启 api+worker、升级（输入 `UPGRADE`），实时滚动输出。**日志**：先选服务，再 `f` 跟随开关、`/` 搜索、`n/N` 跳转、PgUp/PgDn 滚动。**备份与还原**：立即备份（含/不含归档）；还原先选备份文件，输入 `RESTORE` 确认。**配置**：密钥遮蔽显示，`e` 修改白名单键（实时校验），`d` 切换域名/HTTPS（显示 Passkey 失效警告，输入 `DOMAIN` 确认）。**诊断**：同 `doctor`，带修复建议。
 
@@ -135,7 +135,7 @@ oa-agentctl domain <域名> | --none [--no-start]
 
 归档目录里存放着台账（数据库）引用的全部文件。把 `archive` 指到另一个目录而不复制旧数据，台账里的文件会“消失”。因此：
 
-1. 旧目录非空时，`mounts set archive` 会显示旧路径并解释风险，**必须**显式确认：交互界面输入 `I-UNDERSTAND`；命令行加 `--accept-data-move`（`--yes` 不够）。新目录为空或已有内容时分别给出额外警告。
+1. 旧目录非空时，`mounts set archive` 会显示旧路径并解释风险；确认方式与其他操作一样：交互时回答 `y`，非交互加 `--yes`（`--accept-data-move` 仍可用，作用相同）。工具**不会**移动或删除任何文件。新目录为空或已有内容时分别给出额外警告。
 2. 建议先停止服务，自行复制并核对：`cp -a '/旧/archive/.' '/新/archive/'`，再 `oa-agentctl mounts set archive /新/archive --restart`。
 3. 或者让工具代劳：`oa-agentctl mounts set archive /新/archive --copy`——先输入 `COPY`（带 `--yes` 则免输入）确认，工具执行 `cp -a`，再用文件数与总字节数校验，校验通过才切换；**源目录始终保持不变**，需要时请你在确认无误后自行删除。复制期间服务仍在运行时，新写入的文件可能遗漏，请先 `stop`。
 4. 切换后用 `oa-agentctl doctor` 确认，并抽查几个文档的预览/导出。
@@ -144,7 +144,7 @@ spool、app 同理（app 目录里有 `secret.key`，新目录没有该文件时
 
 ### 更换数据库目录
 
-`pgdata` 只能在**所有容器停止**后更改，否则直接拒绝（先 `oa-agentctl stop`）。旧目录非空时同样需要显式确认：新目录若为空，应用会初始化一个全新的空数据库。迁移方法：`stop` → `cp -a '/旧/pg/.' '/新/pg/'`（属主保持 70:70）→ `mounts set pgdata /新/pg --accept-data-move` → `start`。
+`pgdata` 只能在**所有容器停止**后更改，否则直接拒绝（先 `oa-agentctl stop`）。旧目录非空时同样需要确认（`y` / `--yes`）：新目录若为空，应用会初始化一个全新的空数据库。迁移方法：`stop` → `cp -a '/旧/pg/.' '/新/pg/'`（属主保持 70:70）→ `mounts set pgdata /新/pg --yes` → `start`。
 
 ## 5. 重置用户密码（应急）
 

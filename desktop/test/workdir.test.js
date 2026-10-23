@@ -4,7 +4,7 @@ const assert = require('node:assert')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { validateDir, copyVerify, switchWorkdir } = require('../src/workdir')
+const { validateDir, copyVerify, switchWorkdir, programDirs } = require('../src/workdir')
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'oa-wd-'))
 const win = process.platform === 'win32'
@@ -44,8 +44,19 @@ test('copyVerify copies everything, verifies and never touches the source', asyn
   assert.ok(fs.existsSync(path.join(base, 'dst', 'empty')))
   assert.strictEqual(seen.at(-1).files, 2)
   assert.ok(fs.existsSync(path.join(src, 'x.txt')))
-  // non-empty target / nesting are refused
-  await assert.rejects(copyVerify(src, path.join(base, 'dst')), /不是空的/)
+  // a non-empty target is merged: identical files stay, nothing is overwritten
+  fs.writeFileSync(path.join(src, 'new.txt'), 'new file')
+  const r2 = await copyVerify(src, path.join(base, 'dst'))
+  assert.strictEqual(fs.readFileSync(path.join(base, 'dst', 'new.txt'), 'utf8'), 'new file')
+  assert.strictEqual(fs.readFileSync(path.join(base, 'dst', 'x.txt'), 'utf8'), 'hello')
+  assert.strictEqual(r2.files, 3)
+  // a same-named file with different content is a conflict: nothing is copied and nothing is overwritten
+  fs.writeFileSync(path.join(src, 'only-in-src.txt'), 'later')
+  fs.writeFileSync(path.join(base, 'dst', 'x.txt'), 'DIFFERENT CONTENT')
+  await assert.rejects(copyVerify(src, path.join(base, 'dst')), /同名但内容不同/)
+  assert.ok(!fs.existsSync(path.join(base, 'dst', 'only-in-src.txt')))
+  assert.strictEqual(fs.readFileSync(path.join(base, 'dst', 'x.txt'), 'utf8'), 'DIFFERENT CONTENT')
+  // nesting is still refused (copying a folder into itself)
   await assert.rejects(copyVerify(src, path.join(src, 'inside')), /互相包含/)
   fs.rmSync(base, { recursive: true, force: true })
 })
@@ -95,4 +106,23 @@ test('switchWorkdir mode use skips the copy', async () => {
   const h = harness({ startResults: [true] })
   await switchWorkdir({ ...h.args, mode: 'use' })
   assert.ok(!h.calls.includes('copy'))
+})
+
+test('portable build: the default archive folder next to the exe is allowed, the program folders are not', async () => {
+  const base = tmp()
+  const exe = path.join(base, 'OA-Agent-0.1.0')
+  const server = path.join(exe, 'resources', 'app-server')
+  fs.mkdirSync(server, { recursive: true })
+  const ctxFor = (portable) => {
+    const p = programDirs({ portable, exeDir: exe, serverDir: server })
+    return { kind: 'archive', installDirs: p.installDirs, exactProtected: p.exact, dataDir: path.join(exe, 'data') }
+  }
+  const def = path.join(exe, '归档')
+  assert.ok((await validateDir(def, ctxFor(true))).ok, 'portable default <exe>\\归档 must be valid')
+  assert.ok(!(await validateDir(def, ctxFor(false))).ok, 'installed build: nothing inside the install dir')
+  assert.ok(!(await validateDir(path.join(exe, 'resources', 'x'), ctxFor(true))).ok)
+  assert.ok(!(await validateDir(path.join(exe, 'locales', 'x'), ctxFor(true))).ok)
+  assert.ok(!(await validateDir(exe, ctxFor(true))).ok, 'not the program folder itself')
+  assert.ok(!(await validateDir(path.join(exe, 'data', 'a'), ctxFor(true))).ok, 'not inside the data dir')
+  fs.rmSync(base, { recursive: true, force: true })
 })

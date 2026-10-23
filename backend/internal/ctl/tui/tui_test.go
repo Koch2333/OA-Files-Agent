@@ -502,17 +502,12 @@ func TestMountsArchiveChangeNeedsTypedAck(t *testing.T) {
 		t.Fatalf("st=%d ack=%v\n%s", s.st, s.as.NeedAck, view(m))
 	}
 	v := view(m)
-	for _, w := range []string{"不会移动或删除", "/srv/oa/archive", "I-UNDERSTAND", "cp -a"} {
+	for _, w := range []string{"不会移动或删除", "/srv/oa/archive", "cp -a"} {
 		if !strings.Contains(v, w) {
 			t.Errorf("review missing %q:\n%s", w, v)
 		}
 	}
-	drive(m, key("enter"))
-	if s.st != mReview || e.f.Called("up") {
-		t.Fatal("applied without the typed acknowledgement")
-	}
-	typeText(m, "I-UNDERSTAND")
-	drive(m, key("enter"))
+	drive(m, key("enter")) // confirming the review page is the acknowledgement (no typed word)
 	if s.st != mRun || !s.run.done || s.run.err != nil {
 		t.Fatalf("st=%d %+v", s.st, s.run)
 	}
