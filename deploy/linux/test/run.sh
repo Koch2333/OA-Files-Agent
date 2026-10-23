@@ -78,6 +78,12 @@ SH
     printf '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfake 999999999 1 500000000 1pct /\\n"\n' >"$s/df"
     printf '#!/usr/bin/env bash\n[ "$1" = -I ] && echo 192.0.2.10 || echo testhost\n' >"$s/hostname"
     printf '#!/usr/bin/env bash\necho yes\n' >"$s/timedatectl"
+    # fake stat: the file system type is configurable (FAKE_FSTYPE, default ext4), so the tests never depend on what /tmp is on
+    cat >"$s/stat" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -f ] && [ "${2:-}" = -c ] && [ "${3:-}" = %T ]; then echo "${FAKE_FSTYPE:-ext4}"; exit 0; fi
+PATH=/usr/bin:/bin exec stat "$@"
+SH
     chmod +x "$s"/*
     [ -n "${NO_DOCKER:-}" ] && rm -f "$s/docker"
     return 0
@@ -185,6 +191,14 @@ t_missing_docker() {
     assert_rc_nz
 }
 
+t_fstype_warning() {
+    # tmpfs/overlay archive dirs are warned about; a normal file system is not (fs type comes from the fake stat)
+    new_sandbox fs_ext4; mkdir -p "$SB/disk"; run_install --yes --dir "$SB/oa" --archive-dir "$SB/disk/archive"
+    assert_rc 0; assert_has "$SB/out.txt" 'filesystem ext4'; assert_not "$SB/out.txt" 'is on (tmpfs|overlay)'
+    new_sandbox fs_overlay; mkdir -p "$SB/disk"; FAKE_FSTYPE=overlay run_install --yes --dir "$SB/oa" --archive-dir "$SB/disk/archive"
+    assert_rc 0; assert_has "$SB/out.txt" 'is on overlay'
+}
+
 t_port_conflict() {
     new_sandbox port; FAKE_PORTS="18080" run_install --yes --dir "$SB/oa" --port 18080
     assert_rc_nz; assert_has "$SB/out.txt" '[Pp]ort 18080 is already in use'; assert_nofile "$SB/oa/.env"
@@ -210,7 +224,7 @@ t_https() {
 
 t_mounts() {
     new_sandbox mounts; mkdir -p "$SB/nas1" "$SB/scans" "$SB/disk"
-    run_install --yes --dir "$SB/oa" --archive-dir "$SB/disk/archive" --pg-dir "$SB/disk/pg" --spool-dir "$SB/disk/spool" --data-dir "$SB/disk/app" \
+    FAKE_FSTYPE=tmpfs run_install --yes --dir "$SB/oa" --archive-dir "$SB/disk/archive" --pg-dir "$SB/disk/pg" --spool-dir "$SB/disk/spool" --data-dir "$SB/disk/app" \
         --extra-mount "nas1=$SB/nas1" --extra-mount "scans=$SB/scans:rw"
     assert_rc 0
     assert_dir() { [ -d "$1" ] && ok_ || bad_ "missing dir $1"; }

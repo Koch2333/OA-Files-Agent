@@ -16,7 +16,7 @@ while [ $# -gt 0 ]; do
         *) PASS+=("$1"); shift ;;
     esac
 done
-if [ -z "$VERSION" ]; then eval "$("$HERE/version.sh" --export)"; VERSION="$OA_VERSION"; fi
+if [ -z "$VERSION" ]; then eval "$(bash "$HERE/version.sh" --export)"; VERSION="${OA_VERSION:?version.sh did not print OA_VERSION}"; fi  # run through bash: a Windows checkout has no exec bit
 OUT="${OUT:-$ROOT/dist/release/$VERSION}"
 echo "==> Linux release $VERSION -> $OUT"
 bash "$REL" --version "$VERSION" --out "$OUT" "${PASS[@]}"
