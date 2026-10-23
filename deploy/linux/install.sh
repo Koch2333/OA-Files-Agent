@@ -43,6 +43,11 @@ ETC_MARKER='/etc/oa-agent/install_dir'   # read by the Go oa-agentctl when neith
 OS_RELEASE='/etc/os-release'
 MEMINFO='/proc/meminfo'
 TTY_DEV='/dev/tty'
+# Is a docker CLI installed? (Test mode with OA_TEST_DOCKER_SHIM: "installed" means that shim file exists, so a docker on
+# the host running the offline tests, e.g. a CI runner's, cannot leak into the "docker is missing" scenarios.)
+have_docker() {
+    if [ "$TEST_MODE" = 1 ] && [ -n "${OA_TEST_DOCKER_SHIM:-}" ]; then [ -x "$OA_TEST_DOCKER_SHIM" ]; else command -v docker >/dev/null 2>&1; fi
+}
 if [ "$TEST_MODE" = 1 ]; then
     LOG_FILE="${OA_INSTALL_LOG:-$LOG_FILE}"; BIN_DIR="${OA_INSTALL_BIN_DIR:-$BIN_DIR}"; UNIT_DIR="${OA_INSTALL_UNIT_DIR:-$UNIT_DIR}"
     ETC_MARKER="${OA_INSTALL_ETC_MARKER:-$ETC_MARKER}"
@@ -345,8 +350,11 @@ setup_log() {
 detect_os() {
     OS_ID=''; OS_LIKE=''; OS_PRETTY=''
     if [ -r "$OS_RELEASE" ]; then
+        # shellcheck disable=SC1090  # os-release is a runtime path (tests point OS_RELEASE at a fixture)
         OS_ID="$(. "$OS_RELEASE"; printf '%s' "${ID:-}")"
+        # shellcheck disable=SC1090
         OS_LIKE="$(. "$OS_RELEASE"; printf '%s' "${ID_LIKE:-}")"
+        # shellcheck disable=SC1090
         OS_PRETTY="$(. "$OS_RELEASE"; printf '%s' "${PRETTY_NAME:-$ID}")"
     fi
     [ "$(uname -s)" = Linux ] || die "仅支持 Linux。" "Linux only."
@@ -399,7 +407,7 @@ check_ports() { # skipped for ports our own running stack already holds
     local p
     for p in "$@"; do
         if port_in_use "$p"; then
-            if [ -f "$(envf)" ] && command -v docker >/dev/null 2>&1 && ctl_running_port "$p"; then continue; fi
+            if [ -f "$(envf)" ] && have_docker && ctl_running_port "$p"; then continue; fi
             die "端口 $p 已被占用。请换一个端口（--port）或停止占用它的程序（ss -ltnp | grep :$p）。" "Port $p is already in use. Choose another port (--port) or stop the program using it (ss -ltnp | grep :$p)."
         fi
     done
@@ -413,7 +421,7 @@ ctl_running_port() { # does an existing OA install already publish this port?
 }
 
 # ---------------------------------------------------------------------------------------------- docker
-docker_ready() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
+docker_ready() { have_docker && docker compose version >/dev/null 2>&1; }
 
 install_docker() {
     local fam
@@ -468,7 +476,7 @@ install_pkg() {
 ensure_docker() {
     step "检查 Docker" "Checking Docker"
     if ! docker_ready; then
-        if command -v docker >/dev/null 2>&1; then
+        if have_docker; then
             warn "已有 docker 但缺少 Compose v2 插件。" "docker is present but the Compose v2 plugin is missing."
         else
             warn "未检测到 Docker。" "Docker is not installed."
@@ -562,7 +570,7 @@ install_ctl() {
             die "发行包缺少 bin/SHA256SUMS，无法校验预编译二进制（可加 --skip-verify）。" "bin/SHA256SUMS missing; cannot verify the prebuilt binary (add --skip-verify to override)."
         fi
         built="$pre"
-    elif [ -d "$DIR/src/backend/cmd/oa-agentctl" ] && command -v docker >/dev/null 2>&1; then
+    elif [ -d "$DIR/src/backend/cmd/oa-agentctl" ] && have_docker; then
         # build from the copy in the install dir (synced above): the same tree the images are built from, and a
         # path the Docker daemon can bind even when the checkout or download dir lives elsewhere
         say "没有预编译二进制，使用 golang 容器编译 oa-agentctl …" "No prebuilt binary; building oa-agentctl in a golang container ..."
@@ -809,7 +817,7 @@ write_marker() {
 }
 
 write_new_env() {
-    local pub tmp
+    local tmp
     umask 077
     tmp="$(mktemp "$DIR/.env.XXXXXX")"
     {
@@ -896,7 +904,7 @@ offer_systemd() {
 
 # ---------------------------------------------------------------------------------------------- summary
 summary() {
-    local url token tokline w=64
+    local url token w=64
     url="$(env_get OA_PUBLIC_URL)"
     token="$(ctl setup-token 2>/dev/null | tail -n 1 || true)"
     [ -n "$token" ] || token="$(m '（无；可能已完成初始化，或运行 oa-agentctl setup-token）' '(none; setup may be complete, or run oa-agentctl setup-token)')"

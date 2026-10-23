@@ -85,7 +85,7 @@ SH
 
 run_install() { # run_install args... ; output in $SB/out.txt, status in RC
     OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
-        OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 \
+        OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_TEST_DOCKER_SHIM="$SB/shim/docker" \
         PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" --lang en "$@" >"$SB/out.txt" 2>&1
     RC=$?
 }

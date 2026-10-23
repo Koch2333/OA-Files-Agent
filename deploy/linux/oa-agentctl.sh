@@ -11,7 +11,7 @@ CTL_VERSION='1'
 case "${OA_LANG:-${LC_ALL:-${LANG:-}}}" in zh* | *zh_* | *ZH*) UI=zh ;; *) UI=en ;; esac
 if [ -n "${OA_LANG:-}" ]; then case "$OA_LANG" in zh*) UI=zh ;; *) UI=en ;; esac; fi
 m() { if [ "$UI" = zh ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
-if [ -t 1 ]; then C_R=$'\033[31m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_B=$'\033[1m'; C_0=$'\033[0m'; else C_R=''; C_G=''; C_Y=''; C_B=''; C_0=''; fi
+if [ -t 1 ]; then C_R=$'\033[31m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_0=$'\033[0m'; else C_R=''; C_G=''; C_Y=''; C_0=''; fi
 info() { printf '%s\n' "$(m "$1" "$2")"; }
 ok() { printf '%s[ OK ]%s %s\n' "$C_G" "$C_0" "$(m "$1" "$2")"; }
 warn() { printf '%s[WARN]%s %s\n' "$C_Y" "$C_0" "$(m "$1" "$2")" >&2; }
@@ -198,7 +198,9 @@ cmd_restart() {
         '' | api | worker)
             # worker shares api's network namespace: always recreate both together
             dc up -d --force-recreate api worker
-            [ -n "$svc" ] || dc restart postgres $(! https_on || printf caddy)
+            if [ -z "$svc" ]; then
+                if https_on; then dc restart postgres caddy; else dc restart postgres; fi
+            fi
             ;;
         *) dc restart "$svc" ;;
     esac
