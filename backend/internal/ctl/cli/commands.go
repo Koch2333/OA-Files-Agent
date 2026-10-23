@@ -226,6 +226,16 @@ func (a *App) cmdUpgrade(ctx context.Context, g global, rest []string) error {
 	if err != nil {
 		return err
 	}
+	tag, _, err := takeValue(&rest, "--tag")
+	if err != nil {
+		return err
+	}
+	if tag != "" {
+		if ver != "" && ver != tag {
+			return usage("--tag 与 --version 不能同时给出不同的值")
+		}
+		ver = tag
+	}
 	noBackup := takeBool(&rest, "--no-backup")
 	if len(rest) > 0 {
 		return usage("多余的参数 %v", rest)
@@ -235,7 +245,7 @@ func (a *App) cmdUpgrade(ctx context.Context, g global, rest []string) error {
 		return err
 	}
 	if g.dry {
-		a.printf("演练：升级到版本 %q，先备份=%v，然后 pull/build 并 up -d\n", ver, !noBackup)
+		a.printf("演练：升级到版本/标签 %q（空 = 保持 .env 中的 OA_VERSION），先备份=%v，然后 pull（镜像模式，含更新管理文件）或 build，并重建 api 与 worker\n", ver, !noBackup)
 		return nil
 	}
 	if err := a.confirm(g, "升级会重启服务，数据库迁移不会自动回退。继续？"); err != nil {

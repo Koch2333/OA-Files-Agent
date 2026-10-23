@@ -1,10 +1,12 @@
 ﻿# Builds the Go backend in debug or release mode.
-#   powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1 [-Mode debug|release] [-Out backend\bin]
+#   powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1 [-Mode debug|release] [-Out backend\bin] [-Arch x64|arm64]
+# -Arch cross-compiles (pure Go, CGO off): the default is the native architecture of the Go toolchain.
 # debug  : -tags debug (enables logx.Debugf lines), optimisations/inlining off for debuggers (dlv), symbols kept.
 # release: -trimpath, symbols stripped, no debug logging code in the binary.
 param(
   [ValidateSet("debug", "release")][string]$Mode = "release",
-  [string]$Out = ""
+  [string]$Out = "",
+  [ValidateSet("", "x64", "arm64")][string]$Arch = ""
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -18,6 +20,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
   if ($LASTEXITCODE -eq 0) { $commit = $c }
 }
 $pkg = "oa-agent/backend/internal/buildinfo"
+if ($Arch) { $env:GOOS = "windows"; $env:GOARCH = $(if ($Arch -eq "arm64") { "arm64" } else { "amd64" }); $env:CGO_ENABLED = "0" }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Push-Location (Join-Path $Root "backend")
 try {
@@ -32,4 +35,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     Write-Host "built $exe"
   }
-} finally { Pop-Location }
+} finally {
+  Pop-Location
+  if ($Arch) { Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue }
+}

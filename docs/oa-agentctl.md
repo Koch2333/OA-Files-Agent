@@ -31,7 +31,7 @@ oa-agentctl status [--json]          # 服务状态、端口、访问地址
 oa-agentctl start | stop | ps
 oa-agentctl restart [postgres|api|worker|caddy]   # api 与 worker 总是一起重建
 oa-agentctl logs [服务] [-f] [--tail N]
-oa-agentctl upgrade [--version V] [--no-backup]   # 先备份 → pull/build → up -d → 等待健康
+oa-agentctl upgrade [--tag T | --version V] [--no-backup]   # 先备份 → pull（镜像仓库模式）或 build → 重建 → 等待健康
 oa-agentctl backup [--out 目录] [--skip-archive]
 oa-agentctl restore <备份文件>
 oa-agentctl doctor [--json]          # 有失败项时退出码 1
@@ -184,3 +184,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o oa-
 ```
 
 `cmd/oa-agentctl/e2e_linux_test.go` 仅在 Linux 运行：编译真实二进制（或用 `OA_CTL_BIN` 指定），把假的 `docker` 脚本放进 PATH 记录调用，对临时安装目录跑完整流程。
+
+## 镜像仓库模式的升级与回滚
+当 `.env` 的 `COMPOSE_FILE` 不含 `docker-compose.build.yml`（用 `install.sh --registry …` 安装，见 [部署指南-Linux.md](部署指南-Linux.md) 第 11 节）时，`upgrade`（Go 版、TUI「服务管理 → 升级」和 `oa-agentctl.sh` 备用版行为一致）：
+
+1. 先备份（`--no-backup` 跳过）；
+2. 给了 `--tag T`（或 `--version T`）就把 `.env` 的 `OA_VERSION` 改成 T；
+3. `docker compose pull`（`<OA_IMAGE_REGISTRY>/oa-agent-api|worker:<OA_VERSION>`）。失败时的报错会点出标签和仓库（私有仓库先 `docker login`）；
+4. 标签变化（或标签为会移动的 `latest`）时，从 `<OA_IMAGE_REGISTRY>/oa-agent-deploy:<标签>` 刷新管理文件：compose 文件、`oa-agentctl.sh`，以及校验 `bin/SHA256SUMS` 后的 `oa-agentctl` 二进制（只替换已安装在 `/usr/local/bin` 旁的那份）。**校验失败会中止**且不替换任何东西；取不到 deploy 镜像只警告。`.env`、`mounts.json`、生成的 `docker-compose.mounts.yml` 从不被覆盖；
+5. `docker compose up -d --force-recreate api worker`（worker 与 api 共用网络命名空间，必须一起重建），等待健康。
+
+镜像模式下**永远不会**尝试从 `./src` 构建。示例：
+
+```bash
+oa-agentctl upgrade --tag sha-0a1b2c3        # 升到某个提交
+oa-agentctl upgrade --tag sha-旧提交 --no-backup   # 回滚到之前的 sha 标签（升级失败时输出会给出这条命令）
+```
+数据库迁移不会自动回退；回滚镜像后若数据不兼容，用 `oa-agentctl restore <升级前备份>`。源码模式（含构建层）的 `upgrade` 与之前完全一致：`build --pull` → `up -d --remove-orphans`。

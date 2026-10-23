@@ -555,3 +555,13 @@ func TestMountsApplyRestartRollbackExit(t *testing.T) {
 		t.Error("files must be restored after a failed restart")
 	}
 }
+
+func TestUpgradeTagFlag(t *testing.T) {
+	r := newRig(t)
+	n := len(r.f.Calls)
+	r.exitIs(t, 0, "--dry-run", "upgrade", "--tag", "sha-abc1234")
+	if len(r.f.Calls) != n || !strings.Contains(r.out.String(), "sha-abc1234") {
+		t.Errorf("dry-run upgrade --tag: %s", r.out.String())
+	}
+	r.exitIs(t, 2, "--dry-run", "upgrade", "--tag", "a", "--version", "b")
+}

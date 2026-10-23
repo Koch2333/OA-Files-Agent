@@ -1,0 +1,87 @@
+# OA 文件智能归档 @VERSION@
+@PRERELEASE_BANNER@
+## 选哪个文件
+
+**Windows（单用户桌面版，免登录）**
+
+| 你的电脑 | 想要 | 下载 |
+|---|---|---|
+| 普通 Windows 10/11（Intel / AMD，x64） | 安装版（推荐） | `oa-agent-@VERSION@-windows-x64-setup.exe` |
+| 同上 | 便携版（解压即用，数据在程序旁 `data\`） | `oa-agent-@VERSION@-windows-x64-portable.zip` |
+| 同上 | 仅服务端，用浏览器访问（无 Electron） | `oa-agent-@VERSION@-windows-x64-server.zip` |
+| Windows 11 on Arm（Snapdragon 等，ARM64） **实验性** | 安装版 | `oa-agent-@VERSION@-windows-arm64-setup.exe` |
+| 同上 | 便携版 | `oa-agent-@VERSION@-windows-arm64-portable.zip` |
+| 同上 | 仅服务端 | `oa-agent-@VERSION@-windows-arm64-server.zip` |
+
+不确定架构：设置 -> 系统 -> 关于 -> “系统类型”。x64 包也能在 Windows 11 on Arm 上通过仿真运行，但 arm64 包的主程序是原生的。
+
+**Linux 服务器（企业版，Docker Compose，多用户/MFA/审计）**
+
+| 服务器 | 下载 |
+|---|---|
+| x86-64（amd64） | `oa-agent-@VERSION@-linux-amd64.tar.gz` |
+| ARM64（aarch64，如 Graviton、鲲鹏、树莓派 5） | `oa-agent-@VERSION@-linux-arm64.tar.gz` |
+| 任意（在线安装脚本，自动识别架构） | `install.sh` |
+
+**不提供 riscv64**：文档 Worker 依赖（onnxruntime、opencv、PyMuPDF）没有 riscv64 轮子与基础镜像，因此没有 riscv64 镜像与完整安装包，也不在本发布的校验清单内。仅 `oa-agentctl` 是纯 Go，可自行交叉编译（`GOOS=linux GOARCH=riscv64 go build ./cmd/oa-agentctl`，实验性、未测试、不支持完整栈）。
+
+Linux 压缩包解压后即是安装包目录：`install.sh`、`oa-agentctl.sh`、compose 文件、`Caddyfile.template`、`.env.example`、对应架构的 `oa-agentctl` 二进制与校验和、`VERSION`、`README.txt`。运行 `sudo bash install.sh`。
+
+## 全部文件
+
+| 文件 | 说明 |
+|---|---|
+| `oa-agent-@VERSION@-windows-<x64\|arm64>-setup.exe` | NSIS 安装程序（默认当前用户，可选所有用户，可选安装目录与归档工作目录） |
+| `oa-agent-@VERSION@-windows-<x64\|arm64>-portable.zip` | 便携桌面版，解压后运行 `OA-Agent-Desktop.exe` |
+| `oa-agent-@VERSION@-windows-<x64\|arm64>-server.zip` | 纯服务端文件夹，`start.bat` 启动 |
+| `oa-agent-@VERSION@-linux-<amd64\|arm64>.tar.gz` | Linux 安装包（与 `oa-agent-deploy` 镜像的 /deploy 同构，仅含对应架构二进制） |
+| `install.sh` | Linux 一键安装脚本（`curl ... \| sudo bash -s -- ...`） |
+| `oa-agentctl-linux-amd64`、`oa-agentctl-linux-arm64` | 管理工具（静态 Go 二进制） |
+| `oa-agent-source.tar.gz`、`oa-agent-source.tar.gz.sha256` | 源码与部署文件（`install.sh` 在无镜像仓库时下载它并校验） |
+| `SHA256SUMS` | 以上所有文件的 SHA-256 |
+
+## 校验
+
+下载到同一文件夹后：
+
+```sh
+# Linux / macOS / Git Bash（只校验已下载的文件）
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+```powershell
+# Windows PowerShell：对照 SHA256SUMS 中该文件的一行
+Get-FileHash -Algorithm SHA256 .\oa-agent-@VERSION@-windows-x64-setup.exe
+Select-String 'windows-x64-setup' .\SHA256SUMS
+```
+
+## Windows 说明
+
+- **安装包未经代码签名**。首次运行 Windows SmartScreen 会提示“已保护你的电脑”：点“更多信息” -> “仍要运行”。后端、Worker 与 PostgreSQL 也可能被杀毒软件误报。请用上面的 SHA256SUMS 确认文件完整。
+- **arm64（实验性，未在真实 ARM 硬件上测试）**：Electron 外壳与 `oa-agent.exe` 为原生 arm64；文档 Worker（PyInstaller，含 OCR/PDF 库）与内置 PostgreSQL 目前**没有** Windows arm64 版本，包内使用 x64 版本，在 Windows 11 on Arm 上通过系统自带的 x64 仿真运行（首次 OCR 与数据库启动会稍慢）。需要 Windows 11 on Arm；Windows 10 on Arm 不受支持。遇到问题请在 Issue 中注明“arm64”，并附上“帮助 -> 导出诊断包”。
+- 升级：运行新版安装程序即可覆盖安装，数据保留；便携版请解压到新文件夹并复制旧的 `data\`。
+
+## Docker 镜像（同一版本）
+
+镜像由同一标签触发的 `Container images` 工作流推送，标签为 `@VERSION@`@MAJMIN_NOTE@，API 与安装包镜像为 linux/amd64 + linux/arm64。
+
+```sh
+# 方式一：使用本发布的 install.sh（默认镜像仓库已内置），固定到本版本
+curl -fsSL https://github.com/@REPO@/releases/download/@TAG@/install.sh | sudo bash -s -- --image-tag @VERSION@
+
+# 方式二：从镜像仓库取安装包
+docker run --rm @REGISTRY@/oa-agent-deploy:@VERSION@ | sudo bash -s -- --registry @REGISTRY@ --image-tag @VERSION@
+
+# 手工拉取并固定
+docker pull @REGISTRY@/oa-agent-api:@VERSION@
+docker pull @REGISTRY@/oa-agent-worker:@VERSION@
+
+# 已安装的服务器升级 / 回滚到本版本
+oa-agentctl upgrade --tag @VERSION@
+```
+
+## 升级与文档
+
+- Linux 升级、回滚、备份：[docs/部署指南-Linux.md](https://github.com/@REPO@/blob/@TAG@/docs/部署指南-Linux.md)；`oa-agentctl` 用法：[docs/oa-agentctl.md](https://github.com/@REPO@/blob/@TAG@/docs/oa-agentctl.md)。
+- Windows 安装、静默安装、工作目录与签名：[docs/构建与发布.md](https://github.com/@REPO@/blob/@TAG@/docs/构建与发布.md)、[docs/用户手册.md](https://github.com/@REPO@/blob/@TAG@/docs/用户手册.md)。
+- 第三方许可证（PyMuPDF 为 AGPL）：[docs/THIRD-PARTY-LICENSES.md](https://github.com/@REPO@/blob/@TAG@/docs/THIRD-PARTY-LICENSES.md)。

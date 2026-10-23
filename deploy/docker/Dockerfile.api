@@ -5,7 +5,9 @@ ARG NODE_VERSION=22
 ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.21
 
-FROM node:${NODE_VERSION}-alpine AS web
+# The frontend and the Go build run on the build platform (no QEMU) and cross-compile for TARGETARCH; only the final
+# stage (apk add) executes on the target platform.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS web
 ARG NPM_REGISTRY=
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -16,7 +18,9 @@ COPY contracts/ /src/contracts/
 # Production build talks to the real backend (VITE_USE_MOCK is a dev-time demo switch).
 RUN npm run build
 
-FROM golang:${GO_VERSION}-alpine AS go
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS go
+ARG TARGETOS
+ARG TARGETARCH
 ARG OA_VERSION=dev
 ARG OA_COMMIT=unknown
 ARG GOPROXY=https://proxy.golang.org,direct
@@ -26,6 +30,7 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
 RUN pkg=oa-agent/backend/internal/buildinfo \
+ && export GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-} \
  && go build -trimpath -ldflags "-s -w -X ${pkg}.Version=${OA_VERSION} -X ${pkg}.Commit=${OA_COMMIT}" -o /out/oa-agent ./cmd/oa-agent \
  && go build -trimpath -ldflags "-s -w -X ${pkg}.Version=${OA_VERSION} -X ${pkg}.Commit=${OA_COMMIT}" -o /out/oa-admin ./cmd/oa-admin
 

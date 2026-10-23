@@ -2,6 +2,9 @@
 # Build the Linux release artefacts (no Makefile needed):
 #   <out>/oa-agent-source.tar.gz         source tree + deploy files + bin/oa-agentctl-linux-{amd64,arm64} + bin/SHA256SUMS
 #   <out>/oa-agent-source.tar.gz.sha256  checksum install.sh verifies when downloading
+#   <out>/oa-agent-<version>-linux-{amd64,arm64}.tar.gz  per-architecture installer bundle (same layout as the oa-agent-deploy image's /deploy,
+#                                        but only the matching bin/oa-agentctl-linux-<arch>): install.sh oa-agentctl.sh compose files
+#                                        Caddyfile.template .env.example oa-agent.service bin/ VERSION README.txt, inside oa-agent-<version>-linux-<arch>/
 #   <out>/install.sh                     the installer (for  curl -fsSL <url>/install.sh | bash)
 #   <out>/oa-agentctl-linux-{amd64,arm64}, <out>/SHA256SUMS  (all artefacts)
 # oa-agentctl is cross-compiled with CGO_ENABLED=0 using local Go, or a golang container when Go is not installed.
@@ -59,12 +62,39 @@ echo "==> collecting sources"
     --exclude=./dist --exclude=./data --exclude=./.tools --exclude=./.idea --exclude=./backend/bin --exclude=./tests/samples \
     --exclude='.env' -cf - .) | (cd "$STAGE/oa-agent" && tar -xf -)
 
+echo "==> per-architecture installer bundles"
+for a in $ARCHS; do
+    name="oa-agent-$VERSION-linux-$a"
+    b="$STAGE/bundle/$name"
+    mkdir -p "$b/bin"
+    for f in install.sh oa-agentctl.sh; do install -m 0755 "$HERE/$f" "$b/$f"; done
+    for f in docker-compose.yml docker-compose.https.yml docker-compose.build.yml docker-compose.mounts.example.yml Caddyfile.template .env.example oa-agent.service; do
+        install -m 0644 "$HERE/$f" "$b/$f"
+    done
+    install -m 0755 "$STAGE/oa-agent/bin/oa-agentctl-linux-$a" "$b/bin/"
+    (cd "$b/bin" && sha256sum "oa-agentctl-linux-$a" >SHA256SUMS)
+    printf 'version=%s\ncommit=%s\narch=%s\n' "$VERSION" "$COMMIT" "$a" >"$b/VERSION"
+    cat >"$b/README.txt" <<README
+OA Agent $VERSION - Linux $a installer bundle / Linux $a 安装包
+
+  sudo bash install.sh                      interactive install (images are pulled from the registry; Docker required)
+  sudo bash install.sh --yes --domain oa.example.com --image-tag $VERSION
+
+The bundle contains the installer, oa-agentctl.sh, the compose files and the prebuilt bin/oa-agentctl-linux-$a
+(checksum in bin/SHA256SUMS). Verify the download with the release SHA256SUMS first (sha256sum -c --ignore-missing).
+Platforms: amd64 and arm64 only. Docs: docs/部署指南-Linux.md and docs/oa-agentctl.md in the source tarball.
+VERSION lists version, commit and architecture of this bundle.
+README
+    chmod 0644 "$b/README.txt"
+    (cd "$STAGE/bundle" && tar --sort=name --owner=0 --group=0 --numeric-owner -czf "$OUT/$name.tar.gz" "$name")
+done
+
 echo "==> packing"
 rm -f "$OUT/oa-agent-source.tar.gz" "$OUT/oa-agent-source.tar.gz.sha256" "$OUT/SHA256SUMS"
 tar -C "$STAGE" -czf "$OUT/oa-agent-source.tar.gz" oa-agent
 cp "$HERE/install.sh" "$OUT/install.sh"
 for a in $ARCHS; do cp "$STAGE/oa-agent/bin/oa-agentctl-linux-$a" "$OUT/"; done
 (cd "$OUT" && sha256sum oa-agent-source.tar.gz >oa-agent-source.tar.gz.sha256 &&
-    sha256sum oa-agent-source.tar.gz install.sh oa-agentctl-linux-* >SHA256SUMS)
+    sha256sum oa-agent-source.tar.gz install.sh oa-agentctl-linux-* oa-agent-"$VERSION"-linux-*.tar.gz >SHA256SUMS)
 echo "==> done: $OUT"
 ls -l "$OUT"

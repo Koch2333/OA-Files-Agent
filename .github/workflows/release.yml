@@ -1,16 +1,87 @@
-name: Release build
-# Builds the Windows distribution (Electron installer + portable zip + server zip) and the Linux release.
-# Artifacts are uploaded only for tag pushes (v*) and manual runs; nothing is published and no secrets are required.
-# Optional signing: add repository secrets CSC_LINK (base64 PFX) and CSC_KEY_PASSWORD and they are picked up automatically.
+name: Release
+# Tag-driven release: pushing v<MAJOR>.<MINOR>.<PATCH>[-suffix] builds every asset and publishes a GitHub Release.
+#   git tag v1.2.0 && git push origin v1.2.0        (VERSION must already say 1.2.0, see scripts/release-check.sh)
+# Manual run (Actions -> Release -> Run workflow): dry_run=true (default) builds everything and uploads workflow artifacts only;
+# dry_run=false publishes and requires "Use workflow from" to be the tag itself (this is also how to re-publish a tag).
+# The tag is the source of truth: every job stamps OA_VERSION from it and the run fails when the VERSION file differs.
+# Release assets (names are a contract, scripts/release-assets.sh): windows-{x64,arm64}-{setup.exe,portable.zip,server.zip},
+# linux-{amd64,arm64}.tar.gz, install.sh, oa-agentctl-linux-{amd64,arm64}, oa-agent-source.tar.gz(.sha256), SHA256SUMS.
+# Container images are pushed by images.yml for the same tag (<version>, <major>.<minor>; linux/amd64 + linux/arm64).
+# Windows arm64: built on windows-latest (x64) by cross-compiling/cross-packaging; Electron and oa-agent.exe are native arm64, the
+# document worker and the embedded PostgreSQL are x64 (emulated on Windows on Arm). Experimental, see docs/构建与发布.md.
+# Secrets: none required. Optional code signing for the Windows installers: repository secrets CSC_LINK (PFX, base64 or URL)
+# and CSC_KEY_PASSWORD are picked up automatically. Publishing uses the preinstalled gh CLI with GITHUB_TOKEN.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: build everything, upload workflow artifacts, publish nothing'
+        type: boolean
+        default: true
+      tag:
+        description: 'Version tag to build as (default: v<VERSION file>); must match the VERSION file'
+        type: string
+        default: ''
 permissions:
   contents: read
+concurrency:
+  # one release run per ref; a running release is never cancelled (a second run for the same tag waits)
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
+  prepare:
+    name: validate tag and version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_DRY: ${{ inputs.dry_run }}
+          IN_TAG: ${{ inputs.tag }}
+        run: |
+          dry=false
+          if [ "$EVENT" = push ]; then
+            tag="$REF_NAME"
+          else
+            dry="$IN_DRY"
+            tag="$IN_TAG"
+            [ -n "$tag" ] || tag="v$(tr -d '[:space:]' <VERSION)"
+            if [ "$dry" != true ]; then
+              if [ "$REF_TYPE" != tag ] || [ "$REF_NAME" != "$tag" ]; then
+                echo "::error::dry_run=false publishes a release: start the workflow from the tag itself (Use workflow from: Tag $tag), not from '$REF_NAME'."
+                exit 1
+              fi
+            fi
+          fi
+          if ! out="$(bash scripts/release-check.sh --tag "$tag" 2>&1)"; then
+            echo "::error::$out"
+            exit 1
+          fi
+          { echo "$out"; echo "dry_run=$dry"; } | tee -a "$GITHUB_OUTPUT"
+
   windows:
+    name: windows ${{ matrix.arch }}
+    needs: prepare
     runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    env:
+      OA_VERSION: ${{ needs.prepare.outputs.version }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -18,8 +89,11 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # x64 Python on purpose, for both architectures: the worker is always the x64 build (build-worker.ps1 refuses anything else)
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
+        with:
+          python-version: '3.12'
+          architecture: x64
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Worker virtualenv
@@ -27,20 +101,37 @@ jobs:
         run: |
           python -m venv workers/document-ai/.venv
           workers/document-ai/.venv/Scripts/python -m pip install -r workers/document-ai/requirements.txt pyinstaller
-      - name: Build Windows distribution
+      - name: Build Windows distribution (${{ matrix.arch }})
         shell: pwsh
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist-windows.ps1
+        # tests run once (x64 job); check.yml also runs them for every push
+        run: |
+          $extra = @(); if ($env:ARCH -ne 'x64') { $extra += '-SkipTests' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist-windows.ps1 -Arch $env:ARCH @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage assets
+        shell: bash
+        run: |
+          mkdir -p dist/upload
+          for f in $(bash scripts/release-assets.sh --version "$OA_VERSION" --group "windows-$ARCH"); do
+            cp -v "dist/release/$OA_VERSION/$f" dist/upload/
+          done
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
-          name: oa-agent-windows
-          path: dist/release/*/*
+          name: asset-windows-${{ matrix.arch }}
+          path: dist/upload/*
           if-no-files-found: error
+          compression-level: 0
+
   linux:
+    name: linux amd64 + arm64
+    needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OA_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -48,11 +139,70 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # oa-agentctl is a static Go binary: both architectures are cross-compiled here, no QEMU, no arm64 runner
       - name: Build Linux release
-        run: bash scripts/dist-linux.sh
+        run: bash scripts/dist-linux.sh --version "$OA_VERSION"
+      - name: Stage assets
+        run: |
+          mkdir -p dist/upload
+          for f in $(bash scripts/release-assets.sh --version "$OA_VERSION" --group linux); do
+            cp -v "dist/release/$OA_VERSION/$f" dist/upload/
+          done
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
-          name: oa-agent-linux
-          path: dist/release/*/*
+          name: asset-linux
+          path: dist/upload/*
           if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: assemble and publish
+    needs: [prepare, windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # the only job that may write: creates/updates the GitHub Release
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      OA_VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      DRY_RUN: ${{ needs.prepare.outputs.dry_run }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REGISTRY: ${{ (vars.ACR_REGISTRY || secrets.ACR_REGISTRY) && (vars.ACR_NAMESPACE || secrets.ACR_NAMESPACE) && format('{0}/{1}', vars.ACR_REGISTRY || secrets.ACR_REGISTRY, vars.ACR_NAMESPACE || secrets.ACR_NAMESPACE) || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: asset-*
+          merge-multiple: true
+          path: dist/assets
+      - name: Assemble SHA256SUMS (fails unless the asset set is exactly the contract)
+        run: bash scripts/release-assemble.sh --version "$OA_VERSION" --dir dist/assets
+      - name: Release notes
+        run: |
+          args=(--version "$OA_VERSION" --tag "$TAG" --repo "$GH_REPO")
+          [ "$PRERELEASE" != true ] || args+=(--prerelease)
+          [ -z "$REGISTRY" ] || args+=(--registry "$REGISTRY")
+          bash scripts/release-notes.sh "${args[@]}" >dist/release-notes.md
+      - name: Summary
+        run: |
+          {
+            echo "### Release $TAG (dry run: $DRY_RUN, prerelease: $PRERELEASE)"
+            echo; echo '```'; (cd dist/assets && cat SHA256SUMS); echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Keep the assembled release as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/assets/*
+            dist/release-notes.md
+          retention-days: 14
+          compression-level: 0
+      - name: Publish the GitHub Release (draft -> upload -> verify -> publish)
+        if: env.DRY_RUN != 'true'
+        run: |
+          args=(--tag "$TAG" --version "$OA_VERSION" --dir dist/assets --notes dist/release-notes.md --repo "$GH_REPO")
+          [ "$PRERELEASE" != true ] || args+=(--prerelease)
+          bash scripts/release-publish.sh "${args[@]}"

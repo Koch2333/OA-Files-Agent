@@ -1,15 +1,19 @@
 ﻿# Builds the server bundle: oa-agent.exe + web + PyInstaller worker + embedded PostgreSQL + migrations.
 # This is the payload of the Electron desktop app (resources\app-server) and of the server-only zip.
 #   powershell -ExecutionPolicy Bypass -File scripts\build-server-bundle.ps1 [-Mode release|debug] [-Out dist\server] [-Version x.y.z]
-#                                                                           [-Clean] [-SkipFrontend] [-SkipWorker] [-Extras]
+#                                                                           [-Clean] [-SkipFrontend] [-SkipWorker] [-Extras] [-Arch x64|arm64]
 # -SkipFrontend / -SkipWorker reuse frontend\dist and dist\worker-dist from a previous build.
 # -Extras adds start.bat, the demo samples and the user manual (the old single-folder "standalone" package).
+# -Arch selects the Windows architecture of oa-agent.exe (cross-compiled, default x64). The document worker (PyInstaller) and the
+# embedded PostgreSQL are x64 in BOTH architectures: there is no win_arm64 build of them (see docs\构建与发布.md); on Windows
+# on Arm they run under x64 emulation. VERSION.txt records this.
 param(
   [ValidateSet("release", "debug")][string]$Mode = "release",
   [string]$Out = "dist\server",
   [string]$Version = "",
   [string]$PgJarUrl = "https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-windows-amd64/16.9.0/embedded-postgres-binaries-windows-amd64-16.9.0.jar",
-  [switch]$Clean, [switch]$SkipFrontend, [switch]$SkipWorker, [switch]$Extras
+  [switch]$Clean, [switch]$SkipFrontend, [switch]$SkipWorker, [switch]$Extras,
+  [ValidateSet("x64", "arm64")][string]$Arch = "x64"
 )
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
@@ -17,16 +21,16 @@ Initialize-Version $Version
 if (-not [System.IO.Path]::IsPathRooted($Out)) { $Out = Join-Path $RepoRoot $Out }
 $cache = Join-Path $RepoRoot "dist\cache"
 New-Item -ItemType Directory -Force $cache | Out-Null
-Write-Host "server bundle: version $env:OA_VERSION ($env:OA_COMMIT), mode $Mode -> $Out" -ForegroundColor Green
+Write-Host "server bundle: version $env:OA_VERSION ($env:OA_COMMIT), mode $Mode, arch $Arch -> $Out" -ForegroundColor Green
 
 Step "Cleaning $Out"
 Remove-IfExists $Out
 New-Item -ItemType Directory -Force $Out | Out-Null
 
 Step "Go backend ($Mode)"
-$beOut = Join-Path $RepoRoot "dist\backend-build"
+$beOut = Join-Path $RepoRoot "dist\backend-build-$Arch"
 Remove-IfExists $beOut
-Invoke-Native "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "build-backend.ps1"), "-Mode", $Mode, "-Out", $beOut) $RepoRoot
+Invoke-Native "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "build-backend.ps1"), "-Mode", $Mode, "-Out", $beOut, "-Arch", $Arch) $RepoRoot
 $beExe = if ($Mode -eq "debug") { "oa-agent-debug.exe" } else { "oa-agent.exe" }
 Copy-Item (Join-Path $beOut $beExe) (Join-Path $Out "oa-agent.exe")
 
@@ -61,7 +65,7 @@ Get-ChildItem (Join-Path $Out "migrations") -Filter "*.down.sql" | Remove-Item
 Copy-Item (Join-Path $RepoRoot "deploy\windows\oa-agent.env.template") (Join-Path $Out "oa-agent.env")
 Copy-Item (Join-Path $RepoRoot "docs\THIRD-PARTY-LICENSES.md") $Out -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $RepoRoot "LICENSE") (Join-Path $Out "LICENSE.txt") -ErrorAction SilentlyContinue
-Write-Utf8 (Join-Path $Out "VERSION.txt") ("version=$env:OA_VERSION`r`ncommit=$env:OA_COMMIT`r`nmode=$Mode`r`n")
+Write-Utf8 (Join-Path $Out "VERSION.txt") ("version=$env:OA_VERSION`r`ncommit=$env:OA_COMMIT`r`nmode=$Mode`r`narch=$Arch`r`nworker=x64`r`npgsql=x64`r`n")
 if ($Extras) {
   Copy-Item (Join-Path $RepoRoot "deploy\windows\start.bat") $Out
   foreach ($f in "start-banner.txt", "start-stopped.txt", "first-run.ps1", "change-workdir.bat") { Copy-Item (Join-Path $RepoRoot "deploy\windows\$f") $Out }

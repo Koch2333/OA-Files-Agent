@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# OA Agent installer bundle image (oa-agent-deploy): everything install.sh / oa-agentctl need on a server, so a host can be
+# installed and upgraded from a container registry alone (no GitHub tarball, no source build). Never run as a service.
+# Build context = repository root:  docker build -f deploy/docker/Dockerfile.deploy -t oa-agent-deploy .
+#   docker run --rm <registry>/oa-agent-deploy:<tag>                       -> prints install.sh (pipe it into  sudo bash -s -- ...)
+#   docker create / docker cp <cid>:/deploy/. <dir>                        -> the whole bundle
+# /deploy: install.sh oa-agentctl.sh docker-compose{,.https,.build,.mounts.example}.yml Caddyfile.template .env.example
+#          oa-agent.service bin/oa-agentctl-linux-{amd64,arm64} bin/SHA256SUMS ("hash  filename") VERSION
+ARG GO_VERSION=1.26
+ARG ALPINE_VERSION=3.21
+
+# Cross-compiles on the build platform (no QEMU): CGO_ENABLED=0 binaries for both server architectures.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS ctl
+ARG OA_VERSION=dev
+ARG OA_COMMIT=unknown
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly GOPROXY=${GOPROXY}
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN set -eu; pkg=oa-agent/backend/internal/buildinfo; mkdir -p /out/bin; \
+    for a in amd64 arm64; do \
+      GOOS=linux GOARCH=$a go build -trimpath -ldflags "-s -w -X ${pkg}.Version=${OA_VERSION} -X ${pkg}.Commit=${OA_COMMIT}" \
+        -o /out/bin/oa-agentctl-linux-$a ./cmd/oa-agentctl; \
+    done; \
+    cd /out/bin && sha256sum oa-agentctl-linux-amd64 oa-agentctl-linux-arm64 > SHA256SUMS
+
+FROM alpine:${ALPINE_VERSION}
+ARG OA_VERSION=dev
+ARG OA_COMMIT=unknown
+# Default registry shown in /deploy/VERSION (a hint only; a documented default, not a credential).
+ARG OA_REGISTRY_HINT=crpi-d6fmgwmrnsa2kgp8.cn-shanghai.personal.cr.aliyuncs.com/koch2333
+LABEL org.opencontainers.image.title="oa-agent-deploy" org.opencontainers.image.version="${OA_VERSION}" \
+      org.opencontainers.image.revision="${OA_COMMIT}" org.opencontainers.image.licenses="AGPL-3.0"
+WORKDIR /deploy
+COPY --chmod=0755 deploy/linux/install.sh deploy/linux/oa-agentctl.sh ./
+COPY --chmod=0644 deploy/linux/docker-compose.yml deploy/linux/docker-compose.https.yml deploy/linux/docker-compose.build.yml \
+     deploy/linux/docker-compose.mounts.example.yml deploy/linux/Caddyfile.template deploy/linux/.env.example deploy/linux/oa-agent.service ./
+COPY --from=ctl --chmod=0755 /out/bin/ ./bin/
+RUN chmod 0644 bin/SHA256SUMS \
+ && printf 'version=%s\ncommit=%s\nregistry=%s\n' "${OA_VERSION}" "${OA_COMMIT}" "${OA_REGISTRY_HINT}" > VERSION \
+ && (cd bin && sha256sum -c SHA256SUMS)
+CMD ["cat", "/deploy/install.sh"]

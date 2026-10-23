@@ -443,12 +443,61 @@ cmd_restore() {
     ok "还原完成" "Restore complete"
 }
 
+# registry_mode: the stack runs pre-built images (no build layer in COMPOSE_FILE)
+registry_mode() { case ":$(env_get COMPOSE_FILE):" in *:docker-compose.build.yml:*) return 1 ;; *) return 0 ;; esac; }
+
+# refresh_management TAG: replace compose files, oa-agentctl.sh and (checksum verified) the Go binary with the ones in the
+# <registry>/oa-agent-deploy:TAG image. Never touches .env, mounts.json or docker-compose.mounts.yml.
+# Returns 0 ok, 1 = bundle could not be fetched (caller warns and continues), 2 = checksum failure (caller aborts).
+refresh_management() {
+    local tag="$1" reg image tmp cid='' f arch bin_dir want got ctl_tmp
+    reg="$(env_get OA_IMAGE_REGISTRY)"; reg="${reg%/}"
+    [ -n "$reg" ] || return 1
+    image="$reg/oa-agent-deploy:$tag"
+    tmp="$(mktemp -d)"
+    info "从镜像更新管理文件 $image …" "Refreshing management files from $image ..."
+    if ! docker pull "$image" >&2; then rm -rf -- "$tmp"; return 1; fi
+    if ! cid="$(docker create "$image" 2>/dev/null)" || [ -z "$cid" ]; then rm -rf -- "$tmp"; return 1; fi
+    if ! docker cp "$cid:/deploy/." "$tmp" >/dev/null 2>&1; then docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf -- "$tmp"; return 1; fi
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    [ -f "$tmp/docker-compose.yml" ] || { rm -rf -- "$tmp"; return 1; }
+    case "$(uname -m)" in aarch64 | arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+    ctl_tmp=''
+    if [ -f "$tmp/bin/oa-agentctl-linux-$arch" ]; then
+        want="$(awk -v f="oa-agentctl-linux-$arch" '$2==f || $2=="*"f {print $1}' "$tmp/bin/SHA256SUMS" 2>/dev/null | head -n 1)"
+        got="$(sha256sum "$tmp/bin/oa-agentctl-linux-$arch" | awk '{print $1}')"
+        if [ -z "$want" ] || [ "$want" != "$got" ]; then rm -rf -- "$tmp"; return 2; fi
+        ctl_tmp="$tmp/bin/oa-agentctl-linux-$arch"
+    fi
+    for f in docker-compose.yml docker-compose.build.yml docker-compose.https.yml Caddyfile.template .env.example; do
+        [ -f "$tmp/$f" ] || continue
+        cp -f "$tmp/$f" "$DIR/.$f.new" && chmod 644 "$DIR/.$f.new" && mv -f "$DIR/.$f.new" "$DIR/$f"
+    done
+    bin_dir="${OA_CTL_SELF:+$(dirname -- "$OA_CTL_SELF")}"
+    bin_dir="${bin_dir:-$(dirname -- "${BASH_SOURCE[0]}")}"
+    if [ -f "$tmp/oa-agentctl.sh" ] && [ -w "$bin_dir" ]; then
+        sed "s|^OA_DEFAULT_DIR=.*|OA_DEFAULT_DIR='$DIR'|" "$tmp/oa-agentctl.sh" >"$bin_dir/.oa-agentctl.sh.new"
+        chmod 755 "$bin_dir/.oa-agentctl.sh.new"; mv -f "$bin_dir/.oa-agentctl.sh.new" "$bin_dir/oa-agentctl.sh"
+        # the "oa-agentctl" next to it is either the Go binary (ELF) or a copy of this script: refresh whichever it is
+        if [ -f "$bin_dir/oa-agentctl" ]; then
+            if [ -n "$ctl_tmp" ] && [ "$(head -c 4 "$bin_dir/oa-agentctl" 2>/dev/null)" = $'\x7f'ELF ]; then
+                cp -f "$ctl_tmp" "$bin_dir/.oa-agentctl.new"; chmod 755 "$bin_dir/.oa-agentctl.new"; mv -f "$bin_dir/.oa-agentctl.new" "$bin_dir/oa-agentctl"
+                ok "oa-agentctl 已更新（SHA-256 校验通过）" "oa-agentctl updated (SHA-256 verified)"
+            elif [ "$(head -c 4 "$bin_dir/oa-agentctl" 2>/dev/null)" != $'\x7f'ELF ]; then
+                cp -f "$bin_dir/oa-agentctl.sh" "$bin_dir/.oa-agentctl.new"; mv -f "$bin_dir/.oa-agentctl.new" "$bin_dir/oa-agentctl"
+            fi
+        fi
+    fi
+    rm -rf -- "$tmp"
+    ok "管理文件已更新" "Management files refreshed"
+}
+
 cmd_upgrade() {
     need_install; need_docker
-    local newver='' skipbackup=0 oldver
+    local newver='' skipbackup=0 oldver tag rc
     while [ $# -gt 0 ]; do
         case "$1" in
-            --version) newver="${2:?}"; shift 2 ;;
+            --version | --tag) newver="${2:?}"; shift 2 ;;
             --no-backup) skipbackup=1; shift ;;
             *) die "未知选项 $1" "unknown option $1" ;;
         esac
@@ -459,14 +508,38 @@ cmd_upgrade() {
         cmd_backup --print-path
     fi
     if [ -n "$newver" ]; then config_key_ok OA_VERSION "$newver" || die "版本号不合法" "Invalid version"; env_set OA_VERSION "$newver"; fi
-    case ":$(env_get COMPOSE_FILE):" in
-        *docker-compose.build.yml*) info "从源码构建镜像 …" "Building images from source ..."; dc build --pull ;;
-        *) info "拉取镜像 …" "Pulling images ..."; dc pull ;;
-    esac
-    owner_fix
-    dc up -d --remove-orphans
+    tag="$(env_get OA_VERSION)"
+    if registry_mode; then
+        if [ "${OA_OFFLINE:-0}" = 1 ]; then
+            info "离线模式：使用已载入的镜像（不拉取，不刷新管理文件）。" "Offline mode: using the already loaded images (no pull, no management-file refresh)."
+        else
+            info "拉取镜像 $(env_get OA_IMAGE_REGISTRY)/oa-agent-{api,worker}:$tag …" "Pulling images $(env_get OA_IMAGE_REGISTRY)/oa-agent-{api,worker}:$tag ..."
+            dc pull || die "拉取镜像失败：检查仓库可访问、标签 $tag 是否存在（私有仓库先 docker login）；OA_VERSION 可用 oa-agentctl config set OA_VERSION ${oldver:-<旧版本>} 还原。" \
+                "Image pull failed: check the registry is reachable and tag $tag exists (docker login first for private repositories); restore OA_VERSION with oa-agentctl config set OA_VERSION ${oldver:-<old>}."
+            if [ -n "$(env_get OA_IMAGE_REGISTRY)" ] && { [ "$tag" != "$oldver" ] || [ "$tag" = latest ]; }; then
+                rc=0; refresh_management "$tag" || rc=$?
+                case "$rc" in
+                    0) ;;
+                    2) die "升级已中止：预编译 oa-agentctl 校验和不匹配。" "Upgrade aborted: checksum mismatch for the prebuilt oa-agentctl." ;;
+                    *) warn "未能从镜像更新管理文件；继续使用现有 compose 文件。" "Could not refresh the management files from the image; continuing with the existing compose files." ;;
+                esac
+            fi
+        fi
+        owner_fix
+        # worker shares api's network namespace: always recreate both together
+        dc up -d --force-recreate api worker
+    else
+        info "从源码构建镜像 …" "Building images from source ..."
+        dc build --pull
+        owner_fix
+        dc up -d --remove-orphans
+    fi
     if cmd_wait; then
         ok "升级完成" "Upgrade finished"
+    elif registry_mode; then
+        warn "升级后服务未就绪。回滚办法：oa-agentctl upgrade --tag ${oldver:-<旧标签>} --no-backup；必要时 oa-agentctl restore <升级前备份>（数据库迁移不会自动回退）" \
+            "Services not healthy after upgrade. Rollback: oa-agentctl upgrade --tag ${oldver:-<old tag>} --no-backup; if needed oa-agentctl restore <pre-upgrade backup> (DB migrations are not reverted automatically)"
+        return 1
     else
         warn "升级后服务未就绪。回滚办法：oa-agentctl config set OA_VERSION ${oldver:-<旧版本>}；oa-agentctl restore <升级前备份>（数据库迁移不会自动回退）" \
             "Services not healthy after upgrade. Rollback: oa-agentctl config set OA_VERSION ${oldver:-<old>}; oa-agentctl restore <pre-upgrade backup> (DB migrations are not reverted automatically)"
@@ -595,7 +668,7 @@ usage() {
   restart [服务]            重启（api 与 worker 总是一起重建）
   ps                        容器列表
   logs [服务] [-f] [--tail N]
-  upgrade [--version V] [--no-backup]   先备份，再拉取/构建并重启
+  upgrade [--tag T] [--no-backup]   先备份；镜像模式：拉取标签 T（默认 .env 中的 OA_VERSION）、更新管理文件并重建 api+worker；源码模式：构建并重启
   backup [--out 目录] [--skip-archive]  备份数据库+归档+密钥（含加密密钥，请妥善保管）
   restore <文件>            从备份还原（会覆盖当前数据）
   setup-token               显示初始化令牌
@@ -618,7 +691,7 @@ Usage: oa-agentctl [--dir INSTALL_DIR] [--yes] <command> [args]
   restart [service]         restart (api and worker are always recreated together)
   ps                        container list
   logs [service] [-f] [--tail N]
-  upgrade [--version V] [--no-backup]   back up first, then pull/build and restart
+  upgrade [--tag T] [--no-backup]   back up first; registry mode: pull tag T (default OA_VERSION from .env), refresh management files, recreate api+worker; source mode: build and restart
   backup [--out DIR] [--skip-archive]   database + archive + key backup (contains the encryption key!)
   restore <file>            restore from a backup (overwrites current data)
   setup-token               print the setup-wizard token

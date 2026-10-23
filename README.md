@@ -13,6 +13,21 @@
 | `docs/` | 用户手册、后端设计、进度、第三方许可证 |
 | `tests/samples/` | 带标注的演示样本（含损坏/加密文件）与 `manifest.json` |
 
+## 下载（GitHub Releases）
+在 [Releases](https://github.com/Koch2333/OA-Files-Agent/releases) 页按下表选文件（`<版本>` 不带 `v`；每个版本附统一的 `SHA256SUMS`）：
+
+| 你的机器 | 安装版 | 便携版 | 仅服务端 |
+|---|---|---|---|
+| Windows 10/11，Intel/AMD（x64） | `oa-agent-<版本>-windows-x64-setup.exe` | `oa-agent-<版本>-windows-x64-portable.zip` | `oa-agent-<版本>-windows-x64-server.zip` |
+| Windows 11 on Arm（ARM64，**实验性**） | `oa-agent-<版本>-windows-arm64-setup.exe` | `oa-agent-<版本>-windows-arm64-portable.zip` | `oa-agent-<版本>-windows-arm64-server.zip` |
+
+| Linux 服务器 | 下载 |
+|---|---|
+| x86-64（amd64） | `oa-agent-<版本>-linux-amd64.tar.gz`（或 `install.sh`） |
+| ARM64（aarch64） | `oa-agent-<版本>-linux-arm64.tar.gz`（或 `install.sh`） |
+
+Windows arm64 包的主程序与后端是原生 arm64，文档 Worker 与内置 PostgreSQL 为 x64（仿真运行），详见 [docs/构建与发布.md](docs/构建与发布.md)。安装包未签名，SmartScreen 会提示；校验：`sha256sum -c --ignore-missing SHA256SUMS` 或 `Get-FileHash`。发布由 `v*` 标签触发（`.github/workflows/release.yml`），步骤见 [docs/构建与发布.md](docs/构建与发布.md)。
+
 ## 最终用户（Windows）
 安装 `setup.exe`（或解压便携 zip）后双击 `OA 文件智能归档`；服务端版解压后双击 `start.bat`。详见 [docs/用户手册.md](docs/用户手册.md)。无需安装 Python/数据库/Office。
 
@@ -23,6 +38,13 @@ sudo bash deploy/linux/install.sh              # 交互式；--yes 为非交互�
 # 远程一键（<OA_REPO_URL> 为占位，请替换为你的发行页地址）：
 curl -fsSL <OA_REPO_URL>/releases/latest/download/install.sh | sudo bash -s -- --domain oa.example.com
 ```
+
+**从容器镜像仓库安装**（每次 GitHub 提交由 `.github/workflows/images.yml` 构建并推送镜像；安装脚本也取自同一仓库，服务器上无需编译）：
+```bash
+docker run --rm <仓库地址>/<命名空间>/oa-agent-deploy:latest | sudo bash -s -- --registry <仓库地址>/<命名空间>
+oa-agentctl upgrade --tag sha-<7位提交>        # 升级 / 回滚到指定镜像标签
+```
+阿里云 ACR 的一次性设置、标签规则、没有 Docker 时的引导方式与排错见 [docs/部署指南-Linux.md](docs/部署指南-Linux.md) 第 11 节。
 安装 Docker 栈（PostgreSQL + API + 文档 Worker，可选 Caddy 自动 HTTPS），归档目录可指定任意本机路径或 NAS 挂载点，日常管理使用 `oa-agentctl`。Windows 版面向个人单机使用，Linux 版是企业版（多用户、MFA、审计）。详见 [docs/部署指南-Linux.md](docs/部署指南-Linux.md)；`deploy/linux/` 内的部署脚本仅经离线 shim 测试，尚未在真实 Docker 环境验证。
 
 ## 开发
@@ -63,11 +85,11 @@ cd frontend && UI_BASE=http://127.0.0.1:8080 UI_SAMPLES=<样本目录> node e2e/
 ## Windows 版（桌面版，单用户免登录）
 完整构建（安装包 + 便携 zip + 服务端 zip + 校验和，输出 `dist\release\<版本>\`）：
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\dist-windows.ps1 [-SkipTests]
+powershell -ExecutionPolicy Bypass -File scripts\dist-windows.ps1 [-Arch x64|arm64] [-SkipTests]
 ```
-- **安装版**：`oa-agent-<版本>-windows-x64-setup.exe`（当前用户/所有用户可选，可自选安装目录与归档工作目录）。
-- **便携版**：`oa-agent-<版本>-windows-x64.zip`，解压后运行 `OA-Agent-Desktop.exe`，数据在程序旁 `data\`。
-- **服务端版**：`oa-agent-<版本>-windows-x64-server.zip`（无 Electron，`start.bat` 启动，浏览器访问）；旧入口 `deploy\windows\build.ps1` 仍可单独生成该文件夹。
+- **安装版**：`oa-agent-<版本>-windows-<x64|arm64>-setup.exe`（当前用户/所有用户可选，可自选安装目录与归档工作目录）。
+- **便携版**：`oa-agent-<版本>-windows-<x64|arm64>-portable.zip`，解压后运行 `OA-Agent-Desktop.exe`，数据在程序旁 `data\`。
+- **服务端版**：`oa-agent-<版本>-windows-<x64|arm64>-server.zip`（无 Electron，`start.bat` 启动，浏览器访问）；旧入口 `deploy\windows\build.ps1` 仍可单独生成该文件夹。
 - 归档工作目录可随时在“设置 → 桌面版设置…”（用户菜单、设置页卡片或托盘图标）修改（迁移并校验，失败自动回滚）。
 - 前置条件、各脚本说明、签名（可选，未签名会触发 SmartScreen 提示）、发布清单见 [docs/构建与发布.md](docs/构建与发布.md)，桌面外壳说明见 [desktop/README.md](desktop/README.md)。**在目标环境发布前请查看 [docs/THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)（PyMuPDF 为 AGPL）。**
 

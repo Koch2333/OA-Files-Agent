@@ -17,7 +17,7 @@ func (a *App) printUsage(w io.Writer) {
   restart [服务]              重启（api 与 worker 总是一起重建）
   ps                          容器列表
   logs [服务] [-f] [--tail N]  查看日志
-  upgrade [--version V] [--no-backup]
+  upgrade [--tag T | --version V] [--no-backup]   镜像模式：拉取标签并更新管理文件；源码模式：构建
   backup [--out 目录] [--skip-archive]
   restore <备份文件>
   doctor                      诊断（有失败项时退出码为 1）

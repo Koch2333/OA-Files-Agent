@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -243,7 +244,7 @@ func (a *App) Open(dir string) (*Session, error) {
 		prober = mounts.OSProber{}
 	}
 	return &Session{Inst: inst, P: p, Prober: prober, Env: ops.Env{
-		P: p, Getuid: a.getuid, Timeout: a.HealthTimeout, Prober: prober, Now: a.Now,
+		P: p, Getuid: a.getuid, Timeout: a.HealthTimeout, Prober: prober, Now: a.Now, BinDir: installedBinDir(),
 	}}, nil
 }
 
@@ -326,4 +327,20 @@ func (a *App) hostIP() string {
 		}
 	}
 	return "localhost"
+}
+
+// installedBinDir is the directory holding the running oa-agentctl when it is an installed copy (the binary is named
+// oa-agentctl, e.g. /usr/local/bin), so "upgrade" can refresh it next to oa-agentctl.sh. "" for go run / test binaries.
+func installedBinDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	if filepath.Base(exe) != "oa-agentctl" {
+		return ""
+	}
+	return filepath.Dir(exe)
 }

@@ -42,6 +42,10 @@ type Env struct {
 	Now      func() time.Time
 	Stdin    io.Reader
 	StderrTo io.Writer
+	// BinDir is where oa-agentctl and oa-agentctl.sh are installed; "" skips replacing them on upgrade.
+	BinDir string
+	// Fetch overrides how the deploy image bundle is copied into dest (tests); default uses docker pull/create/cp/rm.
+	Fetch func(ctx context.Context, image, dest string) error
 }
 
 func (e Env) timeout() time.Duration {
@@ -599,11 +603,18 @@ func (e Env) Restore(ctx context.Context, file string, pr Progress) error {
 
 // UpgradeOptions controls Upgrade.
 type UpgradeOptions struct {
-	Version  string
+	Version  string // image tag / version to move to (--tag, --version); "" keeps OA_VERSION from .env
 	NoBackup bool
 }
 
+// movingTag reports tags that are re-pointed by CI, so the management files must be refreshed even if the tag is unchanged.
+func movingTag(t string) bool { return t == "latest" || t == "" }
+
 // Upgrade backs up, pulls (or builds) and restarts. DB migrations are never reverted automatically.
+//
+// Registry mode (no docker-compose.build.yml layer): pull the images of OA_VERSION (optionally changed first), refresh
+// the installed management files from the oa-agent-deploy image of that tag, then recreate api and worker together
+// (the worker shares the API's network namespace). It never tries to build from ./src.
 func (e Env) Upgrade(ctx context.Context, o UpgradeOptions, pr Progress) error {
 	inst := e.P.Inst
 	old := inst.Env.Value("OA_VERSION", "")
@@ -623,28 +634,50 @@ func (e Env) Upgrade(ctx context.Context, o UpgradeOptions, pr Progress) error {
 			return err
 		}
 	}
-	if strings.Contains(inst.ComposeFile(), "docker-compose.build.yml") {
+	registry := e.RegistryMode()
+	tag := inst.Env.Value("OA_VERSION", "")
+	if registry {
+		pr.say("拉取镜像 %s/oa-agent-{api,worker}:%s …", inst.Env.Value("OA_IMAGE_REGISTRY", "?"), tag)
+		if err := e.stream(ctx, pr, "pull"); err != nil {
+			return fmt.Errorf("拉取镜像失败：%w。检查仓库是否可访问、标签 %q 是否存在（私有仓库先 docker login）；已改的 OA_VERSION 可用 oa-agentctl config set OA_VERSION %s 还原", err, tag, oldOr(old))
+		}
+		if e.DeployImage(tag) != "" && (tag != old || movingTag(tag)) {
+			if err := e.RefreshManagement(ctx, tag, pr); err != nil {
+				if errors.Is(err, ErrChecksum) {
+					return fmt.Errorf("升级已中止：%w", err)
+				}
+				pr.say("警告：未能更新管理文件（%v）；继续使用现有的 compose 文件。", err)
+			}
+		}
+	} else {
 		pr.say("从源码构建镜像 …")
 		if err := e.stream(ctx, pr, "build", "--pull"); err != nil {
 			return err
 		}
-	} else {
-		pr.say("拉取镜像 …")
-		if err := e.stream(ctx, pr, "pull"); err != nil {
-			return err
-		}
 	}
 	e.FixOwnership(pr)
-	if err := e.stream(ctx, pr, "up", "-d", "--remove-orphans"); err != nil {
+	up := []string{"up", "-d", "--remove-orphans"}
+	if registry {
+		// worker shares api's network namespace: both must be recreated together
+		up = []string{"up", "-d", "--force-recreate", "api", "worker"}
+	}
+	if err := e.stream(ctx, pr, up...); err != nil {
 		return err
 	}
 	if err := e.wait(ctx, pr, inst.Services()); err != nil {
-		hint := old
-		if hint == "" {
-			hint = "<旧版本>"
+		hint := oldOr(old)
+		if registry {
+			return fmt.Errorf("升级后服务未就绪：%w。回滚办法：oa-agentctl upgrade --tag %s --no-backup（回到之前的镜像标签）；必要时 oa-agentctl restore <升级前备份>（数据库迁移不会自动回退）", err, hint)
 		}
 		return fmt.Errorf("升级后服务未就绪：%w。回滚办法：oa-agentctl config set OA_VERSION %s；oa-agentctl restore <升级前备份>（数据库迁移不会自动回退）", err, hint)
 	}
 	pr.say("升级完成")
 	return nil
+}
+
+func oldOr(v string) string {
+	if v == "" {
+		return "<旧版本>"
+	}
+	return v
 }

@@ -23,9 +23,9 @@ extraResources:
 win:
   target:
     - target: nsis
-      arch: [x64]
+      arch: [x64]   # scripts/build-desktop.ps1 overrides the architecture with --x64 / --arm64
   icon: build/icon.ico
-  artifactName: oa-agent-${version}-windows-x64.${ext}
+  artifactName: oa-agent-${version}-windows-${arch}.${ext}
   # Code signing is optional: set CSC_LINK + CSC_KEY_PASSWORD (or WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD) to sign.
   signAndEditExecutable: true
   verifyUpdateCodeSignature: false
@@ -43,7 +43,7 @@ nsis:
   displayLanguageSelector: true
   installerLanguages: [zh_CN, en_US]
   language: "2052"
-  artifactName: oa-agent-${version}-windows-x64-setup.${ext}
+  artifactName: oa-agent-${version}-windows-${arch}-setup.${ext}
   include: build/installer.nsh
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico

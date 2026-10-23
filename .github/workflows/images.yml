@@ -1,0 +1,170 @@
+name: Container images
+# Builds the three Linux images (api, worker, deploy) on every push / tag / pull request and pushes them to a container
+# registry (Alibaba Cloud ACR personal edition in the reference setup). The "deploy" image carries install.sh,
+# oa-agentctl and the compose files, so a server can be installed from the registry alone (docs/部署指南-Linux.md).
+#
+# Repository SETTINGS (Settings -> Secrets and variables -> Actions). None of these values live in the repository:
+#   secrets   ACR_USERNAME   registry login name (ACR personal edition: the Aliyun account name)
+#             ACR_PASSWORD   registry password (set in the ACR console: Access credential -> Set fixed password)
+#   variables ACR_REGISTRY   registry host, e.g. the ACR public endpoint of your instance. Reference setup (region
+#                            cn-shanghai): crpi-d6fmgwmrnsa2kgp8.cn-shanghai.personal.cr.aliyuncs.com
+#                            (VPC endpoint for Aliyun ECS pulls: crpi-d6fmgwmrnsa2kgp8-vpc.cn-shanghai.personal.cr.aliyuncs.com)
+#             ACR_NAMESPACE  namespace, reference setup: koch2333
+#   ACR_REGISTRY / ACR_NAMESPACE may also be stored as secrets (then GitHub masks them as *** in logs and summaries).
+# Repositories <ACR_REGISTRY>/<ACR_NAMESPACE>/oa-agent-api, oa-agent-worker and oa-agent-deploy must exist (or the ACR
+# namespace option "自动创建仓库" must be on). The pre-existing single repository "oa-agent" stays unused.
+#
+# Without those settings (forks, pull requests) the images are still built, nothing is pushed and the job summary says why.
+# Pull requests never see the secrets. Tags (docker/metadata-action): sha-<7> on every push; <branch> (sanitised) on branch
+# pushes; latest on the default branch only; <version> and <major>.<minor> on v* tags. Same rules: scripts/push-images.sh.
+# Platforms: linux/amd64 on branch pushes and PRs; v* tags build linux/amd64 + linux/arm64 for api, worker and deploy (the arm64 worker
+# runs pip under QEMU, slow but tag-only). release.yml publishes the GitHub Release for the same tag and refers to these images.
+# Hardening: the actions below are pinned to major versions; for a stricter supply chain pin each one to a commit SHA.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      arm64:
+        description: 'Also build linux/arm64 for api and deploy (cheap: Go and the frontend cross-compile; QEMU only runs a short apk step)'
+        type: boolean
+        default: false
+      arm64_worker:
+        description: 'Also build linux/arm64 for worker (slow: pip install of the OCR stack runs under QEMU emulation)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  # one run per ref; a newer push to a branch cancels the superseded run, tag runs are never cancelled
+  group: images-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  images:
+    name: image ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, worker, deploy]
+    env:
+      # Pull requests get empty credentials on purpose: they build but never log in or push.
+      ACR_REGISTRY: ${{ vars.ACR_REGISTRY || secrets.ACR_REGISTRY }}
+      ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE || secrets.ACR_NAMESPACE }}
+      HAVE_USER: ${{ github.event_name != 'pull_request' && secrets.ACR_USERNAME != '' && 'yes' || '' }}
+      HAVE_PASS: ${{ github.event_name != 'pull_request' && secrets.ACR_PASSWORD != '' && 'yes' || '' }}
+      EVENT: ${{ github.event_name }}
+      REF: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.head_ref) || github.ref }}
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve registry settings and version
+        id: cfg
+        run: |
+          push=true; why=''
+          if [ "$EVENT" = pull_request ]; then push=false; why='pull requests build only (they never receive registry credentials)'
+          elif [ -z "$ACR_REGISTRY" ] || [ -z "$ACR_NAMESPACE" ]; then push=false; why='ACR_REGISTRY / ACR_NAMESPACE are not configured'
+          elif [ -z "$HAVE_USER" ] || [ -z "$HAVE_PASS" ]; then push=false; why='ACR_USERNAME / ACR_PASSWORD secrets are not configured'
+          fi
+          repo="oa-agent-$IMAGE"
+          [ "$push" != true ] || repo="$ACR_REGISTRY/$ACR_NAMESPACE/oa-agent-$IMAGE"
+          meta="$(bash scripts/push-images.sh --ref "$REF" --sha "$SHA" --default-branch "$DEFAULT_BRANCH" --print-meta)"
+          platforms=linux/amd64
+          # Release tags (v*) always get amd64 + arm64 for all three images. api and deploy cross-compile on the build platform;
+          # the worker pip-installs its OCR stack under QEMU (slow, roughly 20-40 min) - accepted for tags only, branch pushes
+          # and pull requests stay amd64-only for speed (workflow_dispatch can still opt in below).
+          case "$IMAGE" in
+            worker) [ "${{ inputs.arm64_worker }}" != true ] && [[ "$REF" != refs/tags/v* ]] || platforms=linux/amd64,linux/arm64 ;;
+            *) [ "${{ inputs.arm64 }}" != true ] && [[ "$REF" != refs/tags/v* ]] || platforms=linux/amd64,linux/arm64 ;;
+          esac
+          {
+            echo "push=$push"
+            echo "why=$why"
+            echo "repo=$repo"
+            echo "platforms=$platforms"
+            echo "$meta" | sed 's/^OA_VERSION=/oa_version=/; s/^OA_COMMIT=/oa_commit=/'
+          } >>"$GITHUB_OUTPUT"
+          if [ "$push" = true ]; then echo "registry=$ACR_REGISTRY/$ACR_NAMESPACE" >>"$GITHUB_OUTPUT"; fi
+      - uses: docker/setup-qemu-action@v3
+        if: contains(steps.cfg.outputs.platforms, 'arm64')
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to the registry
+        if: steps.cfg.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Image metadata (tags and labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.cfg.outputs.repo }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=oa-agent-${{ matrix.image }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - name: Build${{ steps.cfg.outputs.push == 'true' && ' and push' || '' }}
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.image }}
+          platforms: ${{ steps.cfg.outputs.platforms }}
+          push: ${{ steps.cfg.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            OA_VERSION=${{ steps.cfg.outputs.oa_version }}
+            OA_COMMIT=${{ steps.cfg.outputs.oa_commit }}
+            ${{ matrix.image == 'deploy' && format('OA_REGISTRY_HINT={0}', steps.cfg.outputs.registry) || '' }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max,ignore-error=true
+          provenance: false
+          sbom: false
+      - name: Tag parity with scripts/push-images.sh (warning only)
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          want="$(bash scripts/push-images.sh --ref "$REF" --sha "$SHA" --default-branch "$DEFAULT_BRANCH" --print-tags | sort)"
+          got="$(printf '%s\n' "$TAGS" | sed 's/^.*://' | sort)"
+          if [ "$EVENT" != pull_request ] && [ "$want" != "$got" ]; then echo "::warning::scripts/push-images.sh tags differ from docker/metadata-action: $(echo "$want" | tr '\n' ' ') vs $(echo "$got" | tr '\n' ' ')"; fi
+      - name: Job summary
+        if: always()
+        env:
+          PUSH: ${{ steps.cfg.outputs.push }}
+          WHY: ${{ steps.cfg.outputs.why }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          REGISTRY_PATH: ${{ steps.cfg.outputs.registry }}
+          PLATFORMS: ${{ steps.cfg.outputs.platforms }}
+          OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          {
+            echo "### oa-agent-$IMAGE ($PLATFORMS)"
+            if [ "$PUSH" = true ] && [ "$OUTCOME" = success ]; then
+              echo "Pushed:"; echo
+              printf '%s\n' "$TAGS" | while read -r t; do [ -z "$t" ] || echo "- \`$t\`"; done
+              if [ "$IMAGE" = deploy ]; then
+                echo; echo "Install on a server that already has Docker:"; echo
+                echo '```sh'
+                echo "docker run --rm $REGISTRY_PATH/oa-agent-deploy:latest | sudo bash -s -- --registry $REGISTRY_PATH"
+                echo '```'
+                echo "Pin a version with \`--image-tag sha-<7>\` (or \`oa-agentctl upgrade --tag sha-<7>\`)."
+              fi
+            elif [ "$PUSH" = true ]; then
+              echo "Build failed; nothing was pushed."
+            else
+              echo "**Push skipped:** $WHY. The image was built to verify the Dockerfile only."
+              echo "To publish, configure the repository secrets/variables described at the top of \`.github/workflows/images.yml\`."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"

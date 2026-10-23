@@ -4,8 +4,12 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -230,7 +234,7 @@ func TestUpgradeFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := strings.Join(r.f.Joined(), "\n")
-	iBackup, iPull, iUp := strings.Index(calls, "pg_dump"), strings.Index(calls, "compose pull"), strings.Index(calls, "up -d --remove-orphans")
+	iBackup, iPull, iUp := strings.Index(calls, "pg_dump"), strings.Index(calls, "compose pull"), strings.Index(calls, "up -d --force-recreate api worker")
 	if !(iBackup >= 0 && iBackup < iPull && iPull < iUp) {
 		t.Errorf("order wrong:\n%s", calls)
 	}
@@ -258,7 +262,7 @@ func TestUpgradeFailureHint(t *testing.T) {
 	r := newRig(t)
 	r.f.On("ps", compose.Result{Stdout: `{"Service":"api","State":"running","Health":"unhealthy"}`}, nil)
 	err := r.e.Upgrade(context.Background(), UpgradeOptions{NoBackup: true, Version: "2.0"}, r.pr)
-	if err == nil || !strings.Contains(err.Error(), "OA_VERSION 1.0") {
+	if err == nil || !strings.Contains(err.Error(), "--tag 1.0") {
 		t.Errorf("rollback hint should name the old version: %v", err)
 	}
 }
@@ -337,5 +341,176 @@ func tarNames(t *testing.T, file string) []string {
 			return out
 		}
 		out = append(out, h.Name)
+	}
+}
+
+// ------------------------------------------------------------------ registry upgrades
+
+func sha(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// stubBundle returns a Fetch hook that writes a deploy-image bundle (with a correct or wrong checksum) into dest.
+func stubBundle(t *testing.T, goodSum bool, images *[]string) func(context.Context, string, string) error {
+	return func(_ context.Context, image, dest string) error {
+		*images = append(*images, image)
+		os.MkdirAll(filepath.Join(dest, "bin"), 0o755)
+		bin := []byte("GO-BINARY-" + image)
+		files := map[string]string{
+			"docker-compose.yml": "NEW-COMPOSE", "docker-compose.https.yml": "NEW-HTTPS", "docker-compose.build.yml": "NEW-BUILD",
+			"Caddyfile.template": "NEW-CADDY", ".env.example": "NEW-EXAMPLE",
+			"oa-agentctl.sh": "#!/bin/bash\nOA_DEFAULT_DIR='/opt/oa-agent'\necho hi\n",
+			"bin/oa-agentctl-linux-" + runtime.GOARCH: string(bin),
+		}
+		for n, c := range files {
+			if err := os.WriteFile(filepath.Join(dest, n), []byte(c), 0o644); err != nil {
+				return err
+			}
+		}
+		sum := sha(bin)
+		if !goodSum {
+			sum = strings.Repeat("0", 64)
+		}
+		return os.WriteFile(filepath.Join(dest, "bin", "SHA256SUMS"), []byte(sum+"  oa-agentctl-linux-"+runtime.GOARCH+"\n"), 0o644)
+	}
+}
+
+func registryRig(t *testing.T) (*rig, *[]string, string) {
+	r := newRig(t)
+	r.e.P.Inst.Env.Set("OA_IMAGE_REGISTRY", "reg.example.com/ns")
+	r.e.P.Inst.Env.Set("COMPOSE_FILE", "docker-compose.yml:docker-compose.mounts.yml")
+	r.e.P.Inst.Env.Save(r.e.P.Inst.EnvPath())
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "oa-agentctl"), []byte("OLD-GO"), 0o755)
+	os.WriteFile(filepath.Join(bin, "oa-agentctl.sh"), []byte("OLD-SH"), 0o755)
+	r.e.BinDir = bin
+	var images []string
+	r.e.Fetch = stubBundle(t, true, &images)
+	r.f.On("ps", compose.Result{Stdout: allHealthy}, nil)
+	return r, &images, bin
+}
+
+func TestUpgradeRegistryNewTag(t *testing.T) {
+	r, images, bin := registryRig(t)
+	os.WriteFile(filepath.Join(r.dir, "mounts.json.keep"), []byte("m"), 0o600)
+	os.WriteFile(filepath.Join(r.dir, "docker-compose.mounts.yml"), []byte("MOUNTS-OVERRIDE"), 0o644)
+	envBefore, _ := os.ReadFile(filepath.Join(r.dir, ".env"))
+	if err := r.e.Upgrade(context.Background(), UpgradeOptions{Version: "sha-abc1234", NoBackup: true}, r.pr); err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Join(r.f.Joined(), "\n")
+	if r.f.Called("compose build") || !r.f.Called("compose pull") || !r.f.Called("up -d --force-recreate api worker") {
+		t.Errorf("registry mode must pull and recreate api+worker, never build:\n%s", calls)
+	}
+	if got, want := *images, []string{"reg.example.com/ns/oa-agent-deploy:sha-abc1234"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("deploy image: %v", got)
+	}
+	read := func(p string) string { b, _ := os.ReadFile(p); return string(b) }
+	if read(filepath.Join(r.dir, "docker-compose.yml")) != "NEW-COMPOSE" || read(filepath.Join(r.dir, "docker-compose.https.yml")) != "NEW-HTTPS" {
+		t.Error("compose files not refreshed")
+	}
+	if read(filepath.Join(r.dir, "docker-compose.mounts.yml")) != "MOUNTS-OVERRIDE" {
+		t.Error("generated mounts override was clobbered")
+	}
+	env := read(filepath.Join(r.dir, ".env"))
+	if !strings.Contains(env, "OA_VERSION=sha-abc1234") || !strings.Contains(env, "OA_SECRET_KEY=aaaaaaaa") {
+		t.Errorf(".env: %s", env)
+	}
+	if !strings.Contains(string(envBefore), "OA_SECRET_KEY=aaaa") {
+		t.Fatal("rig")
+	}
+	if got := read(filepath.Join(bin, "oa-agentctl")); got != "GO-BINARY-reg.example.com/ns/oa-agent-deploy:sha-abc1234" {
+		t.Errorf("binary not replaced: %q", got)
+	}
+	if sh := read(filepath.Join(bin, "oa-agentctl.sh")); !strings.Contains(sh, "OA_DEFAULT_DIR='"+r.dir+"'") {
+		t.Errorf("script default dir not rewritten: %s", sh)
+	}
+}
+
+func TestUpgradeRegistrySameTagSkipsRefresh(t *testing.T) {
+	r, images, _ := registryRig(t) // OA_VERSION=1.0, pinned tag, unchanged
+	if err := r.e.Upgrade(context.Background(), UpgradeOptions{NoBackup: true}, r.pr); err != nil {
+		t.Fatal(err)
+	}
+	if len(*images) != 0 {
+		t.Errorf("same pinned tag must not refresh management files: %v", *images)
+	}
+	r.e.P.Inst.Env.Set("OA_VERSION", "latest")
+	if err := r.e.Upgrade(context.Background(), UpgradeOptions{NoBackup: true}, r.pr); err != nil || len(*images) != 1 {
+		t.Errorf("moving tag latest must refresh: %v %v", err, *images)
+	}
+}
+
+func TestUpgradeRegistryChecksumMismatchAborts(t *testing.T) {
+	r, _, bin := registryRig(t)
+	var images []string
+	r.e.Fetch = stubBundle(t, false, &images)
+	err := r.e.Upgrade(context.Background(), UpgradeOptions{Version: "2.0", NoBackup: true}, r.pr)
+	if err == nil || !errors.Is(err, ErrChecksum) {
+		t.Fatalf("want checksum error, got %v", err)
+	}
+	if r.f.Called("up -d") {
+		t.Error("services must not be recreated after a checksum failure")
+	}
+	if b, _ := os.ReadFile(filepath.Join(bin, "oa-agentctl")); string(b) != "OLD-GO" {
+		t.Error("binary replaced despite bad checksum")
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.dir, "docker-compose.yml")); string(b) != "x" {
+		t.Error("compose file replaced despite bad checksum")
+	}
+}
+
+func TestUpgradeRegistryFetchFailureIsWarning(t *testing.T) {
+	r, _, _ := registryRig(t)
+	r.e.Fetch = func(context.Context, string, string) error { return errors.New("manifest unknown") }
+	if err := r.e.Upgrade(context.Background(), UpgradeOptions{Version: "2.0", NoBackup: true}, r.pr); err != nil {
+		t.Fatalf("a missing deploy image must not block the upgrade: %v", err)
+	}
+	if !strings.Contains(strings.Join(r.lines, "\n"), "警告") || !r.f.Called("up -d --force-recreate api worker") {
+		t.Errorf("lines=%v calls=%v", r.lines, r.f.Joined())
+	}
+}
+
+func TestUpgradePullFailureNamesTag(t *testing.T) {
+	r, _, _ := registryRig(t)
+	r.f.On("compose pull", compose.Result{ExitCode: 1, Stderr: "manifest unknown"}, errors.New("exit 1"))
+	err := r.e.Upgrade(context.Background(), UpgradeOptions{Version: "nope", NoBackup: true}, r.pr)
+	if err == nil || !strings.Contains(err.Error(), `"nope"`) || r.f.Called("up -d") {
+		t.Errorf("err=%v", err)
+	}
+}
+
+func TestFetchBundleDockerCalls(t *testing.T) {
+	r, _, _ := registryRig(t)
+	r.e.Fetch = nil
+	r.f.On("create", compose.Result{Stdout: "abc123\n"}, nil)
+	dest := t.TempDir()
+	if err := r.e.fetchBundle(context.Background(), r.pr, "reg.example.com/ns/oa-agent-deploy:t", dest); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pull reg.example.com/ns/oa-agent-deploy:t", "create reg.example.com/ns/oa-agent-deploy:t", "cp abc123:/deploy/. " + dest, "rm -f abc123"}
+	got := r.f.Joined()
+	if len(got) != len(want) {
+		t.Fatalf("%v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("call %d: %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestUpgradeBuildModeKeepsOldBehaviour(t *testing.T) {
+	r := newRig(t)
+	r.e.P.Inst.Env.Set("COMPOSE_FILE", "docker-compose.yml:docker-compose.build.yml")
+	r.e.P.Inst.Env.Set("OA_IMAGE_REGISTRY", "reg.example.com/ns")
+	r.e.Fetch = func(context.Context, string, string) error {
+		t.Error("build mode must not fetch the deploy image")
+		return nil
+	}
+	r.f.On("ps", compose.Result{Stdout: allHealthy}, nil)
+	if err := r.e.Upgrade(context.Background(), UpgradeOptions{Version: "9.9", NoBackup: true}, r.pr); err != nil {
+		t.Fatal(err)
+	}
+	if !r.f.Called("up -d --remove-orphans") || r.f.Called("force-recreate") {
+		t.Errorf("%v", r.f.Joined())
 	}
 }
