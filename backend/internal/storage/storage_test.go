@@ -718,7 +718,7 @@ func TestReplicationErrorsRetryWithBackoffOrFailPermanently(t *testing.T) {
 		t.Fatalf("backoff: the item must not be due immediately: %v", err)
 	}
 	// permanent failure → failed at once; retry puts it back
-	if _, err := st.Pool.Exec(ctx, `UPDATE replications SET next_attempt_at=now()`); err != nil {
+	if _, err := st.Pool.Exec(ctx, `UPDATE replications SET next_attempt_at=$1`, time.Now().UTC().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	w.putErr = cloud.ErrPermission

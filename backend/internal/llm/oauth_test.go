@@ -255,7 +255,7 @@ func TestOAuthReplayWrongUserExpiryDenied(t *testing.T) {
 	}
 	// expiry
 	s3, _ := m.OAuthStartFlow(ctx, opA, "openrouter", "personal", "http://x/cb", true)
-	m.oa().now = func() time.Time { return time.Now().Add(11 * time.Minute) }
+	m.oa().now = func() time.Time { return time.Now().Add(oauthTTL + 30*time.Second) }
 	if r := m.OAuthCallback(s3.State, "c", ""); r.OK || r.Reason != "expired" {
 		t.Fatalf("%+v", r)
 	}

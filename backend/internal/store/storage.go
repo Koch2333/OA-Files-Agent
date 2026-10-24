@@ -265,7 +265,7 @@ func (s *Store) FinishReplication(ctx context.Context, id, status string, errMsg
 }
 
 func (s *Store) RecoverReplications(ctx context.Context) (int64, error) {
-	t, err := s.Pool.Exec(ctx, `UPDATE replications SET status='queued', next_attempt_at=now(), updated_at=now() WHERE status='running'`)
+	t, err := s.Pool.Exec(ctx, `UPDATE replications SET status='queued', next_attempt_at=$1, updated_at=now() WHERE status='running'`, time.Now().UTC().Add(-time.Second))
 	return t.RowsAffected(), err
 }
 
@@ -342,7 +342,7 @@ func (s *Store) RetryReplication(ctx context.Context, id string) (Replication, e
 	if r.Status != "failed" {
 		return r, ErrState
 	}
-	if _, err = s.Pool.Exec(ctx, `UPDATE replications SET status='queued', attempts=0, error=NULL, next_attempt_at=now(), updated_at=now() WHERE id=$1 AND status='failed'`, id); err != nil {
+	if _, err = s.Pool.Exec(ctx, `UPDATE replications SET status='queued', attempts=0, error=NULL, next_attempt_at=$2, updated_at=now() WHERE id=$1 AND status='failed'`, id, time.Now().UTC().Add(-time.Second)); err != nil {
 		return r, err
 	}
 	return s.GetReplication(ctx, id)

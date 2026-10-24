@@ -29,7 +29,7 @@ func TestPermanentReplicationFailureIsReported(t *testing.T) {
 	if _, total, _ := diag.List(ctx, st.Pool, diag.Filter{}); total != 0 {
 		t.Fatalf("a retry that will happen automatically is not an error report: %d", total)
 	}
-	st.Pool.Exec(ctx, `UPDATE replications SET next_attempt_at=now()`)
+	st.Pool.Exec(ctx, `UPDATE replications SET next_attempt_at=$1`, time.Now().UTC().Add(-time.Minute))
 	w.putErr = cloud.ErrPermission
 	c, _ = st.ClaimReplication(ctx)
 	s.replicateOne(ctx, c)
