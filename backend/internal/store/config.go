@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"oa-agent/backend/internal/sqldb"
 
 	"oa-agent/backend/internal/imports"
 )
@@ -16,11 +16,11 @@ import (
 
 const tplCols = `id::text, name, enabled, priority, created_at, match_rules, field_mappings`
 
-func scanTemplate(r pgx.Row) (Template, error) {
+func scanTemplate(r sqldb.Row) (Template, error) {
 	var t Template
 	var mr, fm []byte
 	err := r.Scan(&t.ID, &t.Name, &t.Enabled, &t.Priority, &t.CreatedAt, &mr, &fm)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return t, ErrNotFound
 	}
 	if err != nil {
@@ -68,14 +68,20 @@ func (s *Store) CreateTemplate(ctx context.Context, t Template) (Template, error
 	}
 	mr, _ := json.Marshal(t.MatchRules)
 	fm, _ := json.Marshal(t.FieldMappings)
-	return scanTemplate(s.Pool.QueryRow(ctx, `INSERT INTO oa_templates(id,name,enabled,priority,match_rules,field_mappings) VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+tplCols, id, t.Name, t.Enabled, t.Priority, mr, fm))
+	if _, err = s.Pool.Exec(ctx, `INSERT INTO oa_templates(id,name,enabled,priority,match_rules,field_mappings) VALUES ($1,$2,$3,$4,$5,$6)`, id, t.Name, t.Enabled, t.Priority, sqldb.JSON(mr), sqldb.JSON(fm)); err != nil {
+		return t, err
+	}
+	return scanTemplate(s.Pool.QueryRow(ctx, `SELECT `+tplCols+` FROM oa_templates WHERE id=$1`, id))
 }
 
 // UpdateTemplate replaces the template's mutable fields (callers merge a PATCH onto the current value first).
 func (s *Store) UpdateTemplate(ctx context.Context, t Template) (Template, error) {
 	mr, _ := json.Marshal(t.MatchRules)
 	fm, _ := json.Marshal(t.FieldMappings)
-	return scanTemplate(s.Pool.QueryRow(ctx, `UPDATE oa_templates SET name=$2, enabled=$3, priority=$4, match_rules=$5, field_mappings=$6, updated_at=now() WHERE id=$1 RETURNING `+tplCols, t.ID, t.Name, t.Enabled, t.Priority, mr, fm))
+	if _, err := s.Pool.Exec(ctx, `UPDATE oa_templates SET name=$2, enabled=$3, priority=$4, match_rules=$5, field_mappings=$6, updated_at=now() WHERE id=$1`, t.ID, t.Name, t.Enabled, t.Priority, sqldb.JSON(mr), sqldb.JSON(fm)); err != nil {
+		return t, err
+	}
+	return scanTemplate(s.Pool.QueryRow(ctx, `SELECT `+tplCols+` FROM oa_templates WHERE id=$1`, t.ID))
 }
 
 func (s *Store) DeleteTemplate(ctx context.Context, id string) error {
@@ -124,8 +130,8 @@ func (s *Store) CreateRule(ctx context.Context, r Rule) (Rule, error) {
 // ActiveRule is the first enabled rule by creation time (newest enabled rule wins).
 func (s *Store) ActiveRule(ctx context.Context) (Rule, error) {
 	var r Rule
-	err := s.Pool.QueryRow(ctx, `SELECT id::text, name, naming_pattern, directory_pattern, enabled FROM archive_rules WHERE enabled ORDER BY created_at DESC LIMIT 1`).Scan(&r.ID, &r.Name, &r.NamingPattern, &r.DirectoryPattern, &r.Enabled)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.Pool.QueryRow(ctx, `SELECT id::text, name, naming_pattern, directory_pattern, enabled FROM archive_rules WHERE enabled=true ORDER BY created_at DESC LIMIT 1`).Scan(&r.ID, &r.Name, &r.NamingPattern, &r.DirectoryPattern, &r.Enabled)
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return r, ErrNotFound
 	}
 	return r, err
@@ -141,7 +147,7 @@ func (s *Store) CreateCorrection(ctx context.Context, c Correction) (Correction,
 	c.ID, c.Status = id, "proposed"
 	ch, _ := json.Marshal(c.Changes)
 	im, _ := json.Marshal(c.Impact)
-	_, err = s.Pool.Exec(ctx, `INSERT INTO correction_proposals(id,file_id,instruction,changes,impact) VALUES ($1,$2,$3,$4,$5)`, id, c.FileID, c.Instruction, ch, im)
+	_, err = s.Pool.Exec(ctx, `INSERT INTO correction_proposals(id,file_id,instruction,changes,impact) VALUES ($1,$2,$3,$4,$5)`, id, c.FileID, c.Instruction, sqldb.JSON(ch), sqldb.JSON(im))
 	return c, err
 }
 
@@ -152,7 +158,7 @@ func (s *Store) Correction(ctx context.Context, id string) (Correction, error) {
 		return c, ErrNotFound
 	}
 	err := s.Pool.QueryRow(ctx, `SELECT id::text, file_id::text, instruction, status, changes, impact FROM correction_proposals WHERE id=$1`, id).Scan(&c.ID, &c.FileID, &c.Instruction, &c.Status, &ch, &im)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return c, ErrNotFound
 	}
 	_ = json.Unmarshal(ch, &c.Changes)
@@ -194,7 +200,7 @@ func (s *Store) ApplyCorrection(ctx context.Context, c Correction, derive func(P
 			return c, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE file_records SET review_required=(detected_department IS NULL OR detected_type IS NULL OR detected_date IS NULL) WHERE id=$1`, c.FileID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE file_records SET review_required=CASE WHEN detected_department IS NULL OR detected_type IS NULL OR detected_date IS NULL THEN true ELSE false END WHERE id=$1`, c.FileID); err != nil {
 		return c, err
 	}
 	// Mirror into an unapproved plan, if any.
@@ -227,7 +233,7 @@ func (s *Store) ApplyCorrection(ctx context.Context, c Correction, derive func(P
 			it.ReviewRequired = it.Department == nil || it.DocumentType == nil || it.DocumentDate == nil
 			w, _ := json.Marshal(nonNil(warns))
 			if _, err = tx.Exec(ctx, `UPDATE archive_plan_items SET department=$3, document_type=$4, document_date=$5::date, suggested_name=$6, destination_path=$7, warnings=$8, review_required=$9 WHERE plan_id=$1 AND file_id=$2`,
-				planID, c.FileID, it.Department, it.DocumentType, it.DocumentDate, name, dest, w, it.ReviewRequired); err != nil {
+				planID, c.FileID, it.Department, it.DocumentType, it.DocumentDate, name, dest, sqldb.JSON(w), it.ReviewRequired); err != nil {
 				return c, err
 			}
 		}
@@ -238,7 +244,7 @@ func (s *Store) ApplyCorrection(ctx context.Context, c Correction, derive func(P
 		if _, err = tx.Exec(ctx, `UPDATE import_jobs SET status='awaiting_review', updated_at=now() WHERE id=(SELECT task_id FROM archive_plans WHERE id=$1) AND status='approved'`, planID); err != nil {
 			return c, err
 		}
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	} else if !errors.Is(err, sqldb.ErrNoRows) {
 		return c, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE correction_proposals SET status='approved' WHERE id=$1`, c.ID); err != nil {
@@ -267,7 +273,7 @@ type LLMSettings struct {
 func (s *Store) LoadLLM(ctx context.Context) (LLMSettings, bool, error) {
 	var v LLMSettings
 	err := s.Pool.QueryRow(ctx, `SELECT mode, preset_id, base_url, model, api_key_enc, vision_model, allow_vision, updated_at FROM llm_settings WHERE id=1`).Scan(&v.Mode, &v.PresetID, &v.BaseURL, &v.Model, &v.APIKeyEnc, &v.VisionModel, &v.AllowVision, &v.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return v, false, nil
 	}
 	return v, err == nil, err

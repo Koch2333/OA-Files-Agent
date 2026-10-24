@@ -94,7 +94,9 @@ powershell -ExecutionPolicy Bypass -File scripts\dist-windows.ps1 [-Arch x64|arm
 - 前置条件、各脚本说明、签名（可选，未签名会触发 SmartScreen 提示）、发布清单见 [docs/构建与发布.md](docs/构建与发布.md)，桌面外壳说明见 [desktop/README.md](desktop/README.md)。**在目标环境发布前请查看 [docs/THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)（PyMuPDF 为 AGPL）。**
 
 ## 关键设计
+- **多数据库。** 默认 PostgreSQL（Windows 独立安装内嵌）；也可复用已有的 MySQL 8.0+ 或 SQL Server 2019+（专用库、最小权限、隔离校验、管理员批准后建表，设置页“数据库”管理）。已在 postgres:16 / mysql:8.0 / SQL Server 2019 容器上测试；跨库数据迁移暂未提供。见 `docs/多数据库部署与迁移指南.md`。
 - **识别引擎可配置。** 设置页提供 DeepSeek（默认推荐）、通义千问等预设，Base URL 与模型名可自由修改，可拉取模型列表、测试连接（含工具调用检测）；配置存数据库、密钥 AES-GCM 加密（密钥文件在 `data/secret.key`，或 `OA_SECRET_KEY`），保存后热生效。换服务商不会沿用旧密钥；公网 http、链路本地地址一律拒绝。
+- **平台账号登录授权（OpenRouter）。** 除手动粘贴 API Key 外，OpenRouter 可点“使用 OpenRouter 账号登录授权”（OAuth 授权码 + PKCE，无需客户端密钥），自动生成专用 Key 并测试连接；其余平台（DeepSeek、通义千问、OpenAI、Anthropic、Gemini 等）经核查没有面向第三方应用的“登录得 Key”流程，仅提供“打开密钥页面”链接。调研与限制见 `docs/LLM账号登录配置.md`。
 - **OCR 抢救技能。** OCR 质量差时 Agent 按“技能”按需加载一套流程：评估质量 → 增强/旋转/纠偏/高清/二值化重试并择优 →（可选、需显式开启）视觉模型转写页面；对 OCR 常见混淆（O/0、l/1）的日期做容错；仍差则强制待审核。设计见 `docs/ocr-rescue-design.md`。
 - **文档预览。** PDF/图片按页，Word/Excel 由 Worker 解析为结构化内容再在前端安全渲染（不使用 v-html）；覆盖导入原件与归档文件。
 - **文件管理。** 浏览/预览/下载归档目录，新建文件夹、重命名/移动（不覆盖、同步台账）、删除到可恢复的回收站；Windows 本机可“在资源管理器中显示”（仅回环请求、仅限归档根目录内、不会运行文件；`OA_ALLOW_REVEAL=0` 关闭）。所有路径经 `internal/fsman` 校验，`.` 开头的内部目录不可见。

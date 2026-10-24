@@ -16,12 +16,13 @@ type stubFiles struct{ FileManager }
 type stubLLM struct{ LLMManager }
 type stubPreview struct{ Previewer }
 type stubStorage struct{ StorageManager }
+type stubDBAdmin struct{ DatabaseAdmin }
 
 // fullyWired registers every optional route group; handlers are never called.
 func fullyWired(extra Deps) *Server {
 	d := extra
 	d.Store, d.Backend, d.Imports = extra.Store, stubBackend{}, &imports.Service{}
-	d.Files, d.LLM, d.Preview, d.Storage = stubFiles{}, stubLLM{}, stubPreview{}, stubStorage{}
+	d.Files, d.LLM, d.Preview, d.Storage, d.DBAdmin = stubFiles{}, stubLLM{}, stubPreview{}, stubStorage{}, stubDBAdmin{}
 	if d.Store == nil {
 		d.Store = &store.Store{}
 	}

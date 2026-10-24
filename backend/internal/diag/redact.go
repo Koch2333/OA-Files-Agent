@@ -22,6 +22,7 @@ var (
 	reBearer   = regexp.MustCompile(`(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=\-]{8,}`)
 	reSession  = regexp.MustCompile(`(?i)\b(oa_session)(\s*["']?\s*[:=]\s*["']?)[^\s;,"'&}]*`)
 	reURLCred  = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.\-]*://)[^\s/@:]*:[^\s/@]*@`)
+	reMyDSN    = regexp.MustCompile(`([A-Za-z0-9_.\-]+):[^@\s/]*@(tcp|unix)\(`)
 	reURLUser  = regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|redis|amqp|mongodb(?:\+srv)?|ftp|ftps|sftp|smb|webdav|https?)://)[^\s/@:]+@`)
 	reKVQuoted = regexp.MustCompile(`(?i)(["']?[\w.\-]*` + sensitiveKey + `[\w.\-]*["']?)(\s*[:=]\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
 	reKVBare   = regexp.MustCompile(`(?i)(["']?[\w.\-]*` + sensitiveKey + `[\w.\-]*["']?)(\s*[:=]\s*)([^\s&,;"'}\]\)]+)`)
@@ -97,6 +98,7 @@ func RedactSecrets(s string) string {
 	s = reHeader.ReplaceAllString(s, "${1}${2}"+Mask)
 	s = reSession.ReplaceAllString(s, "${1}${2}"+Mask)
 	s = reURLCred.ReplaceAllString(s, "${1}"+Mask+"@")
+	s = reMyDSN.ReplaceAllString(s, "${1}:"+Mask+"@${2}(") // MySQL DSN: user:password@tcp(host:3306)/db
 	s = reURLUser.ReplaceAllString(s, "${1}"+Mask+"@")
 	s = reKVQuoted.ReplaceAllStringFunc(s, func(m string) string {
 		sm := reKVQuoted.FindStringSubmatch(m)

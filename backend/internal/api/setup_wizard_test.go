@@ -130,7 +130,7 @@ func TestWizardLocalModeAndLegacyAreFinished(t *testing.T) {
 	if _, err := e.st.Pool.Exec(context.Background(), `UPDATE auth_settings SET wizard_finished=false`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.st.Pool.Exec(context.Background(), `UPDATE auth_settings SET wizard_finished = true WHERE setup_completed`); err != nil {
+	if _, err := e.st.Pool.Exec(context.Background(), `UPDATE auth_settings SET wizard_finished = true WHERE setup_completed = true`); err != nil {
 		t.Fatal(err)
 	}
 	e.svc.Settings(context.Background())

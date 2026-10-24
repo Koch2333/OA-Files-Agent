@@ -20,7 +20,7 @@ export const MOCK_ACK_TEXT = `全自动归档模式由大模型自动决定每�
 所有全自动归档都会在台账中标记为“全自动”并记录所用模型，并写入审计日志。
 继续即表示你已知悉上述风险，并同意由你及所在组织承担由此产生的后果。`
 
-export type MockAiApi = Pick<Api, 'getLlmStatus' | 'getPersonalLlm' | 'savePersonalLlm' | 'deletePersonalLlm' | 'testPersonalLlm' | 'listPersonalLlmModels' | 'getAiPolicy' | 'updateAiPolicy'>
+export type MockAiApi = Pick<Api, 'getLlmStatus' | 'getPersonalLlm' | 'savePersonalLlm' | 'deletePersonalLlm' | 'testPersonalLlm' | 'listPersonalLlmModels' | 'startLlmOauth' | 'getLlmOauthStatus' | 'disconnectLlmOauth' | 'getAiPolicy' | 'updateAiPolicy'>
 
 export interface ResolvedImport { automation: 'review' | 'auto'; instruction: string; llm_source: 'none' | 'global' | 'personal'; llm_model: string }
 export interface MockAiCtl { resolveImport(options: ImportOptions | undefined): ResolvedImport; status(): LlmStatus }
@@ -86,6 +86,10 @@ export function createMockAi(d: Deps, initial: 'none' | 'global' | 'personal'): 
 
   const api: MockAiApi = {
     async getLlmStatus() { await delay(120); return status() },
+    // 演示数据没有真实的平台账号：登录授权不可用（按钮对 oauth_login=false 的演示预设本就不显示）
+    async startLlmOauth() { throw new ApiError(422, 'OAUTH_UNSUPPORTED', '演示模式不支持登录授权', 'mock-req') },
+    async getLlmOauthStatus() { throw new ApiError(422, 'OAUTH_UNKNOWN_STATE', '演示模式不支持登录授权', 'mock-req') },
+    async disconnectLlmOauth() { throw new ApiError(422, 'NOT_OAUTH_KEY', '演示模式不支持登录授权', 'mock-req') },
     async getPersonalLlm() { await delay(120); needPersonal(); return { ...personal } },
     async savePersonalLlm(input) {
       await delay(300); needPersonal()

@@ -6,6 +6,8 @@ export interface DesktopBridge {
   info(): Promise<DesktopInfo | null>
   openSettings(): Promise<void>
   openFolder(what: 'archive' | 'logs'): Promise<void>
+  /** Opens a provider login page in the system browser (https + allow-listed host only, checked in the main process); older shells lack it. */
+  openExternal?(url: string): Promise<boolean>
 }
 
 export function desktop(): DesktopBridge | null {

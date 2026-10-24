@@ -3,9 +3,9 @@ import type { LlmConfig, LlmPreset } from '../api/types'
 import { mockApi } from '../mocks/mockApi'
 import { canFetchModels, modelGroups, applyPreset, buildInput, engineLabel, formFromConfig, isDirty, keyHint, modelOptions, validateBaseUrl, validateForm, visionOptions, type LlmForm } from './llm'
 
-const deepseek: LlmPreset = { id: 'deepseek', name: 'DeepSeek', description: '', base_url: 'https://api.deepseek.com', models: [{ id: 'deepseek-flash', label: '通用' }], default_model: 'deepseek-flash', needs_api_key: true, vision_models: [], docs_url: '', note: '', checked_at: '2026-10-22' }
-const qwen: LlmPreset = { id: 'qwen', name: '通义千问', description: '', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [], default_model: 'qwen3.7-plus', needs_api_key: true, vision_models: [], docs_url: '', note: '', checked_at: '2026-10-22' }
-const custom: LlmPreset = { id: 'custom', name: '自定义', description: '', base_url: '', models: [], default_model: '', needs_api_key: false, vision_models: [], docs_url: '', note: '', checked_at: '2026-10-22' }
+const deepseek: LlmPreset = { id: 'deepseek', name: 'DeepSeek', description: '', oauth_login: false, base_url: 'https://api.deepseek.com', models: [{ id: 'deepseek-flash', label: '通用' }], default_model: 'deepseek-flash', needs_api_key: true, vision_models: [], docs_url: '', note: '', checked_at: '2026-10-22' }
+const qwen: LlmPreset = { id: 'qwen', name: '通义千问', description: '', oauth_login: false, base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [], default_model: 'qwen3.7-plus', needs_api_key: true, vision_models: [], docs_url: '', note: '', checked_at: '2026-10-22' }
+const custom: LlmPreset = { id: 'custom', name: '自定义', description: '', oauth_login: false, base_url: '', models: [], default_model: '', needs_api_key: false, vision_models: [], docs_url: '', note: '', checked_at: '2026-10-22' }
 const cfg = (o: Partial<LlmConfig> = {}): LlmConfig => ({ mode: 'llm', preset_id: 'deepseek', base_url: deepseek.base_url, model: 'deepseek-flash', api_key_set: true, api_key_hint: '••••abcd', vision_model: '', allow_vision: false, state: 'ok', updated_at: null, ...o })
 const form = (o: Partial<LlmForm> = {}): LlmForm => ({ mode: 'llm', preset_id: 'deepseek', base_url: deepseek.base_url, model: 'deepseek-flash', api_key: '', clear_key: false, vision_model: '', allow_vision: false, ...o })
 

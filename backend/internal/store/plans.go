@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"oa-agent/backend/internal/sqldb"
 
 	"oa-agent/backend/internal/imports"
 )
@@ -33,7 +33,7 @@ func (s *Store) CreatePlan(ctx context.Context, taskID string, ruleID *string, i
 	for i, it := range items {
 		w, _ := json.Marshal(nonNil(it.Warnings))
 		if _, err = tx.Exec(ctx, `INSERT INTO archive_plan_items(plan_id,file_id,position,original_name,suggested_name,source_path,destination_path,department,document_type,document_date,warnings,review_required) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12)`,
-			id, it.FileID, i, it.OriginalName, it.SuggestedName, it.SourcePath, it.DestinationPath, it.Department, it.DocumentType, it.DocumentDate, w, it.ReviewRequired); err != nil {
+			id, it.FileID, i, it.OriginalName, it.SuggestedName, it.SourcePath, it.DestinationPath, it.Department, it.DocumentType, it.DocumentDate, sqldb.JSON(w), it.ReviewRequired); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -51,8 +51,8 @@ func (s *Store) GetPlan(ctx context.Context, id string) (Plan, error) {
 }
 
 type rowQuerier interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (sqldb.Rows, error)
+	QueryRow(context.Context, string, ...any) sqldb.Row
 }
 
 func getPlan(ctx context.Context, q rowQuerier, id string, lock bool) (Plan, error) {
@@ -66,7 +66,7 @@ func getPlan(ctx context.Context, q rowQuerier, id string, lock bool) (Plan, err
 	}
 	err := q.QueryRow(ctx, `SELECT id::text, task_id::text, status, version, requires_approval, approved_by, approved_at, rule_id::text FROM archive_plans WHERE id=$1`+suffix, id).
 		Scan(&p.ID, &p.TaskID, &p.Status, &p.Version, &p.RequiresApproval, &p.ApprovedBy, &p.ApprovedAt, &p.RuleID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return p, ErrNotFound
 	}
 	if err != nil {
@@ -163,7 +163,7 @@ func (s *Store) PatchPlan(ctx context.Context, id string, version int, patches [
 		}
 		w, _ := json.Marshal(nonNil(it.Warnings))
 		if _, err = tx.Exec(ctx, `UPDATE archive_plan_items SET department=$3, document_type=$4, document_date=$5::date, suggested_name=$6, destination_path=$7, warnings=$8, review_required=$9 WHERE plan_id=$1 AND file_id=$2`,
-			id, it.FileID, it.Department, it.DocumentType, it.DocumentDate, it.SuggestedName, it.DestinationPath, w, it.ReviewRequired); err != nil {
+			id, it.FileID, it.Department, it.DocumentType, it.DocumentDate, it.SuggestedName, it.DestinationPath, sqldb.JSON(w), it.ReviewRequired); err != nil {
 			return p, err
 		}
 	}
@@ -266,7 +266,7 @@ func (s *Store) BeginExecutionAs(ctx context.Context, planID, key, decision, mod
 		}
 		return
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, sqldb.ErrNoRows) {
 		return
 	}
 	if plan.Status == "executing" {
@@ -333,7 +333,7 @@ func (s *Store) FinishExecution(ctx context.Context, op Operation, plan Plan, re
 	if failed > 0 {
 		opStatus, planStatus, jobStatus = "failed", "failed", "partial_failure"
 	}
-	if _, err = tx.Exec(ctx, `UPDATE archive_operations SET status=$2, results=$3, updated_at=now() WHERE id=$1`, op.ID, opStatus, rj); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE archive_operations SET status=$2, results=$3, updated_at=now() WHERE id=$1`, op.ID, opStatus, string(rj)); err != nil {
 		return plan, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE archive_plans SET status=$2, executed_at=now(), updated_at=now() WHERE id=$1`, plan.ID, planStatus); err != nil {
@@ -380,7 +380,7 @@ func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
 		return op, ErrNotFound
 	}
 	err := s.Pool.QueryRow(ctx, `SELECT id::text, plan_id::text, idempotency_key, status, results, decision, decision_model FROM archive_operations WHERE id=$1`, id).Scan(&op.ID, &op.PlanID, &op.Key, &op.Status, &res, &op.Decision, &op.DecisionModel)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return op, ErrNotFound
 	}
 	_ = json.Unmarshal(res, &op.Results)
@@ -465,7 +465,7 @@ func ledgerOrder(f LedgerFilter) string {
 
 const ledgerCols = `id::text, original_name, canonical_name, department, document_type, document_date, archive_path, sha256, task_id::text, status, decision, decision_model, executed_at`
 
-func scanLedger(rows pgx.Rows) ([]LedgerEntry, error) {
+func scanLedger(rows sqldb.Rows) ([]LedgerEntry, error) {
 	defer rows.Close()
 	out := []LedgerEntry{}
 	for rows.Next() {
@@ -509,7 +509,7 @@ func (s *Store) LedgerAll(ctx context.Context, f LedgerFilter, max int) ([]Ledge
 func (s *Store) ArchivedByHash(ctx context.Context, sha string) (string, bool, error) {
 	var p string
 	err := s.Pool.QueryRow(ctx, `SELECT archive_path FROM ledger_entries WHERE sha256=$1 AND status='archived' ORDER BY executed_at DESC LIMIT 1`, sha).Scan(&p)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return "", false, nil
 	}
 	return p, err == nil, err
@@ -522,7 +522,7 @@ func (s *Store) RunningOperation(ctx context.Context, planID string) (Operation,
 	var op Operation
 	var res []byte
 	err := s.Pool.QueryRow(ctx, `SELECT id::text, plan_id::text, idempotency_key, status, results, decision, decision_model FROM archive_operations WHERE plan_id=$1 AND status='running' ORDER BY created_at DESC LIMIT 1`, planID).Scan(&op.ID, &op.PlanID, &op.Key, &op.Status, &res, &op.Decision, &op.DecisionModel)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return op, ErrNotFound
 	}
 	_ = json.Unmarshal(res, &op.Results)

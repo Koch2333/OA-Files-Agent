@@ -23,7 +23,7 @@ void props
   <Teleport to="body">
     <div class="scrim" @mousedown.self="!alert && emit('close')">
       <div ref="el" class="dlg" :role="alert ? 'alertdialog' : 'dialog'" aria-modal="true" :aria-label="title" :aria-describedby="describedby" :data-testid="testid" tabindex="-1" :style="{ width: width ?? '560px' }" @keydown="onKey">
-        <h2 class="t-title">{{ title }}</h2>
+        <h2 class="hl">{{ title }}</h2>
         <div class="body"><slot /></div>
         <div class="row actions"><slot name="actions" /></div>
       </div>
@@ -31,9 +31,11 @@ void props
   </Teleport>
 </template>
 <style scoped>
-.scrim { position: fixed; inset: 0; background: rgb(0 0 0 / .32); display: grid; place-items: center; z-index: 100; padding: 16px; animation: fade var(--dur-m); }
-.dlg { max-width: 100%; max-height: 90vh; overflow: auto; background: var(--c-surface-3); border-radius: var(--shape-xl); padding: 24px; box-shadow: var(--elev-3); display: flex; flex-direction: column; gap: 16px; outline: 0; }
-.body { display: flex; flex-direction: column; gap: 16px; }
-.actions { justify-content: flex-end; }
+.scrim { position: fixed; inset: 0; background: rgb(0 0 0 / .32); display: grid; place-items: center; z-index: 100; padding: 16px; animation: fade var(--dur-m) var(--ease); }
+.dlg { min-width: min(280px, 100%); max-width: 100%; max-height: 90vh; overflow: auto; background: var(--md-sys-color-surface-container-high); color: var(--md-sys-color-on-surface); border-radius: var(--shape-xl); padding: 24px; box-shadow: var(--elev-3); display: flex; flex-direction: column; gap: 16px; outline: 0; animation: dlg-in var(--dur-m) var(--ease-decel); }
+.hl { font: var(--md-sys-typescale-headline-small); color: var(--md-sys-color-on-surface); }
+.body { display: flex; flex-direction: column; gap: 16px; font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-on-surface-variant); }
+.actions { justify-content: flex-end; gap: 8px; }
 @keyframes fade { from { opacity: 0 } }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(16px) scale(.96); } }
 </style>

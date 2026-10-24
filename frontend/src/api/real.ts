@@ -2,7 +2,7 @@ import { filenameFromDisposition, json, qs, raw, API_BASE, setCsrfToken } from '
 import { openEventStream } from './sse'
 import { buildImportForm } from './importForm'
 import type {
-  AiPolicy, ErrorReport, ErrorReportDetail, LlmStatus, SystemInfo,
+  AiPolicy, ErrorReport, ErrorReportDetail, LlmStatus, LlmOauthStart, LlmOauthStatus, SystemInfo,
   Api, ArchivePlan, ArchiveRule, AuditLog, CorrectionProposal, FileRecord, FolderListing, FsEntry, ImportJob,
   LedgerEntry, LlmConfig, LlmPreset, LlmTestResult, OATemplate, Page, Preview, ProviderStatus, ReadinessInfo, Replication, StorageConnection, StorageKind,
   StorageListing, StorageTestResult, TemplateTestResult, TrashItem,
@@ -123,6 +123,9 @@ export const realApi: Api = {
   deletePersonalLlm: () => json<void>('/v1/llm/personal', { method: 'DELETE' }),
   testPersonalLlm: (input) => json<LlmTestResult>('/v1/llm/personal/test', { method: 'POST' }, input),
   async listPersonalLlmModels(input) { return (await json<{ models: string[] }>('/v1/llm/personal/models', { method: 'POST' }, input)).models },
+  startLlmOauth: (input) => json<LlmOauthStart>('/v1/llm/oauth/start', { method: 'POST' }, input),
+  getLlmOauthStatus: (state) => json<LlmOauthStatus>('/v1/llm/oauth/status' + qs({ state })),
+  disconnectLlmOauth: (scope) => json<LlmConfig>('/v1/llm/oauth/disconnect', { method: 'POST' }, { scope }),
   getAiPolicy: () => json<AiPolicy>('/v1/admin/ai-policy'),
   updateAiPolicy: (patch) => json<AiPolicy>('/v1/admin/ai-policy', { method: 'PATCH' }, patch),
 

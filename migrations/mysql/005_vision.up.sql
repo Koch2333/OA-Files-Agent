@@ -1,0 +1,3 @@
+ALTER TABLE llm_settings ADD COLUMN vision_model VARCHAR(255) NOT NULL DEFAULT ''
+--;;
+ALTER TABLE llm_settings ADD COLUMN allow_vision BOOLEAN NOT NULL DEFAULT FALSE

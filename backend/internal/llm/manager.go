@@ -53,12 +53,15 @@ type TestInput struct {
 }
 
 type ConfigView struct {
-	Mode        string     `json:"mode"`
-	PresetID    string     `json:"preset_id"`
-	BaseURL     string     `json:"base_url"`
-	Model       string     `json:"model"`
-	APIKeySet   bool       `json:"api_key_set"`
-	APIKeyHint  string     `json:"api_key_hint"`
+	Mode       string `json:"mode"`
+	PresetID   string `json:"preset_id"`
+	BaseURL    string `json:"base_url"`
+	Model      string `json:"model"`
+	APIKeySet  bool   `json:"api_key_set"`
+	APIKeyHint string `json:"api_key_hint"`
+	// KeySource is "manual" (pasted) or "oauth" (obtained by signing in with the platform); KeyProvider names the platform.
+	KeySource   string     `json:"key_source,omitempty"`
+	KeyProvider string     `json:"key_provider,omitempty"`
 	VisionModel string     `json:"vision_model"`
 	AllowVision bool       `json:"allow_vision"`
 	State       string     `json:"state"`
@@ -88,8 +91,14 @@ type Manager struct {
 	state string
 	http  *http.Client
 	ai    AIStore // nil: no personal configurations, default policy
-	pers  personalState
-	pmu   sync.Mutex // serialises personal saves
+	// Audit records connect events (optional; never receives secrets).
+	Audit   func(ctx context.Context, actor, action, target, summary string)
+	oaOnce  sync.Once
+	oauth   *oauthState
+	keySrc  string // manual | oauth (global key provenance)
+	keyProv string
+	pers    personalState
+	pmu     sync.Mutex // serialises personal saves
 	// allowPrivate mirrors policy.allow_personal_private_hosts for the dial-time check of the personal client.
 	allowPrivate atomic.Bool
 	// Timeout per model call (OA_LLM_TIMEOUT_SECONDS); tests use a shorter fixed value.
@@ -158,9 +167,10 @@ func presetForURL(base string) string {
 // apply decrypts the key, builds the provider and swaps it in. Caller holds no lock requirement at init.
 func (m *Manager) apply(s Settings) {
 	m.set, m.key, m.state = s, "", "ok"
+	m.keySrc, m.keyProv = "", ""
 	if len(s.APIKeyEnc) > 0 {
 		if k, err := m.box.Unseal(s.APIKeyEnc); err == nil {
-			m.key = string(k)
+			m.key, m.keySrc, m.keyProv = splitKey(string(k))
 		} else {
 			m.state = "unavailable"
 			log.Printf("saved API key cannot be decrypted (secret key changed?): re-enter it in Settings")
@@ -207,6 +217,7 @@ func (m *Manager) viewLocked() ConfigView {
 	v := ConfigView{Mode: m.set.Mode, PresetID: m.set.PresetID, BaseURL: m.set.BaseURL, Model: m.set.Model, VisionModel: m.set.VisionModel, AllowVision: m.set.AllowVision, APIKeySet: len(m.set.APIKeyEnc) > 0, State: m.state}
 	if m.key != "" {
 		v.APIKeyHint = KeyHint(m.key)
+		v.KeySource, v.KeyProvider = m.keySrc, m.keyProv
 	} else if v.APIKeySet {
 		v.APIKeyHint = "••••"
 	}
@@ -304,6 +315,7 @@ func (m *Manager) buildSettings(in Input, cur Settings, curKey string, norm func
 		if !known {
 			return Settings{}, bad("INVALID_PRESET", "未知的预设")
 		}
+		kept := false
 		key := ""
 		switch {
 		case in.APIKey != "":
@@ -314,6 +326,7 @@ func (m *Manager) buildSettings(in Input, cur Settings, curKey string, norm func
 		case in.ClearAPIKey:
 		default:
 			key = keyForSaved(cur, curKey, base, "")
+			kept = key != ""
 		}
 		if key == "" && preset.NeedsAPIKey {
 			if cur.BaseURL != "" && !strings.EqualFold(strings.TrimRight(cur.BaseURL, "/"), base) && len(cur.APIKeyEnc) > 0 {
@@ -331,7 +344,9 @@ func (m *Manager) buildSettings(in Input, cur Settings, curKey string, norm func
 		if next.AllowVision && next.VisionModel == "" {
 			return Settings{}, bad("VISION_MODEL_REQUIRED", "开启视觉识别需要填写视觉模型名称")
 		}
-		if key != "" {
+		if kept {
+			next.APIKeyEnc = cur.APIKeyEnc // unchanged key: keep the sealed blob (and its provenance tag)
+		} else if key != "" {
 			enc, err := m.box.Seal([]byte(key))
 			if err != nil {
 				return Settings{}, err

@@ -16,6 +16,7 @@ type LLMManager interface {
 	Save(ctx context.Context, in llm.Input) (llm.ConfigView, error)
 	Test(ctx context.Context, in llm.TestInput) (llm.TestResult, error)
 	Models(ctx context.Context, baseURL, apiKey string) ([]string, error)
+	OAuthLLM
 }
 
 func (s *Server) llmRoutes() {
@@ -24,6 +25,7 @@ func (s *Server) llmRoutes() {
 	s.handle("/v1/llm/test", map[string]http.HandlerFunc{"POST": s.llmTest})
 	s.handle("/v1/llm/models", map[string]http.HandlerFunc{"POST": s.llmModels})
 	s.aiRoutes()
+	s.llmOAuthRoutes()
 }
 
 func (s *Server) llmErr(w http.ResponseWriter, r *http.Request, err error) {

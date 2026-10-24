@@ -28,6 +28,10 @@ type Preset struct {
 	DefaultModel string  `json:"default_model"`
 	NeedsAPIKey  bool    `json:"needs_api_key"`
 	DocsURL      string  `json:"docs_url"`
+	// KeyURL is the provider page where an API key is created by hand (the "open key page" link).
+	KeyURL string `json:"key_url,omitempty"`
+	// OAuthLogin is true when "sign in with the platform" is implemented for this preset (set from the flow registry).
+	OAuthLogin bool `json:"oauth_login"`
 	// VisionModels are suggestions for the optional vision fallback (models that accept image input).
 	VisionModels []Model `json:"vision_models"`
 	// CheckedAt is when the suggestions were last verified against the provider's documentation.
@@ -133,6 +137,9 @@ func Presets() []Preset {
 	defer catalogMu.RUnlock()
 	out := make([]Preset, len(catalog))
 	copy(out, catalog)
+	for i := range out {
+		_, out[i].OAuthLogin = oauthFlows[out[i].ID]
+	}
 	return out
 }
 

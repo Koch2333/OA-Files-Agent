@@ -1554,6 +1554,50 @@ paths:
         '403': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/Error'}
+  /v1/llm/oauth/start:
+    post:
+      tags: [ai]
+      operationId: startLlmOauth
+      summary: 用服务商账号登录授权（OAuth 授权码 + PKCE），由服务商生成 API Key；仅 preset.oauth_login=true 的服务商可用
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [provider, scope], additionalProperties: false, properties: {provider: {type: string, description: 预设 id（如 openrouter）}, scope: {type: string, enum: [personal, global], description: global 仅管理员}, client: {type: string, enum: [web, desktop], description: web（默认）回调后跳回设置页；desktop 回调显示“可关闭此页面”}}}}}}
+      responses:
+        '200': {description: 授权地址与一次性 state（PKCE verifier 只保存在服务端）, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [authorize_url, state, expires_at], properties: {authorize_url: {type: string}, state: {type: string}, expires_at: {type: string, format: date-time}}}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/llm/oauth/status:
+    get:
+      tags: [ai]
+      operationId: getLlmOauthStatus
+      summary: 轮询登录授权进度（仅发起者本人可读）；收到授权码后服务端完成换取、保存与连接测试
+      parameters:
+        - {name: state, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Status, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object, required: [status, provider, scope], properties: {status: {type: string, enum: [pending, connecting, connected, failed, denied, expired]}, provider: {type: string}, scope: {type: string}, message: {type: string}, test: {$ref: '#/components/schemas/LlmTestResult'}, config: {$ref: '#/components/schemas/LlmConfig'}}}}}}}}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/llm/oauth/callback:
+    get:
+      tags: [ai]
+      operationId: llmOauthCallback
+      summary: 服务商授权完成后的浏览器回调（无需登录：会话 Cookie 为 SameSite=Strict）；302 回设置页 ?llm_oauth=ok/denied/expired/invalid/used，或显示静态完成页
+      security: []
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: code, in: query, schema: {type: string}}
+        - {name: error, in: query, schema: {type: string}}
+      responses:
+        '200': {description: 静态完成页（HTML，desktop 模式）}
+        '302': {description: 跳回 /settings}
+  /v1/llm/oauth/disconnect:
+    post:
+      tags: [ai]
+      operationId: disconnectLlmOauth
+      summary: 断开登录授权：删除保存的密钥（仅限通过登录获得的密钥；服务商侧的密钥需在其网站吊销）
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [scope], additionalProperties: false, properties: {scope: {type: string, enum: [personal, global]}}}}}}
+      responses:
+        '200': {description: 更新后的配置, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LlmConfig'}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /v1/admin/ai-policy:
     get:
       tags: [admin]
@@ -1568,6 +1612,69 @@ paths:
       responses:
         '200': {description: Policy, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/AiPolicy'}}}}}}
         '400': {$ref: '#/components/responses/Error'}
+  /v1/admin/database:
+    get:
+      tags: [admin]
+      operationId: getDatabaseStatus
+      summary: 管理员：当前数据库（引擎、版本、主机、库名、TLS、迁移状态、隔离结果）与待生效配置；不含任何密码
+      responses:
+        '200': {description: Status, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/DatabaseStatus'}}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [admin]
+      operationId: saveDatabaseConfig
+      summary: 管理员：保存“待生效”的数据库配置（仅在下次重启、校验通过并经批准后才生效；不会立即切换）
+      description: |
+        目标库必须通过连通性、版本、隔离与权限校验；已有数据的安装不会被静默指向空库，需要 `confirm_switch=true`。密码加密保存，不会在任何响应中返回。环境变量配置的部署为只读（409 `CONFIG_READ_ONLY`）。写审计 `database.config.save`。
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnRequest'}}}}
+      responses:
+        '200': {description: Status, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/DatabaseStatus'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/admin/database/pending:
+    delete:
+      tags: [admin]
+      operationId: discardDatabasePending
+      summary: 管理员：放弃待生效的数据库配置
+      responses:
+        '204': {description: Discarded}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/admin/database/test:
+    post:
+      tags: [admin]
+      operationId: testDatabaseConnection
+      summary: 管理员：测试连接（不保存、不写入）
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnRequest'}}}}
+      responses:
+        '200': {description: Result, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/DatabaseTestResult'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /v1/admin/database/validate-permissions:
+    post:
+      tags: [admin]
+      operationId: validateDatabasePermissions
+      summary: 管理员：校验版本、字符集、隔离（拒绝含外来表的 schema）与权限（过度授权仅告警）
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnRequest'}}}}
+      responses:
+        '200': {description: Report, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/DatabaseReport'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /v1/admin/database/initialize:
+    post:
+      tags: [admin]
+      operationId: initializeDatabase
+      summary: 管理员：初始化/升级库结构。先 dry_run 得到 DDL 预览与确认令牌，再带 confirmation_token 执行
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, properties: {target: {type: string, enum: [pending, active]}, dry_run: {type: boolean}, confirmation_token: {type: string}}}}}}
+      responses:
+        '200': {description: Preview or result, content: {application/json: {schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/DatabaseInitPreview'}}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /v1/admin/system:
     get:
       tags: [diagnostics]
@@ -1693,6 +1800,136 @@ components:
         application/json:
           schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/ProviderStatus'}}}}
   schemas:
+    DatabaseConnRequest:
+      type: object
+      required: [provider]
+      additionalProperties: false
+      properties:
+        provider: {type: string, enum: [postgres, mysql, mssql]}
+        host: {type: string}
+        port: {type: integer}
+        name: {type: string}
+        user: {type: string}
+        password: {type: string, description: 只写；从不返回}
+        use_saved_password: {type: boolean}
+        schema: {type: string}
+        tls_mode: {type: string, enum: [disable, require, verify-ca, verify-full]}
+        ca_pem: {type: string}
+        server_name: {type: string}
+        client_cert_pem: {type: string}
+        client_key_pem: {type: string}
+        confirm_switch: {type: boolean, description: 仅 PUT：确认把已有数据的安装切到该库}
+    DatabaseConnView:
+      type: object
+      required: [provider, host, port, name, user, tls_mode, has_password]
+      properties:
+        provider: {type: string}
+        label: {type: string}
+        host: {type: string}
+        port: {type: integer}
+        name: {type: string}
+        user: {type: string}
+        schema: {type: string}
+        tls_mode: {type: string}
+        has_ca: {type: boolean}
+        has_client_cert: {type: boolean}
+        server_name: {type: string}
+        has_password: {type: boolean}
+    DatabaseCheck:
+      type: object
+      required: [id, title, status, detail]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        status: {type: string}
+        detail: {type: string}
+    DatabaseMigration:
+      type: object
+      required: [state, version, latest, dirty]
+      properties:
+        state: {type: string}
+        version: {type: integer}
+        latest: {type: integer}
+        dirty: {type: boolean}
+    DatabaseStatus:
+      type: object
+      required: [configured, source, read_only, restart_needed, warnings]
+      properties:
+        configured: {type: boolean}
+        source: {type: string, description: 'env | file | embedded'}
+        read_only: {type: boolean}
+        read_only_reason: {type: string}
+        restart_needed: {type: boolean}
+        warnings: {type: array, items: {type: string}}
+        active:
+          allOf:
+            - {$ref: '#/components/schemas/DatabaseConnView'}
+            - type: object
+              properties:
+                connected: {type: boolean}
+                server_version: {type: string}
+                latency_ms: {type: integer}
+                migration: {$ref: '#/components/schemas/DatabaseMigration'}
+                isolation: {type: string}
+                checks: {type: array, items: {$ref: '#/components/schemas/DatabaseCheck'}}
+                embedded: {type: boolean}
+        pending:
+          allOf:
+            - {$ref: '#/components/schemas/DatabaseConnView'}
+            - type: object
+              properties:
+                saved_at: {type: string, format: date-time}
+                saved_by: {type: string}
+                validated: {type: boolean}
+                approved: {type: boolean}
+                current_has_data: {type: boolean}
+                data_migrated: {type: boolean}
+                needs_initialize: {type: boolean}
+                needs_data_migration: {type: boolean}
+                schema_state: {type: string}
+                will_apply_on_restart: {type: boolean}
+                blockers: {type: array, items: {type: string}}
+        last_apply:
+          type: object
+          properties:
+            at: {type: string, format: date-time}
+            applied: {type: boolean}
+            reason: {type: string}
+    DatabaseTestResult:
+      type: object
+      required: [ok, provider, server_version, latency_ms, tls_mode, message]
+      properties:
+        ok: {type: boolean}
+        provider: {type: string}
+        server_version: {type: string}
+        latency_ms: {type: integer}
+        tls_mode: {type: string}
+        message: {type: string}
+        migration: {$ref: '#/components/schemas/DatabaseMigration'}
+    DatabaseReport:
+      type: object
+      required: [provider, checks, ok, isolation]
+      properties:
+        provider: {type: string}
+        server_version: {type: string}
+        latency_ms: {type: integer}
+        checks: {type: array, items: {$ref: '#/components/schemas/DatabaseCheck'}}
+        ok: {type: boolean}
+        isolation: {type: string, enum: [dedicated_database, dedicated_schema, not_isolated, unknown]}
+    DatabaseInitPreview:
+      type: object
+      required: [target, provider, state, statement_count, confirmation_token]
+      properties:
+        target: {type: string}
+        provider: {type: string}
+        state: {type: string}
+        steps: {type: array, items: {type: object, additionalProperties: true}}
+        statement_count: {type: integer}
+        destructive: {type: boolean}
+        confirmation_token: {type: string}
+        expires_at: {type: string, format: date-time}
+        checks: {type: array, items: {$ref: '#/components/schemas/DatabaseCheck'}}
+        transactional_ddl: {type: boolean}
     Readiness:
       type: object
       required: [data]
@@ -2030,7 +2267,7 @@ components:
         deleted_at: {type: string, format: date-time}
     LlmPreset:
       type: object
-      required: [id, name, description, base_url, models, default_model, needs_api_key, docs_url, vision_models, checked_at, note]
+      required: [id, name, description, base_url, models, default_model, needs_api_key, docs_url, oauth_login, vision_models, checked_at, note]
       properties:
         id: {type: string, description: 'deepseek / qwen / qwen-intl / openai / ollama / custom'}
         name: {type: string}
@@ -2057,6 +2294,8 @@ components:
               id: {type: string}
               label: {type: string}
               note: {type: string}
+        key_url: {type: string, description: 手动创建 API Key 的服务商页面（“打开密钥页面”链接）；可缺省}
+        oauth_login: {type: boolean, description: 是否已实现“用该平台账号登录授权”}
         docs_url: {type: string}
         checked_at: {type: string, description: 预设建议模型的核对日期（YYYY-MM-DD）；模型更新很快，实际以服务商返回的列表为准}
         note: {type: string, description: 该服务商的使用提示（如 Base URL 取自控制台、可用模型以控制台为准）}
@@ -2069,6 +2308,8 @@ components:
         base_url: {type: string}
         model: {type: string}
         api_key_set: {type: boolean}
+        key_source: {type: string, enum: [manual, oauth], description: 密钥来源：手动粘贴 / 登录授权；未保存时缺省}
+        key_provider: {type: string, description: 登录授权所用的平台 id；手动密钥缺省}
         api_key_hint: {type: string, description: '已保存密钥的尾号提示，如 ••••ab12；未保存为空'}
         vision_model: {type: string, description: 视觉识别所用模型（空 = 未配置）}
         allow_vision: {type: boolean, description: 是否允许在 OCR 质量差时把页面图片发送给视觉模型（默认关闭）}

@@ -30,6 +30,8 @@ export type CorrectionProposal = S['CorrectionProposal']
 export type ProviderStatus = S['ProviderStatus']
 export type LlmPreset = S['LlmPreset']
 export type LlmConfig = S['LlmConfig']
+export type LlmOauthStart = { authorize_url: string; state: string; expires_at: string }
+export type LlmOauthStatus = { status: 'pending' | 'connecting' | 'connected' | 'failed' | 'denied' | 'expired'; provider: string; scope: string; message?: string; test?: S['LlmTestResult']; config?: S['LlmConfig'] }
 export type LlmConfigInput = S['LlmConfigInput']
 export type LlmTestInput = S['LlmTestInput']
 export type LlmTestResult = S['LlmTestResult']
@@ -179,6 +181,10 @@ export interface Api {
   deletePersonalLlm(): Promise<void>
   testPersonalLlm(input: LlmTestInput): Promise<LlmTestResult>
   listPersonalLlmModels(input: { base_url: string; api_key?: string }): Promise<string[]>
+  /** 用平台账号登录授权（OAuth + PKCE）：start 返回授权地址；status 由发起者轮询；disconnect 删除登录获得的密钥 */
+  startLlmOauth(input: { provider: string; scope: 'personal' | 'global'; client?: 'web' | 'desktop' }): Promise<LlmOauthStart>
+  getLlmOauthStatus(state: string): Promise<LlmOauthStatus>
+  disconnectLlmOauth(scope: 'personal' | 'global'): Promise<LlmConfig>
   getAiPolicy(): Promise<AiPolicy>
   updateAiPolicy(patch: AiPolicyPatch): Promise<AiPolicy>
 

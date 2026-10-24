@@ -1643,6 +1643,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/llm/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用服务商账号登录授权（OAuth 授权码 + PKCE），由服务商生成 API Key；仅 preset.oauth_login=true 的服务商可用 */
+        post: operations["startLlmOauth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/oauth/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 轮询登录授权进度（仅发起者本人可读）；收到授权码后服务端完成换取、保存与连接测试 */
+        get: operations["getLlmOauthStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 服务商授权完成后的浏览器回调（无需登录：会话 Cookie 为 SameSite=Strict）；302 回设置页 ?llm_oauth=ok/denied/expired/invalid/used，或显示静态完成页 */
+        get: operations["llmOauthCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/oauth/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 断开登录授权：删除保存的密钥（仅限通过登录获得的密钥；服务商侧的密钥需在其网站吊销） */
+        post: operations["disconnectLlmOauth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/ai-policy": {
         parameters: {
             query?: never;
@@ -1658,6 +1726,95 @@ export interface paths {
         head?: never;
         /** 管理员：是否允许员工配置个人 API、个人 API 是否可用内网地址、是否开放“全自动归档” */
         patch: operations["updateAiPolicy"];
+        trace?: never;
+    };
+    "/v1/admin/database": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 管理员：当前数据库（引擎、版本、主机、库名、TLS、迁移状态、隔离结果）与待生效配置；不含任何密码 */
+        get: operations["getDatabaseStatus"];
+        /**
+         * 管理员：保存“待生效”的数据库配置（仅在下次重启、校验通过并经批准后才生效；不会立即切换）
+         * @description 目标库必须通过连通性、版本、隔离与权限校验；已有数据的安装不会被静默指向空库，需要 `confirm_switch=true`。密码加密保存，不会在任何响应中返回。环境变量配置的部署为只读（409 `CONFIG_READ_ONLY`）。写审计 `database.config.save`。
+         */
+        put: operations["saveDatabaseConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/database/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 管理员：放弃待生效的数据库配置 */
+        delete: operations["discardDatabasePending"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/database/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员：测试连接（不保存、不写入） */
+        post: operations["testDatabaseConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/database/validate-permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员：校验版本、字符集、隔离（拒绝含外来表的 schema）与权限（过度授权仅告警） */
+        post: operations["validateDatabasePermissions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/database/initialize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员：初始化/升级库结构。先 dry_run 得到 DDL 预览与确认令牌，再带 confirmation_token 执行 */
+        post: operations["initializeDatabase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/admin/system": {
@@ -1750,6 +1907,123 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        DatabaseConnRequest: {
+            /** @enum {string} */
+            provider: "postgres" | "mysql" | "mssql";
+            host?: string;
+            port?: number;
+            name?: string;
+            user?: string;
+            /** @description 只写；从不返回 */
+            password?: string;
+            use_saved_password?: boolean;
+            schema?: string;
+            /** @enum {string} */
+            tls_mode?: "disable" | "require" | "verify-ca" | "verify-full";
+            ca_pem?: string;
+            server_name?: string;
+            client_cert_pem?: string;
+            client_key_pem?: string;
+            /** @description 仅 PUT：确认把已有数据的安装切到该库 */
+            confirm_switch?: boolean;
+        };
+        DatabaseConnView: {
+            provider: string;
+            label?: string;
+            host: string;
+            port: number;
+            name: string;
+            user: string;
+            schema?: string;
+            tls_mode: string;
+            has_ca?: boolean;
+            has_client_cert?: boolean;
+            server_name?: string;
+            has_password: boolean;
+        };
+        DatabaseCheck: {
+            id: string;
+            title: string;
+            status: string;
+            detail: string;
+        };
+        DatabaseMigration: {
+            state: string;
+            version: number;
+            latest: number;
+            dirty: boolean;
+        };
+        DatabaseStatus: {
+            configured: boolean;
+            /** @description env | file | embedded */
+            source: string;
+            read_only: boolean;
+            read_only_reason?: string;
+            restart_needed: boolean;
+            warnings: string[];
+            active?: components["schemas"]["DatabaseConnView"] & {
+                connected?: boolean;
+                server_version?: string;
+                latency_ms?: number;
+                migration?: components["schemas"]["DatabaseMigration"];
+                isolation?: string;
+                checks?: components["schemas"]["DatabaseCheck"][];
+                embedded?: boolean;
+            };
+            pending?: components["schemas"]["DatabaseConnView"] & {
+                /** Format: date-time */
+                saved_at?: string;
+                saved_by?: string;
+                validated?: boolean;
+                approved?: boolean;
+                current_has_data?: boolean;
+                data_migrated?: boolean;
+                needs_initialize?: boolean;
+                needs_data_migration?: boolean;
+                schema_state?: string;
+                will_apply_on_restart?: boolean;
+                blockers?: string[];
+            };
+            last_apply?: {
+                /** Format: date-time */
+                at?: string;
+                applied?: boolean;
+                reason?: string;
+            };
+        };
+        DatabaseTestResult: {
+            ok: boolean;
+            provider: string;
+            server_version: string;
+            latency_ms: number;
+            tls_mode: string;
+            message: string;
+            migration?: components["schemas"]["DatabaseMigration"];
+        };
+        DatabaseReport: {
+            provider: string;
+            server_version?: string;
+            latency_ms?: number;
+            checks: components["schemas"]["DatabaseCheck"][];
+            ok: boolean;
+            /** @enum {string} */
+            isolation: "dedicated_database" | "dedicated_schema" | "not_isolated" | "unknown";
+        };
+        DatabaseInitPreview: {
+            target: string;
+            provider: string;
+            state: string;
+            steps?: {
+                [key: string]: unknown;
+            }[];
+            statement_count: number;
+            destructive?: boolean;
+            confirmation_token: string;
+            /** Format: date-time */
+            expires_at?: string;
+            checks?: components["schemas"]["DatabaseCheck"][];
+            transactional_ddl?: boolean;
+        };
         Readiness: {
             data: {
                 /** @enum {string} */
@@ -2103,6 +2377,10 @@ export interface components {
                 label: string;
                 note?: string;
             }[];
+            /** @description 手动创建 API Key 的服务商页面（“打开密钥页面”链接）；可缺省 */
+            key_url?: string;
+            /** @description 是否已实现“用该平台账号登录授权” */
+            oauth_login: boolean;
             docs_url: string;
             /** @description 预设建议模型的核对日期（YYYY-MM-DD）；模型更新很快，实际以服务商返回的列表为准 */
             checked_at: string;
@@ -2116,6 +2394,13 @@ export interface components {
             base_url: string;
             model: string;
             api_key_set: boolean;
+            /**
+             * @description 密钥来源：手动粘贴 / 登录授权；未保存时缺省
+             * @enum {string}
+             */
+            key_source?: "manual" | "oauth";
+            /** @description 登录授权所用的平台 id；手动密钥缺省 */
+            key_provider?: string;
             /** @description 已保存密钥的尾号提示，如 ••••ab12；未保存为空 */
             api_key_hint: string;
             /** @description 视觉识别所用模型（空 = 未配置） */
@@ -5590,6 +5875,146 @@ export interface operations {
             429: components["responses"]["Error"];
         };
     };
+    startLlmOauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description 预设 id（如 openrouter） */
+                    provider: string;
+                    /**
+                     * @description global 仅管理员
+                     * @enum {string}
+                     */
+                    scope: "personal" | "global";
+                    /**
+                     * @description web（默认）回调后跳回设置页；desktop 回调显示“可关闭此页面”
+                     * @enum {string}
+                     */
+                    client?: "web" | "desktop";
+                };
+            };
+        };
+        responses: {
+            /** @description 授权地址与一次性 state（PKCE verifier 只保存在服务端） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            authorize_url: string;
+                            state: string;
+                            /** Format: date-time */
+                            expires_at: string;
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+        };
+    };
+    getLlmOauthStatus: {
+        parameters: {
+            query: {
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** @enum {string} */
+                            status: "pending" | "connecting" | "connected" | "failed" | "denied" | "expired";
+                            provider: string;
+                            scope: string;
+                            message?: string;
+                            test?: components["schemas"]["LlmTestResult"];
+                            config?: components["schemas"]["LlmConfig"];
+                        };
+                    };
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    llmOauthCallback: {
+        parameters: {
+            query?: {
+                state?: string;
+                code?: string;
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 静态完成页（HTML，desktop 模式） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 跳回 /settings */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    disconnectLlmOauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    scope: "personal" | "global";
+                };
+            };
+        };
+        responses: {
+            /** @description 更新后的配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LlmConfig"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
     getAiPolicy: {
         parameters: {
             query?: never;
@@ -5637,6 +6062,171 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+        };
+    };
+    getDatabaseStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DatabaseStatus"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+        };
+    };
+    saveDatabaseConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatabaseConnRequest"];
+            };
+        };
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DatabaseStatus"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    discardDatabasePending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discarded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    testDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatabaseConnRequest"];
+            };
+        };
+        responses: {
+            /** @description Result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DatabaseTestResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    validateDatabasePermissions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatabaseConnRequest"];
+            };
+        };
+        responses: {
+            /** @description Report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DatabaseReport"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    initializeDatabase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    target?: "pending" | "active";
+                    dry_run?: boolean;
+                    confirmation_token?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Preview or result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DatabaseInitPreview"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     getSystemInfo: {

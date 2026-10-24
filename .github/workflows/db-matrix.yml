@@ -1,0 +1,61 @@
+name: db-matrix
+on:
+  push:
+    paths: ['backend/**', 'migrations/**', '.github/workflows/db-matrix.yml']
+  pull_request:
+    paths: ['backend/**', 'migrations/**', '.github/workflows/db-matrix.yml']
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:16
+        env: {POSTGRES_USER: oa, POSTGRES_PASSWORD: dbmpass, POSTGRES_DB: oa_test}
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd "pg_isready -U oa -d oa_test" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: backend/go.mod}
+      - run: go test -count=1 -p 1 ./...
+        working-directory: backend
+        env:
+          OA_TEST_DATABASE_URL: postgres://oa:dbmpass@127.0.0.1:55432/oa_test?sslmode=disable
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: mysql:8.0
+        env: {MYSQL_ROOT_PASSWORD: dbmroot}
+        ports: ['53307:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -pdbmroot" --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: backend/go.mod}
+      - run: go test -count=1 -p 1 ./...
+        working-directory: backend
+        env:
+          OA_TEST_MYSQL_URL: mysql://root:dbmroot@127.0.0.1:53307/
+  mssql:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: mcr.microsoft.com/mssql/server:2019-latest
+        env: {ACCEPT_EULA: 'Y', MSSQL_SA_PASSWORD: 'Dbm_Passw0rd!x', MSSQL_PID: Developer}
+        ports: ['51433:1433']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: backend/go.mod}
+      - name: wait for SQL Server
+        run: |
+          for _ in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/51433) 2>/dev/null && break; sleep 2; done; sleep 15
+      - run: go test -count=1 -p 1 ./...
+        working-directory: backend
+        env:
+          OA_TEST_MSSQL_URL: sqlserver://sa:Dbm_Passw0rd%21x@127.0.0.1:51433

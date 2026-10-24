@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { FALLBACK_ICON, ICON_MAP, resolveIcon } from './iconMap'
+import { FALLBACK_ICON, FILLED, ICON_GLYPH_NAMES, ICON_MAP, resolveIcon } from './iconMap'
+import { GLYPHS } from './iconGlyphs'
 
 const SRC = join(__dirname, '..')
 
@@ -56,9 +57,10 @@ describe('icon map', () => {
     expect(unmapped).toEqual([])
   })
 
-  it('has a real component for every entry', () => {
-    for (const [n, c] of Object.entries(ICON_MAP)) expect(c, n).toBeTruthy()
-    expect(Object.values(ICON_MAP).every((c) => typeof c === 'function' || typeof c === 'object')).toBe(true)
+  it('has real Material Symbols path data for every entry', () => {
+    for (const [n, c] of Object.entries(ICON_MAP)) expect(c[0], n).toMatch(/^[Mm][\d\s.,a-zA-Z-]+$/)
+    for (const g of FILLED) expect(GLYPHS[g]?.[1], `filled ${g}`).toBeTruthy()
+    for (const [ui, glyph] of Object.entries(ICON_GLYPH_NAMES)) expect(GLYPHS[glyph], `${ui} -> ${glyph}`).toBeTruthy()
   })
 
   it('falls back to a neutral icon for unknown names', () => {
@@ -68,5 +70,12 @@ describe('icon map', () => {
 
   it('keeps the semantic aliases', () => {
     for (const a of ['passkey', 'upload', 'folder', 'spinner', 'trash']) expect(ICON_MAP[a], a).toBeTruthy()
+  })
+})
+
+describe('icon set policy', () => {
+  it('uses Material Symbols only: no other icon library is imported in src/', () => {
+    const offenders = walk(SRC).filter((f) => /from ['"](lucide|@mdi|@fortawesome|@heroicons|@mui\/icons)/.test(readFileSync(f, 'utf8')))
+    expect(offenders).toEqual([])
   })
 })

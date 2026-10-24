@@ -291,3 +291,7 @@ sudo bash install.sh --offline oa-agent-images-sha-0a1b2c3-amd64.tar --yes --arc
 | `--docker-mirror` 没有修改 daemon.json | `--yes`/无终端不会修改；或文件不是合法 JSON/没有 JSON 工具；按提示手动编辑后 `systemctl restart docker` |
 | `--offline` 提示 SHA-256 不匹配 | tar 损坏或被改动；重新拷贝/重新打包 |
 | `--offline` 提示镜像架构不一致 | 在目标架构（amd64/arm64）上重新用 `save-images.sh --pull --arch` 打包 |
+
+## 13. 使用已有的 PostgreSQL / MySQL / SQL Server
+
+默认仍使用 compose 自带的 PostgreSQL。要复用企业已有数据库，在 `.env` 的 `COMPOSE_FILE` 末尾追加 `docker-compose.external-db.yml` 并设置 `OA_DB_PROVIDER/HOST/PORT/NAME/USER/PASSWORD/TLS_MODE`（需要 Docker Compose 2.24+），自带 postgres 服务随之不再启动。专用库、最小权限的 SQL 与限制见 `多数据库部署与迁移指南.md`。install.sh / oa-agentctl 暂无对应选项，需手工编辑 `.env`。

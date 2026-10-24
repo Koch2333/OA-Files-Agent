@@ -82,19 +82,19 @@ function badgeTest(n: NavItem): string | undefined { return n.badge === 'diag' ?
         </div>
         <template v-if="!restricted">
           <RouterLink v-for="n in nav.primary" :key="n.to" :to="n.to" class="item" :class="{ on: active === n.name }" :aria-current="active === n.name ? 'page' : undefined" :title="n.label">
-            <Icon :name="n.icon" :fill="active === n.name" /><span class="lab">{{ n.label }}</span>
+            <span class="ind"><Icon :name="n.icon" :fill="active === n.name" /></span><span class="lab">{{ n.label }}</span>
             <span v-if="badgeOf(n)" class="badge" :class="{ info: n.badge === 'review' }" :aria-label="badgeLabel(n)" :data-testid="badgeTest(n)">{{ badgeOf(n) }}</span>
           </RouterLink>
           <div v-if="nav.settings.length" class="gwrap">
             <button type="button" class="item ghead" :class="{ open: settingsOpen }" :aria-expanded="settingsOpen" aria-controls="nav-settings" :title="SETTINGS_GROUP_LABEL" data-testid="nav-settings-toggle" @click="toggleSettings">
-              <Icon name="tune" /><span class="lab">{{ SETTINGS_GROUP_LABEL }}</span>
+              <span class="ind"><Icon name="tune" /></span><span class="lab">{{ SETTINGS_GROUP_LABEL }}</span>
               <span v-if="!settingsOpen && settingsBadge" class="badge" :aria-label="`${settingsBadge} 个未处理错误报告`">{{ settingsBadge }}</span>
               <Icon name="expand_more" class="lab chev" />
             </button>
             <!-- 收起时用 v-show 保留在 DOM 中：路由、测试脚本与屏幕阅读器查找都不受影响 -->
             <div v-show="settingsOpen" id="nav-settings" class="sub" role="group" :aria-label="SETTINGS_GROUP_LABEL">
               <RouterLink v-for="n in nav.settings" :key="n.to" :to="n.to" class="item subitem" :class="{ on: active === n.name }" :aria-current="active === n.name ? 'page' : undefined" :title="n.hint ? `${n.label}（${n.hint}）` : n.label">
-                <Icon :name="n.icon" :fill="active === n.name" /><span class="lab">{{ n.label }}</span>
+                <span class="ind"><Icon :name="n.icon" :fill="active === n.name" /></span><span class="lab">{{ n.label }}</span>
                 <span v-if="badgeOf(n)" class="badge" :aria-label="badgeLabel(n)" :data-testid="badgeTest(n)">{{ badgeOf(n) }}</span>
               </RouterLink>
             </div>
@@ -105,7 +105,7 @@ function badgeTest(n: NavItem): string | undefined { return n.badge === 'diag' ?
           <button class="item userbtn" aria-haspopup="menu" :aria-expanded="menuOpen" :title="auth.user.display_name" data-testid="user-menu" @click="menuOpen = !menuOpen" @keydown.esc="menuOpen = false">
             <span class="avatar" aria-hidden="true">{{ initial }}</span><span class="lab ellipsis">{{ auth.user.display_name }}</span>
           </button>
-          <div v-if="menuOpen" class="menu card" role="menu" aria-label="用户菜单" @keydown.esc="menuOpen = false">
+          <div v-if="menuOpen" class="menu" role="menu" aria-label="用户菜单" @keydown.esc="menuOpen = false">
             <div class="mhead"><div class="t-title-m ellipsis">{{ auth.user.display_name }}</div><div class="muted t-label ellipsis">{{ auth.user.username }}</div><span class="chip" :class="auth.user.role === 'admin' ? 'progress' : ''" data-testid="role-chip">{{ ROLE_LABEL[auth.user.role] }}</span></div>
             <button class="mi" role="menuitem" @click="go('/account/security')"><Icon name="manage_accounts" sm />账号安全</button>
             <button v-if="desk" class="mi" role="menuitem" data-testid="desktop-settings" @click="openDesktopSettings"><Icon name="settings" sm />桌面版设置…</button>
@@ -133,33 +133,61 @@ function badgeTest(n: NavItem): string | undefined { return n.badge === 'diag' ?
 
 <style scoped>
 .skip { position: fixed; left: 16px; top: -60px; z-index: 300; } .skip:focus { top: 16px; }
-.shell { display: grid; grid-template-columns: 248px 1fr; height: 100%; }
+.shell { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
 .shell.collapsed { grid-template-columns: 80px 1fr; }
-.nav { display: flex; flex-direction: column; gap: 2px; padding: 12px; background: var(--c-surface-1); overflow-y: auto; }
-.brand { height: 52px; margin-bottom: 4px; } .brand .name { white-space: nowrap; }
-.item { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 16px; border-radius: var(--shape-full); color: var(--md-sys-color-on-surface-variant); text-decoration: none !important; font-weight: 500; white-space: nowrap; transition: background var(--dur-s); position: relative; }
-.item:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
+/* navigation drawer (standard): surface-container-low, 56dp items, full-radius active indicator */
+.nav { display: flex; flex-direction: column; gap: 2px; padding: 12px; background: var(--md-sys-color-surface-container-low); overflow-y: auto; overflow-x: hidden; }
+.brand { height: 56px; margin-bottom: 4px; } .brand .name { white-space: nowrap; font: var(--md-sys-typescale-title-medium); }
+.item { position: relative; isolation: isolate; display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 16px; border-radius: var(--shape-full); color: var(--md-sys-color-on-surface-variant); text-decoration: none !important; font: var(--md-sys-typescale-label-large); letter-spacing: var(--track-label-large); white-space: nowrap; }
+.item::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--md-sys-color-on-surface); opacity: 0; transition: opacity var(--dur-s) var(--ease); }
+.item:hover::before { opacity: var(--state-hover); } .item:focus-visible::before { opacity: var(--state-focus); }
 .item.on { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+.item .ind { display: inline-flex; align-items: center; justify-content: center; }
 .gwrap { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--md-sys-color-outline-variant); display: flex; flex-direction: column; gap: 2px; }
-.ghead { width: 100%; border: 0; background: transparent; font: 500 14px var(--font); cursor: pointer; text-align: left; }
+.ghead { width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .ghead .chev { margin-left: auto; font-size: 20px; transition: transform var(--dur-s) var(--ease); } .ghead.open .chev { transform: rotate(180deg); }
 .sub { display: flex; flex-direction: column; gap: 2px; }
-.subitem { height: 40px; padding-left: 28px; font-size: 13px; }
-.usermenu { position: relative; } .userbtn { width: 100%; border: 0; background: transparent; font: inherit; cursor: pointer; height: 48px; }
-.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); display: grid; place-items: center; font-weight: 600; flex: none; }
-.menu { position: absolute; left: 8px; bottom: 56px; min-width: 240px; z-index: 50; background: var(--c-surface-3); box-shadow: var(--elev-3); padding: 8px; display: flex; flex-direction: column; gap: 2px; }
-.mhead { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
-.mi { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 12px; border: 0; border-radius: var(--shape-sm); background: transparent; color: inherit; font: 500 14px var(--font); cursor: pointer; text-align: left; }
-.mi:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
-.badge { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--md-sys-color-error); color: var(--md-sys-color-on-error); font-size: 11px; font-weight: 600; display: grid; place-items: center; }
+.subitem { height: 48px; padding-left: 28px; }
+.usermenu { position: relative; } .userbtn { width: 100%; border: 0; background: transparent; cursor: pointer; height: 56px; color: var(--md-sys-color-on-surface); }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); display: grid; place-items: center; font: var(--md-sys-typescale-title-small); flex: none; }
+/* menu: surface-container, 4dp corners, elevation 2, 48dp items */
+.menu { position: absolute; left: 8px; bottom: 60px; min-width: 240px; z-index: 50; background: var(--md-sys-color-surface-container); color: var(--md-sys-color-on-surface); border-radius: var(--shape-xs); box-shadow: var(--elev-2); padding: 8px 0; display: flex; flex-direction: column; animation: menu-in var(--dur-s) var(--ease-decel); }
+.mhead { padding: 8px 16px 12px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.mi { position: relative; isolation: isolate; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 16px; border: 0; background: transparent; color: inherit; font: var(--md-sys-typescale-label-large); letter-spacing: var(--track-label-large); cursor: pointer; text-align: left; }
+.mi .icon { color: var(--md-sys-color-on-surface-variant); }
+.mi::before { content: ''; position: absolute; inset: 0; z-index: -1; background: currentColor; opacity: 0; transition: opacity var(--dur-s) var(--ease); }
+.mi:hover::before { opacity: var(--state-hover); } .mi:focus-visible::before { opacity: var(--state-focus); } .mi:focus-visible { outline-offset: -3px; }
+@keyframes menu-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+/* badge: M3 large badge, 16dp */
+.badge { margin-left: auto; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--md-sys-color-error); color: var(--md-sys-color-on-error); font: var(--md-sys-typescale-label-small); display: grid; place-items: center; }
 .badge.info { background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); }
 .ghead .badge { margin-left: auto; } .ghead .badge + .chev { margin-left: 4px; }
-.collapsed .badge { position: absolute; margin: 0; transform: translate(14px, -12px); }
-.collapsed .lab, .collapsed .name { display: none; } .collapsed .item { justify-content: center; padding: 0; } .collapsed .subitem { padding: 0; }
-.collapsed .gwrap { align-items: stretch; } .collapsed .menu { left: 8px; }
 .main-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 main { flex: 1; overflow: auto; padding: var(--page-pad-t) var(--page-pad-x) 40px; outline: 0; }
-.mockbar { display: flex; gap: 8px; align-items: center; padding: 6px var(--page-pad-x); background: var(--c-warn-container); color: var(--c-on-warn-container); font-size: 13px; }
-/* 窄屏：侧栏收成图标栏（沿用原行为），“设置与管理”保持可用：点图标展开，子项同样是图标 */
-@media (max-width: 1000px) { .badge { position: absolute; margin: 0; transform: translate(14px, -12px); } .shell, .shell.collapsed { grid-template-columns: 80px 1fr; } .lab, .name { display: none; } .item { justify-content: center; padding: 0; } .subitem { padding: 0; } }
+.mockbar { display: flex; gap: 8px; align-items: center; padding: 6px var(--page-pad-x); background: var(--c-warn-container); color: var(--c-on-warn-container); font: var(--md-sys-typescale-body-medium); }
+
+/* navigation rail (80dp): collapsed by the user, or automatically on narrow windows. Icon in a 56x32 active-indicator pill, label-medium below. */
+.collapsed .name, .collapsed .chev { display: none; }
+.collapsed .item { flex-direction: column; justify-content: center; gap: 4px; height: auto; min-height: 56px; padding: 6px 0; border-radius: var(--shape-md); background: transparent !important; color: var(--md-sys-color-on-surface-variant); font: var(--md-sys-typescale-label-medium); letter-spacing: var(--track-label-medium); }
+.collapsed .item::before { display: none; }
+.collapsed .item .ind { width: 56px; height: 32px; border-radius: var(--shape-full); transition: background-color var(--dur-s) var(--ease); }
+.collapsed .item:hover .ind { background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--state-hover), transparent); }
+.collapsed .item.on { color: var(--md-sys-color-on-surface); } .collapsed .item.on .ind { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+.collapsed .lab { max-width: 76px; overflow: hidden; text-overflow: ellipsis; line-height: 18px; padding: 1px 0; }
+.collapsed .subitem { padding: 6px 0; }
+.collapsed .badge { position: absolute; margin: 0; top: 4px; left: calc(50% + 4px); }
+.collapsed .userbtn { justify-content: center; } .collapsed .userbtn .lab { display: none; }
+@media (max-width: 1000px) {
+  .shell, .shell.collapsed { grid-template-columns: 80px 1fr; }
+  .name, .chev { display: none; }
+  .item { flex-direction: column; justify-content: center; gap: 4px; height: auto; min-height: 56px; padding: 6px 0; border-radius: var(--shape-md); background: transparent !important; color: var(--md-sys-color-on-surface-variant); font: var(--md-sys-typescale-label-medium); letter-spacing: var(--track-label-medium); }
+  .item::before { display: none; }
+  .item .ind { width: 56px; height: 32px; border-radius: var(--shape-full); transition: background-color var(--dur-s) var(--ease); }
+  .item:hover .ind { background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--state-hover), transparent); }
+  .item.on { color: var(--md-sys-color-on-surface); } .item.on .ind { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+  .lab { max-width: 76px; overflow: hidden; text-overflow: ellipsis; line-height: 18px; padding: 1px 0; }
+  .subitem { padding: 6px 0; }
+  .badge { position: absolute; margin: 0; top: 4px; left: calc(50% + 4px); }
+  .userbtn { justify-content: center; } .userbtn .lab { display: none; }
+}
 </style>

@@ -14,6 +14,7 @@ import StateView from '../components/StateView.vue'
 import Icon from '../components/Icon.vue'
 import LlmSettings from '../components/LlmSettings.vue'
 import AiPolicyCard from '../components/AiPolicyCard.vue'
+import DatabaseSettings from '../components/settings/DatabaseSettings.vue'
 import ErrorBanner from '../components/ErrorBanner.vue'
 import { desktop, type DesktopInfo } from '../utils/desktop'
 
@@ -87,6 +88,8 @@ const dep = (s?: string) => (s === 'ok' ? ['正常', 'success'] : s ? [s, 'error
       <section v-else-if="auth.canWrite && ai.status && !auth.isAdmin" class="card muted" data-testid="personal-llm-off">管理员未开放个人大模型 API；你的任务使用全局大模型。</section>
       <AiPolicyCard v-if="auth.isAdmin" />
     </div>
+
+    <DatabaseSettings v-if="auth.isAdmin" id="database" class="span" />
 
     <section v-if="auth.isAdmin" class="card col">
       <h2 class="t-title-m">数据来源</h2>

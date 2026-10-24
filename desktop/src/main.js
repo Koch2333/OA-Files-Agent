@@ -6,6 +6,7 @@ const { app, BrowserWindow, Menu, Tray, dialog, shell, session, screen, nativeIm
 const { resolveDataDir, resolveServerDir, defaultArchiveRoot, isPortable, exeDir, readInstallPreset, writePointer, dataDirLocked } = require('./paths')
 const { validateDir, copyVerify, switchWorkdir, isInside, programDirs, freeBytes } = require('./workdir')
 const { createSettings } = require('./settings-ctl')
+const { checkExternalUrl } = require('./external-url')
 const { runSetup } = require('./setup-ctl')
 const { Config } = require('./config')
 const { createLogger } = require('./logger')
@@ -386,6 +387,14 @@ ipcMain.handle('desktop:open-folder', (e, what) => {
   if (!fromApp(e)) return
   if (what === 'archive' && backend) shell.openPath(backend.archiveRoot)
   else if (what === 'logs') openLogs()
+})
+
+ipcMain.handle('desktop:open-external', (e, url) => {
+  if (!fromApp(e)) return false
+  const safe = checkExternalUrl(url)
+  if (!safe) return false
+  shell.openExternal(safe)
+  return true
 })
 
 function createWindow() {

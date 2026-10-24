@@ -11,6 +11,7 @@
     "default_model": "deepseek-flash",
     "needs_api_key": true,
     "docs_url": "https://api-docs.deepseek.com/",
+    "key_url": "https://platform.deepseek.com/api_keys",
     "vision_models": [
       {"id": "deepseek-flash", "label": "deepseek-flash", "note": "支持图片输入"}
     ],
@@ -30,6 +31,7 @@
     "default_model": "qwen3.7-plus",
     "needs_api_key": true,
     "docs_url": "https://help.aliyun.com/zh/model-studio/",
+    "key_url": "https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key",
     "vision_models": [
       {"id": "qwen3.7-plus", "label": "qwen3.7-plus", "note": "支持图片理解"},
       {"id": "qwen3.8-max", "label": "qwen3.8-max", "note": "支持图片理解"}
@@ -46,6 +48,7 @@
     "default_model": "",
     "needs_api_key": true,
     "docs_url": "https://platform.openai.com/docs",
+    "key_url": "https://platform.openai.com/api-keys",
     "vision_models": [],
     "checked_at": "2026-10-22",
     "note": "模型更新频繁，这里不预设；请点击“获取模型列表”选择，或直接输入模型名。"
@@ -66,6 +69,22 @@
     ],
     "checked_at": "2026-10-22",
     "note": "也可使用任何已 ollama pull 且支持工具调用的模型；本机模型的名称以 ollama list 为准。"
+  },
+  {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "description": "聚合多家模型的 OpenAI 兼容网关；支持用 OpenRouter 账号登录授权，自动生成专用 API Key。",
+    "base_url": "https://openrouter.ai/api/v1",
+    "models": [
+      {"id": "openrouter/auto", "label": "openrouter/auto", "note": "自动路由到合适的模型；识别流程依赖工具调用，建议在“获取模型列表”中改选明确支持工具调用的模型"}
+    ],
+    "default_model": "openrouter/auto",
+    "needs_api_key": true,
+    "docs_url": "https://openrouter.ai/docs",
+    "key_url": "https://openrouter.ai/settings/keys",
+    "vision_models": [],
+    "checked_at": "2026-10-24",
+    "note": "模型 ID 形如 厂商/模型名；以“获取模型列表”为准。登录授权生成的 Key 可在 OpenRouter 的 Keys 页面随时吊销。"
   },
   {
     "id": "custom",

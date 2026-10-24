@@ -10,6 +10,7 @@ func TestRedactSecretsCorpus(t *testing.T) {
 	cases := []struct{ name, in, canary string }{
 		{"openai key", "call failed: Incorrect API key provided: sk-proj-AbCdEf0123456789abcdef", "AbCdEf0123456789abcdef"},
 		{"anthropic key", "x sk-ant-api03-ZZZZ1111yyyy2222XXXX3333 y", "ZZZZ1111yyyy2222XXXX3333"},
+		{"openrouter key", "401 for key sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef01234567", "0123456789abcdef0123456789abcdef"},
 		{"bearer", "Authorization: Bearer abc123.def456-ghi789", "abc123.def456-ghi789"},
 		{"bearer inline", "retry with bearer 9f8e7d6c5b4a39281706", "9f8e7d6c5b4a39281706"},
 		{"authorization basic", "authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"},
@@ -131,5 +132,20 @@ func TestTruncate(t *testing.T) {
 	}
 	if Truncate("abc", 5) != "abc" {
 		t.Fatal()
+	}
+}
+
+func TestRedactDatabaseDSNs(t *testing.T) {
+	for _, in := range []string{
+		"dial failed for oa:Hunter2Pass@tcp(db.internal:3306)/oa?parseTime=true",
+		"sqlserver://sa:Hunter2Pass@db.internal:1433?database=oa",
+		"mysql://oa:Hunter2Pass@db.internal:3306/oa",
+		"Server=db;User Id=sa;Password=Hunter2Pass;Database=oa",
+		"postgres://oa:Hunter2Pass@db:5432/oa",
+		"host=db user=oa password=Hunter2Pass dbname=oa",
+	} {
+		if out := Redact(in); strings.Contains(out, "Hunter2Pass") {
+			t.Errorf("password leaked: %q -> %q", in, out)
+		}
 	}
 }

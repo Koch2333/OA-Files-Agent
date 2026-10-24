@@ -8,51 +8,54 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"oa-agent/backend/internal/sqldb"
 
 	"oa-agent/backend/internal/imports"
 )
 
-type Store struct{ Pool *pgxpool.Pool }
+type Store struct{ Pool *sqldb.DB }
 
+// Open connects with a legacy OA_DATABASE_URL (PostgreSQL, MySQL or SQL Server URL).
 func Open(ctx context.Context, url string) (*Store, error) {
-	cfg, err := pgxpool.ParseConfig(url)
+	pool, err := sqldb.OpenURL(ctx, url)
 	if err != nil {
-		return nil, errors.New("invalid database URL")
+		return nil, err
 	}
-	cfg.MaxConns = 10
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	return &Store{Pool: pool}, nil
+}
+
+// OpenConfig connects with explicit settings.
+func OpenConfig(ctx context.Context, cfg sqldb.Config) (*Store, error) {
+	pool, err := sqldb.Open(ctx, cfg)
 	if err != nil {
-		return nil, errors.New("database connection failed")
-	}
-	if err = pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, errors.New("database connection failed")
+		return nil, err
 	}
 	return &Store{Pool: pool}, nil
 }
 
 func (s *Store) Close() { s.Pool.Close() }
 
+// Dialect is the SQL dialect of the connected database.
+func (s *Store) Dialect() sqldb.Dialect { return s.Pool.Dialect() }
+
 const jobCols = `id::text, status, total_files, processed_files, success_count, failure_count, plan_id::text, template_id::text, instruction, automation, llm_source, llm_model, llm_owner, auto_ack_version, auto_ack_at, auto_ack_by, created_at, updated_at`
 
-func scanJob(r pgx.Row) (imports.Job, error) {
+func scanJob(r sqldb.Row) (imports.Job, error) {
 	var j imports.Job
 	err := r.Scan(&j.ID, &j.Status, &j.TotalFiles, &j.ProcessedFiles, &j.SuccessCount, &j.FailureCount, &j.PlanID, &j.TemplateID, &j.Instruction, &j.Automation, &j.LLMSource, &j.LLMModel, &j.LLMOwner, &j.AckVersion, &j.AckAt, &j.AckBy, &j.CreatedAt, &j.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return j, ErrNotFound
 	}
 	return j, err
 }
 
-const fileCols = `id::text, task_id::text, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, to_char(detected_date,'YYYY-MM-DD'), evidence, review_required, archive_status, error, created_at, COALESCE(stored_path,''), ocr_used, template_id::text, analysis->'ocr'`
+const fileCols = `id::text, task_id::text, source_name, source_path, mime_type, sha256, size_bytes, detected_department, detected_type, to_char(detected_date,'YYYY-MM-DD'), evidence, review_required, archive_status, error, created_at, COALESCE(stored_path,''), ocr_used, template_id::text, analysis`
 
-func scanFile(r pgx.Row) (imports.File, error) {
+func scanFile(r sqldb.Row) (imports.File, error) {
 	var f imports.File
-	var ev, ocr []byte
-	err := r.Scan(&f.ID, &f.TaskID, &f.SourceName, &f.SourcePath, &f.MIMEType, &f.SHA256, &f.SizeBytes, &f.Department, &f.DocumentType, &f.Date, &ev, &f.ReviewRequired, &f.ArchiveStatus, &f.Error, &f.CreatedAt, &f.StoredPath, &f.OCRUsed, &f.TemplateID, &ocr)
-	if errors.Is(err, pgx.ErrNoRows) {
+	var ev, an []byte
+	err := r.Scan(&f.ID, &f.TaskID, &f.SourceName, &f.SourcePath, &f.MIMEType, &f.SHA256, &f.SizeBytes, &f.Department, &f.DocumentType, &f.Date, &ev, &f.ReviewRequired, &f.ArchiveStatus, &f.Error, &f.CreatedAt, &f.StoredPath, &f.OCRUsed, &f.TemplateID, &an)
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return f, ErrNotFound
 	}
 	if err != nil {
@@ -61,11 +64,11 @@ func scanFile(r pgx.Row) (imports.File, error) {
 	if json.Unmarshal(ev, &f.Evidence) != nil || f.Evidence == nil {
 		f.Evidence = []string{}
 	}
-	if len(ocr) > 0 && string(ocr) != "null" {
-		var info imports.OCRInfo
-		if json.Unmarshal(ocr, &info) == nil && info.Used {
-			f.OCR = &info
-		}
+	var parsed struct {
+		OCR *imports.OCRInfo `json:"ocr"`
+	}
+	if len(an) > 0 && json.Unmarshal(an, &parsed) == nil && parsed.OCR != nil && parsed.OCR.Used {
+		f.OCR = parsed.OCR
 	}
 	return f, nil
 }
@@ -86,7 +89,7 @@ func (s *Store) Save(ctx context.Context, b imports.Batch) (imports.Batch, bool,
 	}
 	defer tx.Rollback(context.Background())
 	if b.Key != "" {
-		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "import:"+b.Key); err != nil {
+		if err = tx.LockKey(ctx, "import:"+b.Key); err != nil {
 			return b, false, err
 		}
 		var id, fp string
@@ -98,7 +101,7 @@ func (s *Store) Save(ctx context.Context, b imports.Batch) (imports.Batch, bool,
 			existing, e := s.Task(ctx, id)
 			return existing, true, e
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !errors.Is(err, sqldb.ErrNoRows) {
 			return b, false, err
 		}
 	}
@@ -222,7 +225,7 @@ func (s *Store) GetFile(ctx context.Context, id string) (imports.File, error) {
 }
 
 func likeEscape(s string) string {
-	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s) + "%"
+	return "%" + sqldb.EscapeLike(s) + "%"
 }
 
 func (s *Store) ListFiles(ctx context.Context, p Page, f FileFilter) ([]imports.File, int, error) {
@@ -286,9 +289,24 @@ func (s *Store) ListFiles(ctx context.Context, p Page, f FileFilter) ([]imports.
 
 // ClaimJob atomically moves one queued job to scanning. Returns ErrNotFound when the queue is empty.
 func (s *Store) ClaimJob(ctx context.Context) (imports.Job, error) {
-	return scanJob(s.Pool.QueryRow(ctx, `UPDATE import_jobs SET status='scanning', updated_at=now()
-		WHERE id=(SELECT id FROM import_jobs WHERE status='queued' AND NOT cancel_requested AND total_files > failure_count ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-		RETURNING `+jobCols))
+	var out imports.Job
+	err := s.Pool.InTx(ctx, func(tx sqldb.Tx) error {
+		var id string
+		// SKIP LOCKED (PostgreSQL, MySQL 8) / READPAST (SQL Server): concurrent workers never claim the same job.
+		if err := tx.QueryRow(ctx, `SELECT id FROM import_jobs WHERE status='queued' AND cancel_requested=false AND total_files > failure_count ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE import_jobs SET status='scanning', updated_at=now() WHERE id=$1`, id); err != nil {
+			return err
+		}
+		var err error
+		out, err = scanJob(tx.QueryRow(ctx, `SELECT `+jobCols+` FROM import_jobs WHERE id=$1`, id))
+		return err
+	})
+	if errors.Is(err, sqldb.ErrNoRows) {
+		return out, ErrNotFound
+	}
+	return out, err
 }
 
 // RecoverJobs puts interrupted in-flight jobs back in the queue (processing is idempotent per file).
@@ -327,7 +345,7 @@ func (s *Store) FailJob(ctx context.Context, id, msg string) error {
 
 func (s *Store) CancelRequested(ctx context.Context, id string) (bool, error) {
 	var c bool
-	err := s.Pool.QueryRow(ctx, `SELECT cancel_requested OR status='cancelled' FROM import_jobs WHERE id=$1`, id).Scan(&c)
+	err := s.Pool.QueryRow(ctx, `SELECT CASE WHEN cancel_requested=true OR status='cancelled' THEN true ELSE false END FROM import_jobs WHERE id=$1`, id).Scan(&c)
 	return c, err
 }
 
@@ -370,9 +388,9 @@ func (s *Store) RetryJob(ctx context.Context, id string) (imports.Job, error) {
 		return j, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE import_jobs SET status='queued', cancel_requested=false, last_error=NULL, plan_id=NULL, updated_at=now(),
-		processed_files=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed),
-		failure_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed AND error IS NOT NULL),
-		success_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed AND error IS NULL) WHERE id=$1`, id); err != nil {
+		processed_files=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true),
+		failure_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true AND error IS NOT NULL),
+		success_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true AND error IS NULL) WHERE id=$1`, id); err != nil {
 		return j, err
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM archive_plans WHERE task_id=$1 AND status IN ('draft','awaiting_review','approved')`, id); err != nil {
@@ -391,16 +409,16 @@ func (s *Store) SaveAnalysis(ctx context.Context, fileID string, r AnalysisResul
 		an = []byte("{}")
 	}
 	_, err := s.Pool.Exec(ctx, `UPDATE file_records SET detected_department=$2, detected_type=$3, detected_date=$4::date, evidence=$5, review_required=$6, template_id=$7::uuid, ocr_used=$8, error=$9, analysis=$10, processed=true WHERE id=$1`,
-		fileID, r.Department, r.DocumentType, r.DocumentDate, ev, r.ReviewRequired, r.TemplateID, r.OCRUsed, r.Error, an)
+		fileID, r.Department, r.DocumentType, r.DocumentDate, sqldb.JSON(ev), r.ReviewRequired, r.TemplateID, r.OCRUsed, r.Error, sqldb.JSON(an))
 	return err
 }
 
 // Progress recomputes counters from file rows so a re-run never double counts.
 func (s *Store) Progress(ctx context.Context, taskID string) error {
 	_, err := s.Pool.Exec(ctx, `UPDATE import_jobs SET updated_at=now(),
-		processed_files=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed),
-		failure_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed AND error IS NOT NULL),
-		success_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed AND error IS NULL) WHERE id=$1`, taskID)
+		processed_files=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true),
+		failure_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true AND error IS NOT NULL),
+		success_count=(SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true AND error IS NULL) WHERE id=$1`, taskID)
 	return err
 }
 
@@ -420,14 +438,17 @@ func (s *Store) AppendEvent(ctx context.Context, taskID string, phase, typ strin
 	}
 	defer tx.Rollback(context.Background())
 	var seq int64
-	if err = tx.QueryRow(ctx, `UPDATE import_jobs SET event_seq=event_seq+1 WHERE id=$1 RETURNING event_seq`, taskID).Scan(&seq); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE import_jobs SET event_seq=event_seq+1 WHERE id=$1`, taskID); err != nil {
+		return err
+	}
+	if err = tx.QueryRow(ctx, `SELECT event_seq FROM import_jobs WHERE id=$1`, taskID).Scan(&seq); err != nil {
 		return err
 	}
 	var dj []byte
 	if details != nil {
 		dj, _ = json.Marshal(details)
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO agent_events(task_id,seq,phase,event_type,file_id,summary,details) VALUES ($1,$2,$3,$4,$5::uuid,$6,$7)`, taskID, seq, phase, typ, fileID, summary, dj); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO agent_events(task_id,seq,phase,event_type,file_id,summary,details) VALUES ($1,$2,$3,$4,$5::uuid,$6,$7)`, taskID, seq, phase, typ, fileID, summary, sqldb.JSON(dj)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

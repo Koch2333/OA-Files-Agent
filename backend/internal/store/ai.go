@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"oa-agent/backend/internal/sqldb"
 
 	"oa-agent/backend/internal/imports"
 )
@@ -23,18 +23,18 @@ func (s *Store) LoadAIPolicy(ctx context.Context) (AIPolicy, error) {
 	var p AIPolicy
 	err := s.Pool.QueryRow(ctx, `SELECT allow_personal_llm, allow_personal_private_hosts, allow_auto_archive, updated_at FROM ai_policy WHERE id=1`).
 		Scan(&p.AllowPersonalLLM, &p.AllowPersonalPrivateHosts, &p.AllowAutoArchive, &p.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) { // row missing (manual deletion): documented defaults
+	if errors.Is(err, sqldb.ErrNoRows) { // row missing (manual deletion): documented defaults
 		return AIPolicy{AllowAutoArchive: true}, nil
 	}
 	return p, err
 }
 
 func (s *Store) SaveAIPolicy(ctx context.Context, p AIPolicy) (AIPolicy, error) {
-	err := s.Pool.QueryRow(ctx, `INSERT INTO ai_policy(id, allow_personal_llm, allow_personal_private_hosts, allow_auto_archive, updated_at) VALUES (1,$1,$2,$3,now())
-		ON CONFLICT (id) DO UPDATE SET allow_personal_llm=$1, allow_personal_private_hosts=$2, allow_auto_archive=$3, updated_at=now()
-		RETURNING allow_personal_llm, allow_personal_private_hosts, allow_auto_archive, updated_at`, p.AllowPersonalLLM, p.AllowPersonalPrivateHosts, p.AllowAutoArchive).
-		Scan(&p.AllowPersonalLLM, &p.AllowPersonalPrivateHosts, &p.AllowAutoArchive, &p.UpdatedAt)
-	return p, err
+	if _, err := s.Pool.Exec(ctx, `INSERT INTO ai_policy(id, allow_personal_llm, allow_personal_private_hosts, allow_auto_archive, updated_at) VALUES (1,$1,$2,$3,now())
+		ON CONFLICT (id) DO UPDATE SET allow_personal_llm=$1, allow_personal_private_hosts=$2, allow_auto_archive=$3, updated_at=now()`, p.AllowPersonalLLM, p.AllowPersonalPrivateHosts, p.AllowAutoArchive); err != nil {
+		return p, err
+	}
+	return s.LoadAIPolicy(ctx)
 }
 
 // ---- personal LLM configuration (one row per user) ----
@@ -43,7 +43,7 @@ func (s *Store) LoadPersonalLLM(ctx context.Context, userID string) (LLMSettings
 	var v LLMSettings
 	err := s.Pool.QueryRow(ctx, `SELECT mode, preset_id, base_url, model, api_key_enc, vision_model, allow_vision, updated_at FROM llm_personal WHERE user_id=$1`, userID).
 		Scan(&v.Mode, &v.PresetID, &v.BaseURL, &v.Model, &v.APIKeyEnc, &v.VisionModel, &v.AllowVision, &v.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return v, false, nil
 	}
 	return v, err == nil, err
@@ -51,9 +51,12 @@ func (s *Store) LoadPersonalLLM(ctx context.Context, userID string) (LLMSettings
 
 func (s *Store) SavePersonalLLM(ctx context.Context, userID string, v LLMSettings) (time.Time, error) {
 	var at time.Time
-	err := s.Pool.QueryRow(ctx, `INSERT INTO llm_personal(user_id, mode, preset_id, base_url, model, api_key_enc, vision_model, allow_vision, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
-		ON CONFLICT (user_id) DO UPDATE SET mode=$2, preset_id=$3, base_url=$4, model=$5, api_key_enc=$6, vision_model=$7, allow_vision=$8, updated_at=now() RETURNING updated_at`,
-		userID, v.Mode, v.PresetID, v.BaseURL, v.Model, v.APIKeyEnc, v.VisionModel, v.AllowVision).Scan(&at)
+	if _, err := s.Pool.Exec(ctx, `INSERT INTO llm_personal(user_id, mode, preset_id, base_url, model, api_key_enc, vision_model, allow_vision, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
+		ON CONFLICT (user_id) DO UPDATE SET mode=$2, preset_id=$3, base_url=$4, model=$5, api_key_enc=$6, vision_model=$7, allow_vision=$8, updated_at=now()`,
+		userID, v.Mode, v.PresetID, v.BaseURL, v.Model, v.APIKeyEnc, v.VisionModel, v.AllowVision); err != nil {
+		return at, err
+	}
+	err := s.Pool.QueryRow(ctx, `SELECT updated_at FROM llm_personal WHERE user_id=$1`, userID).Scan(&at)
 	return at, err
 }
 
@@ -90,7 +93,7 @@ func (s *Store) CreateAutoPlans(ctx context.Context, taskID string, ruleID *stri
 		for i, it := range items {
 			w, _ := json.Marshal(nonNil(it.Warnings))
 			if _, e := tx.Exec(ctx, `INSERT INTO archive_plan_items(plan_id,file_id,position,original_name,suggested_name,source_path,destination_path,department,document_type,document_date,warnings,review_required) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12)`,
-				id, it.FileID, i, it.OriginalName, it.SuggestedName, it.SourcePath, it.DestinationPath, it.Department, it.DocumentType, it.DocumentDate, w, it.ReviewRequired); e != nil {
+				id, it.FileID, i, it.OriginalName, it.SuggestedName, it.SourcePath, it.DestinationPath, it.Department, it.DocumentType, it.DocumentDate, sqldb.JSON(w), it.ReviewRequired); e != nil {
 				return e
 			}
 		}

@@ -1,0 +1,26 @@
+# Optional layer: use an EXISTING database server (PostgreSQL 14+, MySQL 8.0+, SQL Server 2019+) instead of the bundled
+# PostgreSQL container. Add it to COMPOSE_FILE in .env (after docker-compose.yml), e.g.
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.mounts.yml:docker-compose.external-db.yml
+# and set in .env (secrets stay in .env / secret files, never in this file):
+#   OA_DB_PROVIDER=postgres|mysql|mssql  OA_DB_HOST=...  OA_DB_PORT=...  OA_DB_NAME=...  OA_DB_USER=...
+#   OA_DB_PASSWORD=...  OA_DB_TLS_MODE=disable|require|verify-ca|verify-full  (optional OA_DB_TLS_CA_PEM / OA_DB_SCHEMA)
+# The bundled "postgres" service is moved to a profile that is never enabled, so it is not started. Requires Docker
+# Compose 2.24+ (uses !reset). Schema creation still needs the administrator's explicit approval: see
+# docs/多数据库部署与迁移指南.md ("oa-admin db init" / Settings -> Database).
+services:
+  postgres:
+    profiles: ["bundled-db-disabled"]
+  api:
+    depends_on: !reset {}
+    environment:
+      OA_DATABASE_URL: !reset null
+      OA_DB_PROVIDER: ${OA_DB_PROVIDER:?set OA_DB_PROVIDER in .env}
+      OA_DB_HOST: ${OA_DB_HOST:?set OA_DB_HOST in .env}
+      OA_DB_PORT: ${OA_DB_PORT:-}
+      OA_DB_NAME: ${OA_DB_NAME:?set OA_DB_NAME in .env}
+      OA_DB_USER: ${OA_DB_USER:?set OA_DB_USER in .env}
+      OA_DB_PASSWORD: ${OA_DB_PASSWORD:?set OA_DB_PASSWORD in .env}
+      OA_DB_SCHEMA: ${OA_DB_SCHEMA:-}
+      OA_DB_TLS_MODE: ${OA_DB_TLS_MODE:-require}
+      OA_DB_TLS_CA_PEM: ${OA_DB_TLS_CA_PEM:-}
+      OA_DB_TLS_SERVER_NAME: ${OA_DB_TLS_SERVER_NAME:-}

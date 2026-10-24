@@ -74,11 +74,15 @@ type Deps struct {
 	Auth *auth.Service
 	// TrustedProxy (OA_TRUSTED_PROXY=1) makes X-Forwarded-For / X-Forwarded-Proto count for client address and Secure cookies.
 	TrustedProxy bool
+	// PublicURL (OA_PUBLIC_URL) is the externally reachable origin; the LLM login callback is built from it outside local mode.
+	PublicURL string
 	// CORSOrigins is the exact-origin allow-list for browser pages served from another origin (e.g. the Vite dev server).
 	// Empty means same-origin only: no CORS headers are sent. Validate with NormalizeOrigins.
 	CORSOrigins []string
 	// Diag carries process facts for the diagnostics routes (/v1/admin/system, the diagnostic bundle).
 	Diag DiagInfo
+	// DBAdmin enables the database administration routes (/v1/admin/database*).
+	DBAdmin DatabaseAdmin
 }
 
 type ctxKey struct{}
@@ -130,6 +134,9 @@ func newServer(d Deps) *Server {
 		s.adminUserRoutes()
 		s.diagRoutes()
 		s.faultRoutes()
+		if d.DBAdmin != nil {
+			s.databaseRoutes()
+		}
 	}
 	return s
 }

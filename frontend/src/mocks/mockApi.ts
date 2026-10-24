@@ -51,7 +51,7 @@ interface PresetSpec { id: string; name: string; description: string; note: stri
 const preset = (p: PresetSpec): LlmPreset => ({
   id: p.id, name: p.name, description: p.description, note: p.note, checked_at: '2026-10-22', base_url: p.base_url,
   models: p.models.map(([id, label]) => ({ id, label })), default_model: p.default_model ?? p.models[0]?.[0] ?? '',
-  needs_api_key: p.needs_api_key ?? true, vision_models: (p.vision ?? []).map(([id, label]) => ({ id, label })), docs_url: p.docs_url ?? '',
+  needs_api_key: p.needs_api_key ?? true, vision_models: (p.vision ?? []).map(([id, label]) => ({ id, label })), docs_url: p.docs_url ?? '', oauth_login: false,
 })
 const LLM_PRESETS: LlmPreset[] = [
   preset({ id: 'deepseek', name: 'DeepSeek', description: '性价比高，中文公文识别效果好', note: '推荐 deepseek-flash（支持工具调用与图片）；deepseek-v4-pro 不支持图片输入。', base_url: 'https://api.deepseek.com', docs_url: 'https://api-docs.deepseek.com',

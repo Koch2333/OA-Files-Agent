@@ -131,7 +131,7 @@ async function execute() {
     <div class="row wrap">
       <div class="field grow"><label for="e-d">所属部门</label><input id="e-d" v-model="form.department" class="input" /></div>
       <div class="field grow"><label for="e-t">文件类型</label><input id="e-t" v-model="form.document_type" class="input" /></div>
-      <div class="field grow"><label for="e-dt">日期（YYYY-MM-DD）</label><input id="e-dt" v-model="form.document_date" class="input" placeholder="2026-03-15" /></div>
+      <div class="field grow"><label for="e-dt">日期</label><input id="e-dt" v-model="form.document_date" type="date" class="input" min="1990-01-01" max="2100-12-31" /></div>
     </div>
     <div class="field"><label for="e-n">标准文件名</label><input id="e-n" v-model="form.suggested_name" class="input" /></div>
     <div class="field"><label for="e-p">目标路径（相对归档根目录）</label><input id="e-p" v-model="form.destination_path" class="input mono" :aria-invalid="!!formErr" /></div>

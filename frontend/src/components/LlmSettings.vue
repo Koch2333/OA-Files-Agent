@@ -10,6 +10,7 @@ import StateView from './StateView.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ModelCombobox from './ModelCombobox.vue'
 import Icon from './Icon.vue'
+import LlmLoginPanel from './LlmLoginPanel.vue'
 
 /** 一个组件同时实现“全局”与“个人”两种配置：区别只在接口与文案（scope），表单/测试/模型发现逻辑完全共用。 */
 export interface LlmFns {
@@ -226,6 +227,8 @@ async function save() {
             </div>
           </div>
 
+          <LlmLoginPanel :scope="scope" :preset="preset" :saved="saved" @connected="init()" @disconnected="init()" />
+
           <div class="adv">
             <button class="adv-toggle" type="button" :aria-expanded="advOpen" :aria-controls="pfx + '-adv'" @click="advOpen = !advOpen">
               <Icon :name="advOpen ? 'expand_more' : 'chevron_right'" sm />高级：视觉识别（可选，默认关闭）
@@ -299,7 +302,7 @@ async function save() {
 .checks { list-style: none; margin: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; background: var(--c-surface-3); border-radius: var(--shape-md); font-size: 13px; }
 .checks li { display: flex; align-items: center; gap: 8px; }
 .okc { color: var(--c-on-success-container, inherit); } .okc .icon { color: var(--c-success, #2e7d32); }
-.badc .icon { color: var(--md-sys-color-error); } .warnc .icon { color: #b26a00; }
+.badc .icon { color: var(--md-sys-color-error); } .warnc .icon { color: var(--c-warn); }
 .hint { font-size: 12px; }
 .err-text { font-size: 12px; color: var(--md-sys-color-error); }
 .note { font-size: 12px; }

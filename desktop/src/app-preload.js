@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('oaDesktop', {
   info: () => ipcRenderer.invoke('desktop:info'),
   openSettings: () => ipcRenderer.invoke('desktop:open-settings'),
   openFolder: (what) => ipcRenderer.invoke('desktop:open-folder', String(what)),
+  /** Opens an allow-listed https provider login page in the system browser (the main process validates it). */
+  openExternal: (url) => ipcRenderer.invoke('desktop:open-external', String(url)),
 })

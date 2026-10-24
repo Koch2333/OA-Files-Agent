@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"oa-agent/backend/internal/sqldb"
 
 	"oa-agent/backend/internal/imports"
 )
@@ -47,11 +47,11 @@ type ReplCounts struct {
 
 const connCols = `id::text, name, kind, settings, secrets_enc, base_path, enabled, use_for_import, replicate, auto_since, last_test, created_at, updated_at`
 
-func scanConn(r pgx.Row) (StorageConn, error) {
+func scanConn(r sqldb.Row) (StorageConn, error) {
 	var c StorageConn
 	var settings, lt []byte
 	err := r.Scan(&c.ID, &c.Name, &c.Kind, &settings, &c.SecretsEnc, &c.BasePath, &c.Enabled, &c.UseForImport, &c.Replicate, &c.AutoSince, &lt, &c.CreatedAt, &c.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return c, ErrNotFound
 	}
 	if err != nil {
@@ -70,8 +70,8 @@ func scanConn(r pgx.Row) (StorageConn, error) {
 	return c, nil
 }
 
-func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "SQLSTATE 23505")
+func (s *Store) isUniqueViolation(err error) bool {
+	return err != nil && s.Dialect().IsUniqueViolation(err)
 }
 
 func (s *Store) ListConns(ctx context.Context) ([]StorageConn, error) {
@@ -109,24 +109,28 @@ func (s *Store) CreateConn(ctx context.Context, c StorageConn) (StorageConn, err
 		n := time.Now().UTC()
 		since = &n
 	}
-	out, err := scanConn(s.Pool.QueryRow(ctx, `INSERT INTO storage_connections(id,name,kind,settings,secrets_enc,base_path,enabled,use_for_import,replicate,auto_since) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+connCols,
-		id, c.Name, c.Kind, st, c.SecretsEnc, c.BasePath, c.Enabled, c.UseForImport, c.Replicate, since))
-	if isUniqueViolation(err) {
-		return c, ErrConflict
+	if _, err = s.Pool.Exec(ctx, `INSERT INTO storage_connections(id,name,kind,settings,secrets_enc,base_path,enabled,use_for_import,replicate,auto_since) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		id, c.Name, c.Kind, sqldb.JSON(st), c.SecretsEnc, c.BasePath, c.Enabled, c.UseForImport, c.Replicate, since); err != nil {
+		if s.isUniqueViolation(err) {
+			return c, ErrConflict
+		}
+		return c, err
 	}
-	return out, err
+	return scanConn(s.Pool.QueryRow(ctx, `SELECT `+connCols+` FROM storage_connections WHERE id=$1`, id))
 }
 
 // UpdateConn replaces the mutable fields. auto_since is (re)set when replicate turns to auto.
 func (s *Store) UpdateConn(ctx context.Context, c StorageConn) (StorageConn, error) {
 	st, _ := json.Marshal(c.Settings)
-	out, err := scanConn(s.Pool.QueryRow(ctx, `UPDATE storage_connections SET name=$2, settings=$3, secrets_enc=$4, base_path=$5, enabled=$6, use_for_import=$7,
-		auto_since = CASE WHEN $8='auto' AND replicate<>'auto' THEN now() WHEN $8<>'auto' THEN NULL ELSE auto_since END, replicate=$8, updated_at=now() WHERE id=$1 RETURNING `+connCols,
-		c.ID, c.Name, st, c.SecretsEnc, c.BasePath, c.Enabled, c.UseForImport, c.Replicate))
-	if isUniqueViolation(err) {
-		return c, ErrConflict
+	if _, err := s.Pool.Exec(ctx, `UPDATE storage_connections SET name=$2, settings=$3, secrets_enc=$4, base_path=$5, enabled=$6, use_for_import=$7,
+		auto_since = CASE WHEN $8='auto' AND replicate<>'auto' THEN now() WHEN $8<>'auto' THEN NULL ELSE auto_since END, replicate=$8, updated_at=now() WHERE id=$1`,
+		c.ID, c.Name, sqldb.JSON(st), c.SecretsEnc, c.BasePath, c.Enabled, c.UseForImport, c.Replicate); err != nil {
+		if s.isUniqueViolation(err) {
+			return c, ErrConflict
+		}
+		return c, err
 	}
-	return out, err
+	return scanConn(s.Pool.QueryRow(ctx, `SELECT `+connCols+` FROM storage_connections WHERE id=$1`, c.ID))
 }
 
 func (s *Store) DeleteConn(ctx context.Context, id string) error {
@@ -145,12 +149,12 @@ func (s *Store) DeleteConn(ctx context.Context, id string) error {
 
 func (s *Store) SetLastTest(ctx context.Context, id string, t LastTest) error {
 	b, _ := json.Marshal(t)
-	_, err := s.Pool.Exec(ctx, `UPDATE storage_connections SET last_test=$2 WHERE id=$1`, id, b)
+	_, err := s.Pool.Exec(ctx, `UPDATE storage_connections SET last_test=$2 WHERE id=$1`, id, sqldb.JSON(b))
 	return err
 }
 
 func (s *Store) ConnCounts(ctx context.Context) (map[string]ReplCounts, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT connection_id::text, status, count(*) FROM replications GROUP BY 1,2`)
+	rows, err := s.Pool.Query(ctx, `SELECT connection_id::text, status, count(*) FROM replications GROUP BY connection_id, status`)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +202,7 @@ type Replication struct {
 }
 
 func likePrefix(p string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p) + "%"
+	return sqldb.EscapeLike(p) + "%"
 }
 
 // EnqueueMissing queues every archived ledger entry (optionally below a path prefix and archived since a time)
@@ -207,7 +211,8 @@ func (s *Store) EnqueueMissing(ctx context.Context, connID, prefix string, since
 	t, err := s.Pool.Exec(ctx, `INSERT INTO replications(id, connection_id, ledger_id, local_path, remote_path, size_bytes, sha256)
 		SELECT gen_random_uuid(), $1::uuid, l.id, l.archive_path, l.archive_path, COALESCE(f.size_bytes,0), l.sha256
 		FROM ledger_entries l JOIN file_records f ON f.id = l.file_id
-		WHERE l.status='archived' AND ($2='' OR l.archive_path LIKE $3) AND ($4::timestamptz IS NULL OR l.executed_at >= $4)
+		WHERE l.status='archived' AND ($2='' OR l.archive_path LIKE $3 ESCAPE '!') AND ($4::timestamptz IS NULL OR l.executed_at >= $4)
+		AND NOT EXISTS (SELECT 1 FROM replications x WHERE x.connection_id=$1::uuid AND x.ledger_id=l.id)
 		ON CONFLICT (connection_id, ledger_id) DO NOTHING`, connID, prefix, likePrefix(prefix), since)
 	return t.RowsAffected(), err
 }
@@ -230,13 +235,20 @@ func (s *Store) AutoConnections(ctx context.Context) ([]StorageConn, error) {
 // ClaimReplication takes the next due queued item of an enabled connection and marks it running.
 func (s *Store) ClaimReplication(ctx context.Context) (Replication, error) {
 	var r Replication
-	err := s.Pool.QueryRow(ctx, `UPDATE replications SET status='running', attempts=attempts+1, updated_at=now()
-		WHERE id = (SELECT r.id FROM replications r JOIN storage_connections c ON c.id=r.connection_id
-			WHERE r.status='queued' AND r.next_attempt_at <= now() AND c.enabled AND c.replicate<>'off'
-			ORDER BY r.next_attempt_at FOR UPDATE OF r SKIP LOCKED LIMIT 1)
-		RETURNING id::text, connection_id::text, ledger_id::text, local_path, remote_path, size_bytes, sha256, status, attempts, error, updated_at`).
-		Scan(&r.ID, &r.ConnectionID, &r.LedgerID, &r.LocalPath, &r.RemotePath, &r.SizeBytes, &r.SHA256, &r.Status, &r.Attempts, &r.Error, &r.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.Pool.InTx(ctx, func(tx sqldb.Tx) error {
+		var id string
+		if err := tx.QueryRow(ctx, `SELECT r.id FROM replications r JOIN storage_connections c ON c.id=r.connection_id
+			WHERE r.status='queued' AND r.next_attempt_at <= now() AND c.enabled=true AND c.replicate<>'off'
+			ORDER BY r.next_attempt_at LIMIT 1 FOR UPDATE OF r SKIP LOCKED`).Scan(&id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE replications SET status='running', attempts=attempts+1, updated_at=now() WHERE id=$1`, id); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT id::text, connection_id::text, ledger_id::text, local_path, remote_path, size_bytes, sha256, status, attempts, error, updated_at FROM replications WHERE id=$1`, id).
+			Scan(&r.ID, &r.ConnectionID, &r.LedgerID, &r.LocalPath, &r.RemotePath, &r.SizeBytes, &r.SHA256, &r.Status, &r.Attempts, &r.Error, &r.UpdatedAt)
+	})
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return r, ErrNotFound
 	}
 	return r, err
@@ -261,7 +273,7 @@ func (s *Store) RecoverReplications(ctx context.Context) (int64, error) {
 // moved or removed in the file manager since it was queued).
 func (s *Store) LedgerForReplication(ctx context.Context, ledgerID string) (path, status string, err error) {
 	err = s.Pool.QueryRow(ctx, `SELECT archive_path, status FROM ledger_entries WHERE id=$1`, ledgerID).Scan(&path, &status)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
 	return
@@ -315,7 +327,7 @@ func (s *Store) GetReplication(ctx context.Context, id string) (Replication, err
 	err := s.Pool.QueryRow(ctx, `SELECT r.id::text, r.connection_id::text, c.name, r.local_path, r.remote_path, r.status, r.attempts, r.error, r.size_bytes, r.updated_at
 		FROM replications r JOIN storage_connections c ON c.id=r.connection_id WHERE r.id=$1`, id).
 		Scan(&r.ID, &r.ConnectionID, &r.ConnectionName, &r.LocalPath, &r.RemotePath, &r.Status, &r.Attempts, &r.Error, &r.SizeBytes, &r.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sqldb.ErrNoRows) {
 		return r, ErrNotFound
 	}
 	return r, err

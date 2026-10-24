@@ -63,6 +63,9 @@ var routeAccess = normalizeAccess(map[string]access{
 	"GET /v1/admin/system": adm, "GET /v1/admin/error-reports": adm, "GET /v1/admin/error-reports/{id}": adm,
 	"PATCH /v1/admin/error-reports/{id}": adm, "DELETE /v1/admin/error-reports/{id}": adm, "GET /v1/admin/diagnostics/bundle": adm,
 	"POST /v1/client-errors": viw,
+	// database administration (admin only; changing settings and initialising also need a fresh sign-in)
+	"GET /v1/admin/database": adm, "PUT /v1/admin/database": adm, "DELETE /v1/admin/database/pending": adm,
+	"POST /v1/admin/database/test": adm, "POST /v1/admin/database/validate-permissions": adm, "POST /v1/admin/database/initialize": adm,
 	// archive workflow: reading = viewer, changing = operator
 	"POST /v1/imports": opr, "GET /v1/tasks": viw, "GET /v1/tasks/{id}": viw, "GET /v1/tasks/{id}/events": viw,
 	"POST /v1/tasks/{id}/cancel": opr, "POST /v1/tasks/{id}/retry": opr,
@@ -86,6 +89,8 @@ var routeAccess = normalizeAccess(map[string]access{
 	"GET /v1/llm/status":   viw,
 	"GET /v1/llm/personal": opr, "PUT /v1/llm/personal": opr, "DELETE /v1/llm/personal": opr,
 	"POST /v1/llm/personal/test": opr, "POST /v1/llm/personal/models": opr,
+	// "sign in with the platform": start/status/disconnect = operator and up (scope=global additionally needs admin, checked in the handler); the callback is public (SameSite=Strict cookie is absent on the redirect back) and only records a code for a single-use state
+	"POST /v1/llm/oauth/start": opr, "GET /v1/llm/oauth/status": opr, "POST /v1/llm/oauth/disconnect": opr, "GET /v1/llm/oauth/callback": pub,
 	"GET /v1/admin/ai-policy": adm, "PATCH /v1/admin/ai-policy": adm,
 	// storage connections: admin; listing and browsing are open to operators because remote import needs them
 	"GET /v1/storage/kinds": adm, "GET /v1/storage/connections": opr, "POST /v1/storage/connections": adm, "POST /v1/storage/connections/test": adm,

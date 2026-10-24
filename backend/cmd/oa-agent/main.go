@@ -20,6 +20,8 @@ import (
 	"oa-agent/backend/internal/buildinfo"
 	_ "oa-agent/backend/internal/cloud/all"
 	"oa-agent/backend/internal/db"
+	"oa-agent/backend/internal/dbadmin"
+	"oa-agent/backend/internal/dbconfig"
 	"oa-agent/backend/internal/diag"
 	"oa-agent/backend/internal/fileops"
 	"oa-agent/backend/internal/fsman"
@@ -30,6 +32,7 @@ import (
 	"oa-agent/backend/internal/pipeline"
 	"oa-agent/backend/internal/preview"
 	"oa-agent/backend/internal/secrets"
+	"oa-agent/backend/internal/sqldb"
 	"oa-agent/backend/internal/storage"
 	"oa-agent/backend/internal/store"
 	"oa-agent/backend/internal/supervisor"
@@ -83,15 +86,6 @@ func main() {
 		os.Setenv("OA_FRONTEND_DIR", env("OA_FRONTEND_DIR", layout.Web))
 		os.Setenv("OA_MIGRATIONS_DIR", env("OA_MIGRATIONS_DIR", layout.Migrations))
 		os.Setenv("OA_AUTO_MIGRATE", "1")
-		if os.Getenv("OA_DATABASE_URL") == "" {
-			log.Print("starting embedded PostgreSQL …")
-			pg, err := supervisor.StartPostgres(ctx, layout)
-			if err != nil {
-				diag.Fatalf("embedded PostgreSQL: %v", err)
-			}
-			defer pg.Stop()
-			os.Setenv("OA_DATABASE_URL", pg.URL)
-		}
 		if os.Getenv("OA_WORKER_URL") == "" {
 			log.Print("starting document worker …")
 			w, err := supervisor.StartWorker(ctx, layout)
@@ -105,7 +99,6 @@ func main() {
 	}
 
 	addr := env("OA_LISTEN_ADDR", "127.0.0.1:8080")
-	databaseURL := os.Getenv("OA_DATABASE_URL")
 	workerURL := env("OA_WORKER_URL", "http://127.0.0.1:8090")
 	workerToken := os.Getenv("OA_WORKER_TOKEN")
 	spool := abs(env("OA_SPOOL_ROOT", "./data/spool"))
@@ -118,7 +111,39 @@ func main() {
 	if err != nil {
 		diag.Fatal(err)
 	}
-	deps := api.Deps{Checks: []api.DependencyCheck{func(ctx context.Context) string { return db.Check(ctx, databaseURL) }, workerClient.Check}}
+	// Which database? Environment > settings file (admin API) > embedded PostgreSQL (standalone only).
+	dataDir := filepath.Dir(spool)
+	box, err := secrets.Open(os.Getenv("OA_SECRET_KEY"), filepath.Join(dataDir, "secret.key"))
+	if err != nil {
+		diag.Fatalf("secret key: %v", err)
+	}
+	migrationsDir := env("OA_MIGRATIONS_DIR", "../migrations")
+	resolved, err := dbconfig.Resolve(os.Getenv, dataDir, box)
+	if err != nil {
+		diag.Fatalf("database settings: %v", err)
+	}
+	if resolved.Source != dbconfig.SourceEnv && dbadmin.Promote(ctx, dataDir, migrationsDir, box, log.Printf) {
+		if resolved, err = dbconfig.Resolve(os.Getenv, dataDir, box); err != nil {
+			diag.Fatalf("database settings: %v", err)
+		}
+	}
+	if !resolved.Configured() && standalone {
+		// Only the standalone install falls back to its embedded PostgreSQL; with an external database configured
+		// no embedded database is started at all.
+		log.Print("starting embedded PostgreSQL …")
+		pg, err := supervisor.StartPostgres(ctx, layout)
+		if err != nil {
+			diag.Fatalf("embedded PostgreSQL: %v", err)
+		}
+		defer pg.Stop()
+		ec, err := sqldb.FromURL(pg.URL)
+		if err != nil {
+			diag.Fatalf("embedded PostgreSQL: %v", err)
+		}
+		resolved = dbconfig.Resolved{Config: ec.Normalize(), Source: dbconfig.SourceEmbedded}
+	}
+	var dbPool *sqldb.DB
+	deps := api.Deps{Checks: []api.DependencyCheck{func(ctx context.Context) string { return db.Check(ctx, dbPool) }, workerClient.Check}}
 
 	// Cross-origin browser access (e.g. the Vite dev server) is off unless listed; debug builds allow the Vite origins.
 	corsList := strings.Split(os.Getenv("OA_CORS_ORIGINS"), ",")
@@ -129,38 +154,43 @@ func main() {
 		diag.Fatalf("OA_CORS_ORIGINS: %v", err)
 	}
 
-	if databaseURL != "" {
-		if os.Getenv("OA_AUTO_MIGRATE") == "1" {
-			conn, err := db.Connect(ctx, databaseURL)
-			if err != nil {
-				diag.Fatal(err)
-			}
-			if err := db.MigrateDir(ctx, conn, env("OA_MIGRATIONS_DIR", "../migrations")); err != nil {
-				diag.Fatal(err)
-			}
-			conn.Close(context.Background())
-			log.Print("database migrations applied")
-		}
+	if resolved.Configured() {
 		if workerToken == "" {
 			diag.Fatal("OA_WORKER_TOKEN is required when a database is configured")
 		}
-		st, err := store.Open(ctx, databaseURL)
+		st, err := store.OpenConfig(ctx, resolved.Config)
 		if err != nil {
-			diag.Fatal(err)
+			diag.Fatalf("database (%s): %v", resolved.Config.Provider.Label(), err)
 		}
 		defer st.Close()
+		dbPool = st.Pool
+		log.Printf("database: %s (%s), source=%s", resolved.Config.Provider.Label(), sqldb.RedactDSN(resolved.Config.Address()), resolved.Source)
+		rep := dbadmin.Inspect(ctx, st.Pool)
+		if os.Getenv("OA_AUTO_MIGRATE") == "1" || (standalone && resolved.Source == dbconfig.SourceEmbedded) {
+			// OA_AUTO_MIGRATE=1 is the deployment-level approval to initialise / upgrade the schema. Isolation and the
+			// server requirements are enforced first: nothing is created in a shared schema or on an unsupported server.
+			if rep.Schema.State != "ok" && !rep.OK {
+				diag.Fatalf("database is not usable for OA Agent: %s", (&dbadmin.ValidationError{Report: rep}).Error())
+			}
+			if err := db.Apply(ctx, st.Pool, db.Options{Dir: migrationsDir, Logf: log.Printf}); err != nil {
+				diag.Fatalf("database migration failed (nothing was partially applied on PostgreSQL/SQL Server; MySQL resumes at the failed step): %v", err)
+			}
+			log.Print("database migrations applied")
+			rep = dbadmin.Inspect(ctx, st.Pool)
+		}
+		for _, c := range rep.Checks {
+			if c.Status == dbadmin.Warn || c.Status == dbadmin.Fail {
+				log.Printf("database check [%s] %s: %s", c.Status, c.Title, c.Detail)
+			}
+		}
 		registerEnvSecrets()
 		diag.Attach(st.Pool) // error reports persist from here on (earlier ones were queued in memory)
-		if db.Check(ctx, databaseURL) != "ok" {
-			diag.Fatal("database schema is not up to date: run `go run ./cmd/migrate` (or set OA_AUTO_MIGRATE=1)")
+		if db.Check(ctx, st.Pool) != "ok" {
+			diag.Fatal("database schema is not initialised or not up to date: approve the initialisation in Settings > Database, run `migrate` (cmd/migrate), or set OA_AUTO_MIGRATE=1")
 		}
 		ext, err := harness.NewWorkerExtractor(workerURL, workerToken)
 		if err != nil {
 			diag.Fatal(err)
-		}
-		box, err := secrets.Open(os.Getenv("OA_SECRET_KEY"), filepath.Join(filepath.Dir(spool), "secret.key"))
-		if err != nil {
-			diag.Fatalf("secret key: %v", err)
 		}
 		if p := os.Getenv("OA_LLM_PRESETS_FILE"); p != "" {
 			if err := llm.LoadOverride(p); err != nil {
@@ -178,6 +208,12 @@ func main() {
 		if err != nil {
 			diag.Fatalf("recognition engine settings: %v", err)
 		}
+		// Test/mirror hook: point the OpenRouter login at another endpoint pair (https, or loopback for a fake provider).
+		if a, x := os.Getenv("OA_LLM_OAUTH_OPENROUTER_AUTHORIZE_URL"), os.Getenv("OA_LLM_OAUTH_OPENROUTER_EXCHANGE_URL"); a != "" || x != "" {
+			if err := llmMgr.SetOAuthEndpoints("openrouter", a, x); err != nil {
+				log.Printf("OA_LLM_OAUTH_OPENROUTER_* ignored: %v", err)
+			}
+		}
 		agent := harness.NewAgent(llmMgr.Provider(), ext, harness.Options{
 			CheckDuplicates: func(ctx context.Context, f harness.FileInput) ([]harness.DuplicateRef, error) { return nil, nil },
 			// Page images are sent to a vision model only while the user has opted in (Settings → 视觉识别).
@@ -194,11 +230,18 @@ func main() {
 		}
 		diag.Go("pipeline.run", func() { svc.Run(ctx) })
 		deps.Store = st
+		deps.DBAdmin = &dbadmin.Service{DataDir: dataDir, MigrationsDir: migrationsDir, Box: box, Resolved: resolved, Store: st,
+			Audit: func(ctx context.Context, actor, action, target, summary string) {
+				st.Audit(ctx, actor, action, target, summary)
+			}}
 		deps.Backend = svc
 		if dir := os.Getenv("OA_FRONTEND_DIR"); dir != "" {
 			deps.StaticDir = abs(dir)
 		}
 		deps.LLM = llmMgr
+		llmMgr.Audit = func(ctx context.Context, actor, action, target, summary string) {
+			st.Audit(ctx, actor, action, target, summary)
+		}
 		fsm := &fsman.Manager{Root: archiveRoot}
 		if os.Getenv("OA_STORAGE") != "off" {
 			sto := storage.New(storage.Config{Store: st, Box: box, Imports: &imports.Service{Store: st, Root: spool}, Archive: fsm})
@@ -210,6 +253,7 @@ func main() {
 		authSvc.Logf = log.Printf
 		deps.Auth = authSvc
 		deps.TrustedProxy = os.Getenv("OA_TRUSTED_PROXY") == "1"
+		deps.PublicURL = authSvc.PublicURL
 		announceSetup(ctx, authSvc, addr)
 		diag.Go("api.purge", func() {
 			diag.Loop(ctx, "api.purge", func(ctx context.Context) { purgeAuth(ctx, st, authSvc) })
@@ -228,7 +272,7 @@ func main() {
 		if dir := os.Getenv("OA_FRONTEND_DIR"); dir != "" {
 			deps.StaticDir = abs(dir)
 		}
-		log.Print("OA_DATABASE_URL not set: only health/docs endpoints are available")
+		log.Print("no database configured (OA_DB_PROVIDER / OA_DATABASE_URL): only health/docs endpoints are available")
 	}
 
 	deps.Diag = diagInfo(started, standalone, archiveRoot, addr, spool, workerURL)

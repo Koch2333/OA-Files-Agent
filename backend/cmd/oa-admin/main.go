@@ -17,6 +17,7 @@ import (
 
 	"oa-agent/backend/internal/auth"
 	"oa-agent/backend/internal/buildinfo"
+	"oa-agent/backend/internal/dbconfig"
 	"oa-agent/backend/internal/secrets"
 	"oa-agent/backend/internal/store"
 )
@@ -34,7 +35,7 @@ func usage() {
   disable-user <user>    disable the account (the last active administrator cannot be disabled)
   enable-user <user>     enable the account again
 
-environment: OA_DATABASE_URL (required), OA_SECRET_KEY, OA_SPOOL_ROOT (locates data/secret.key like the server)`)
+environment: OA_DB_PROVIDER + OA_DB_* or OA_DATABASE_URL (required unless OA_SPOOL_ROOT points at a data directory with database.json), OA_SECRET_KEY, OA_SPOOL_ROOT (locates data/secret.key like the server)`)
 	os.Exit(2)
 }
 
@@ -42,20 +43,30 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
-	url := os.Getenv("OA_DATABASE_URL")
-	if url == "" {
-		fmt.Fprintln(os.Stderr, "OA_DATABASE_URL is required")
+	box := openBox()
+	spool := os.Getenv("OA_SPOOL_ROOT")
+	if spool == "" {
+		spool = "./data/spool"
+	}
+	dataDir, _ := filepath.Abs(filepath.Dir(spool))
+	res, err := dbconfig.Resolve(os.Getenv, dataDir, box)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "database settings:", err)
+		os.Exit(1)
+	}
+	if !res.Configured() {
+		fmt.Fprintln(os.Stderr, "no database configured: set OA_DB_PROVIDER (+ OA_DB_*) or OA_DATABASE_URL, or point OA_SPOOL_ROOT at the data directory that holds database.json")
 		os.Exit(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	st, err := store.Open(ctx, url)
+	st, err := store.OpenConfig(ctx, res.Config)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	defer st.Close()
-	svc := auth.New(st, openBox())
+	svc := auth.New(st, box)
 	if err := run(ctx, svc, os.Args[1], os.Args[2:]); err != nil {
 		var ae *auth.Error
 		if errors.As(err, &ae) {

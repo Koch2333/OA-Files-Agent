@@ -379,7 +379,7 @@ func (s *Server) bundleConfig(ctx context.Context) map[string]any {
 	if s.d.Store != nil && s.d.Store.Pool != nil {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		if rows, err := s.d.Store.Pool.Query(cctx, `SELECT kind, count(*), count(*) FILTER (WHERE enabled), count(*) FILTER (WHERE replicate <> 'off') FROM storage_connections GROUP BY kind ORDER BY kind`); err == nil {
+		if rows, err := s.d.Store.Pool.Query(cctx, `SELECT kind, count(*), SUM(CASE WHEN enabled=true THEN 1 ELSE 0 END), SUM(CASE WHEN replicate <> 'off' THEN 1 ELSE 0 END) FROM storage_connections GROUP BY kind ORDER BY kind`); err == nil {
 			var list []map[string]any
 			for rows.Next() {
 				var kind string

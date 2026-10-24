@@ -2,12 +2,14 @@ package diag
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"oa-agent/backend/internal/sqldb"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"oa-agent/backend/internal/dbtest"
+	"oa-agent/backend/internal/imports"
 )
 
 func pgReporter(t *testing.T) (*Reporter, *dbPool) {
@@ -18,7 +20,7 @@ func pgReporter(t *testing.T) (*Reporter, *dbPool) {
 	return r, &dbPool{st.Pool}
 }
 
-type dbPool struct{ Pool *pgxpool.Pool }
+type dbPool struct{ Pool *sqldb.DB }
 
 func rep(t *testing.T, r *Reporter, e Entry) string {
 	t.Helper()
@@ -122,7 +124,7 @@ func TestRetention(t *testing.T) {
 	fresh := rep(t, r, Entry{Source: "api", Code: "FRESH", Message: "fresh resolved"})
 	SetResolved(ctx, p.Pool, oldRes, true, "a")
 	SetResolved(ctx, p.Pool, fresh, true, "a")
-	p.Pool.Exec(ctx, `UPDATE error_reports SET last_seen = now() - interval '100 days' WHERE id::text IN ($1,$2)`, oldRes, oldOpen)
+	p.Pool.Exec(ctx, `UPDATE error_reports SET last_seen = $3 WHERE id IN ($1,$2)`, oldRes, oldOpen, time.Now().UTC().Add(-100*24*time.Hour))
 	n, err := Retention(ctx, p.Pool, time.Now())
 	if err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
@@ -138,7 +140,7 @@ func TestRetention(t *testing.T) {
 	}
 	// occurrence trimming
 	for i := 0; i < 30; i++ {
-		p.Pool.Exec(ctx, `INSERT INTO error_occurrences(report_id, at) VALUES ($1, now() - make_interval(mins => $2::int))`, fresh, i)
+		p.Pool.Exec(ctx, `INSERT INTO error_occurrences(report_id, at) VALUES ($1, $2)`, fresh, time.Now().UTC().Add(-time.Duration(i)*time.Minute))
 	}
 	Retention(ctx, p.Pool, time.Now())
 	d, _ := Get(ctx, p.Pool, fresh)
@@ -148,8 +150,18 @@ func TestRetention(t *testing.T) {
 		t.Fatalf("occurrences %d", raw)
 	}
 	// group cap: shrink by inserting rows directly (cap is 5000)
-	p.Pool.Exec(ctx, `INSERT INTO error_reports(id, fingerprint, source, severity, message, first_seen, last_seen, resolved)
-	  SELECT gen_random_uuid(), 'bulk' || g, 'api', 'error', 'bulk', now(), now() - make_interval(secs => g), g % 2 = 0 FROM generate_series(1, 5100) g`)
+	if err := p.Pool.InTx(ctx, func(tx sqldb.Tx) error {
+		for g := 1; g <= 5100; g++ {
+			bid, _ := imports.NewID()
+			if _, err := tx.Exec(ctx, `INSERT INTO error_reports(id, fingerprint, source, severity, message, first_seen, last_seen, resolved) VALUES ($1,$2,'api','error','bulk',$3,$4,$5)`,
+				bid, "bulk"+strconv.Itoa(g), time.Now().UTC(), time.Now().UTC().Add(-time.Duration(g)*time.Second), g%2 == 0); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	n, err = Retention(ctx, p.Pool, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +172,7 @@ func TestRetention(t *testing.T) {
 		t.Fatalf("total=%d deleted=%d", total, n)
 	}
 	var openLeft int
-	p.Pool.QueryRow(ctx, `SELECT count(*) FROM error_reports WHERE NOT resolved`).Scan(&openLeft)
+	p.Pool.QueryRow(ctx, `SELECT count(*) FROM error_reports WHERE resolved=false`).Scan(&openLeft)
 	if openLeft < 2500 {
 		t.Fatalf("resolved groups go first, open=%d", openLeft)
 	}

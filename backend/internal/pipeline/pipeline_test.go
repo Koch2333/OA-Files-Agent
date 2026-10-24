@@ -5,19 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"oa-agent/backend/internal/api"
-	"oa-agent/backend/internal/db"
+	"oa-agent/backend/internal/dbtest/dbiso"
 	"oa-agent/backend/internal/fileops"
 	"oa-agent/backend/internal/fsman"
 	"oa-agent/backend/internal/harness"
@@ -27,36 +22,7 @@ import (
 
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
-	url := os.Getenv("OA_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("OA_TEST_DATABASE_URL not set; real PostgreSQL integration not run")
-	}
-	ctx := context.Background()
-	admin, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := "oa_pipe_" + fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Int63())
-	q := pgx.Identifier{schema}.Sanitize()
-	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+q); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		admin.Exec(context.Background(), "DROP SCHEMA "+q+" CASCADE")
-		admin.Close(context.Background())
-	})
-	_, _ = admin.Exec(ctx, "SET search_path TO "+q)
-	if err = db.MigrateDir(ctx, admin, filepath.Join("..", "..", "..", "migrations")); err != nil {
-		t.Fatal(err)
-	}
-	cfg, _ := pgxpool.ParseConfig(url)
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return &store.Store{Pool: pool}
+	return &store.Store{Pool: dbiso.NewDB(t)}
 }
 
 type fakeAnalyzer struct {

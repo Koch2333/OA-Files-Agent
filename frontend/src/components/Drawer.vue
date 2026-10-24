@@ -12,15 +12,16 @@ onBeforeUnmount(() => prev?.focus?.())
   <Teleport to="body">
     <div class="scrim" @mousedown.self="emit('close')">
       <aside ref="el" class="drawer" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1" @keydown.esc="emit('close')">
-        <div class="row hd"><h2 class="t-title grow">{{ title }}</h2><button class="btn icon-only" aria-label="关闭" @click="emit('close')"><Icon name="close" /></button></div>
+        <div class="row hd"><h2 class="hl grow">{{ title }}</h2><button class="btn icon-only" aria-label="关闭" @click="emit('close')"><Icon name="close" /></button></div>
         <div class="bd"><slot /></div>
       </aside>
     </div>
   </Teleport>
 </template>
 <style scoped>
-.scrim { position: fixed; inset: 0; background: rgb(0 0 0 / .32); z-index: 90; display: flex; justify-content: flex-end; animation: fade var(--dur-m); }
-.drawer { width: min(480px, 100vw); height: 100%; background: var(--c-surface-2); border-radius: var(--shape-xl) 0 0 var(--shape-xl); box-shadow: var(--elev-3); display: flex; flex-direction: column; outline: 0; animation: slide var(--dur-m) var(--ease); }
+.scrim { position: fixed; inset: 0; background: rgb(0 0 0 / .32); z-index: 90; display: flex; justify-content: flex-end; animation: fade var(--dur-m) var(--ease); }
+.drawer { width: min(480px, 100vw); height: 100%; background: var(--md-sys-color-surface-container-low); border-radius: var(--shape-xl) 0 0 var(--shape-xl); box-shadow: var(--elev-3); display: flex; flex-direction: column; outline: 0; animation: slide var(--dur-m) var(--ease-decel); }
+.hl { font: var(--md-sys-typescale-title-large); }
 .hd { padding: 16px 16px 8px 24px; } .bd { padding: 8px 24px 24px; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 16px; }
 @keyframes fade { from { opacity: 0 } } @keyframes slide { from { transform: translateX(40px); opacity: 0 } }
 </style>
