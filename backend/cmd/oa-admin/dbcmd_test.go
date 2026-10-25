@@ -106,7 +106,14 @@ func TestDBCheckAndInitAgainstARealServer(t *testing.T) {
 	if rc != 0 || !strings.Contains(out, "CHECK\tpass\tconnect") || !strings.Contains(out, "INFO\tschema\tempty") || !strings.Contains(out, "RESULT\tok") {
 		t.Fatalf("db-check on an empty target: rc=%d\n%s", rc, out)
 	}
-	if strings.Contains(out, cfg.Password) && cfg.Password != "" {
+	// a CI password may equal the user or database name ("postgres"), which the report prints legitimately
+	scrubbed := out
+	for _, public := range []string{cfg.User, cfg.Name, cfg.Host, cfg.Schema, string(cfg.Provider)} {
+		if public != "" {
+			scrubbed = strings.ReplaceAll(scrubbed, public, "")
+		}
+	}
+	if cfg.Password != "" && strings.Contains(scrubbed, cfg.Password) {
 		t.Fatal("password leaked")
 	}
 	// preview changes nothing and prints a fingerprint
