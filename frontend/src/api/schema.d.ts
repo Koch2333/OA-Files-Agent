@@ -2912,7 +2912,7 @@ export interface components {
             wizard_finished: boolean;
             /** @description 后端构建版本 */
             server_version: string;
-            /** @description 后端实现的契约代数（Go 常量 api.APILevel，当前 3）；前端依赖新接口/字段时必须同时递增前后端的常量，不一致时前端显示版本不匹配横幅 */
+            /** @description 后端实现的契约代数（Go 常量 api.APILevel，当前值见 backend/internal/api/setup.go）；前端依赖新接口/字段时必须同时递增前后端的常量，不一致时前端显示版本不匹配横幅 */
             api_level: number;
             /**
              * @description 已初始化时返回
