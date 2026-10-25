@@ -1,0 +1,20 @@
+/* Brand colours follow the app's Material 3 seed (#6750A4, frontend/src/styles/base.css). */
+:root {
+  --vp-c-brand-1: #6750a4;
+  --vp-c-brand-2: #7a63b8;
+  --vp-c-brand-3: #6750a4;
+  --vp-c-brand-soft: rgba(103, 80, 164, 0.14);
+}
+.dark {
+  --vp-c-brand-1: #d0bcff;
+  --vp-c-brand-2: #b69df8;
+  --vp-c-brand-3: #6750a4;
+  --vp-c-brand-soft: rgba(208, 188, 255, 0.16);
+}
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #6750a4 30%, #9a82db);
+}
+.dark {
+  --vp-home-hero-name-background: linear-gradient(120deg, #d0bcff 30%, #9a82db);
+}

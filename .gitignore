@@ -16,3 +16,8 @@ oa-agent.env
 
 # Authentication screenshots may contain setup tokens, MFA seeds or recovery codes.
 frontend/e2e/screenshots/auth-*.png
+
+# Documentation site (VitePress, source root docs/)
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

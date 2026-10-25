@@ -2881,7 +2881,7 @@ components:
         initialized: {type: boolean}
         wizard_finished: {type: boolean, description: 'false 直到向导完成（POST /v1/setup/finish）；local 模式与升级前已初始化的安装为 true。false 且 initialized 时服务端闸门拒绝大部分接口（409 WIZARD_REQUIRED）'}
         server_version: {type: string, description: 后端构建版本}
-        api_level: {type: integer, description: '后端实现的契约代数（Go 常量 api.APILevel，当前 3）；前端依赖新接口/字段时必须同时递增前后端的常量，不一致时前端显示版本不匹配横幅'}
+        api_level: {type: integer, description: '后端实现的契约代数（Go 常量 api.APILevel，当前值见 backend/internal/api/setup.go）；前端依赖新接口/字段时必须同时递增前后端的常量，不一致时前端显示版本不匹配横幅'}
         mode: {type: string, enum: [enterprise, local], description: 已初始化时返回}
         needs_token: {type: boolean, description: 非回环请求需要初始化令牌}
         loopback: {type: boolean, description: 本次请求是否来自本机回环地址（local 模式的前提）}
