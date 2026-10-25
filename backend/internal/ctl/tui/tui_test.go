@@ -93,6 +93,10 @@ func drive(m *Model, msgs ...tea.Msg) *Model {
 	return m
 }
 
+// cmdWait bounds how long a command may take before it counts as a tick or a blocked stream and is skipped;
+// tests that run real work on a slow machine raise it.
+var cmdWait = 300 * time.Millisecond
+
 func runCmd(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
 		return nil
@@ -114,7 +118,7 @@ func runCmd(cmd tea.Cmd) []tea.Msg {
 			return nil
 		}
 		return []tea.Msg{msg}
-	case <-time.After(300 * time.Millisecond): // a tick or a blocked stream: skip
+	case <-time.After(cmdWait): // a tick or a blocked stream: skip
 		return nil
 	}
 }
@@ -413,6 +417,8 @@ func TestMountsRwToggleAndMissingExtraDir(t *testing.T) {
 }
 
 func TestMountsApplyFlowSuccess(t *testing.T) {
+	cmdWait = 5 * time.Second
+	t.Cleanup(func() { cmdWait = 300 * time.Millisecond })
 	e := newEnv(t)
 	m, s := openMounts(e)
 	fillAdd(m, "nas1", "/mnt/nas1")
@@ -438,6 +444,8 @@ func TestMountsApplyFlowSuccess(t *testing.T) {
 }
 
 func TestMountsApplyFailureRollsBack(t *testing.T) {
+	cmdWait = 5 * time.Second // the rollback re-runs compose; a loaded CI runner needs more than 300ms
+	t.Cleanup(func() { cmdWait = 300 * time.Millisecond })
 	e := newEnv(t)
 	before, _ := os.ReadFile(filepath.Join(e.dir, "mounts.json"))
 	boom := &compose.ExitError{Result: compose.Result{ExitCode: 1, Stderr: "bind source path does not exist"}}
