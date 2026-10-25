@@ -231,8 +231,8 @@ func (s *Server) stImportRemote(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &in) {
 		return
 	}
-	if !isUUID(in.ConnectionID) || len(in.Items) == 0 || len(in.Items) > 100 {
-		s.fail(w, r, 400, "INVALID_ARGUMENT", "需要 connection_id 与 1–100 个 items", nil)
+	if !isUUID(in.ConnectionID) || len(in.Items) == 0 || len(in.Items) > 5000 {
+		s.fail(w, r, 400, "INVALID_ARGUMENT", "需要 connection_id 与 1–5000 个 items（文件夹会递归展开，文件总数不设上限）", nil)
 		return
 	}
 	rc := http.NewResponseController(w)

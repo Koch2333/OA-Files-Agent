@@ -6,6 +6,7 @@ import type {
   Api, ArchivePlan, ArchiveRule, AuditLog, CorrectionProposal, FileRecord, FolderListing, FsEntry, ImportJob,
   LedgerEntry, LlmConfig, LlmPreset, LlmTestResult, OATemplate, Page, Preview, ProviderStatus, ReadinessInfo, Replication, StorageConnection, StorageKind,
   StorageListing, StorageTestResult, TemplateTestResult, TrashItem,
+  ImportConfig, UploadSession, ImportBatchStatus, PathImportStatus,
   AdminUser, InviteCreated, Invitation, LoginResult, Me, MfaEnrolled, Passkey, SecuritySettings, SecuritySummary, SessionInfo, SetupStatus, TotpEnrollment, WebAuthnBegin,
 } from './types'
 
@@ -34,6 +35,25 @@ export const realApi: Api = {
     const headers: Record<string, string> = {}
     if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey
     return json<ImportJob>('/v1/imports' + qs({ template_id: opts.templateId }), { method: 'POST', body: fd, headers })
+  },
+  getImportConfig: () => json<ImportConfig>('/v1/imports/config'),
+  createUpload: (input) => json<UploadSession>('/v1/imports/uploads', { method: 'POST' }, input),
+  getUpload: (id) => json<UploadSession>(`/v1/imports/uploads/${id}`),
+  putUploadChunk: (id, offset, chunk, signal) =>
+    json<UploadSession>(`/v1/imports/uploads/${id}` + qs({ offset }), { method: 'PUT', body: chunk, signal, headers: { 'Content-Type': 'application/octet-stream' } }),
+  completeUpload: (id) => json<UploadSession>(`/v1/imports/uploads/${id}/complete`, { method: 'POST' }),
+  abortUpload: (id) => json<void>(`/v1/imports/uploads/${id}`, { method: 'DELETE' }),
+  getImportBatch: (id) => json<ImportBatchStatus>(`/v1/imports/batches/${id}`),
+  discardImportBatch: (id) => json<void>(`/v1/imports/batches/${id}`, { method: 'DELETE' }),
+  commitImportBatch(id, opts) {
+    const headers: Record<string, string> = {}
+    if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey
+    return json<ImportJob>(`/v1/imports/batches/${id}/commit`, { method: 'POST', headers }, { template_id: opts.templateId || undefined, options: opts.options && Object.keys(opts.options).length ? opts.options : undefined })
+  },
+  importFromPaths({ idempotencyKey, ...body }) {
+    const headers: Record<string, string> = {}
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
+    return json<PathImportStatus>('/v1/imports/from-paths', { method: 'POST', headers }, body)
   },
   listTasks: (q) => json<Page<ImportJob>>('/v1/tasks' + qs(q)),
   getTask: (id) => json<ImportJob>(`/v1/tasks/${id}`),

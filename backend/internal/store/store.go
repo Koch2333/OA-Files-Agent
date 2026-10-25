@@ -65,10 +65,14 @@ func scanFile(r sqldb.Row) (imports.File, error) {
 		f.Evidence = []string{}
 	}
 	var parsed struct {
-		OCR *imports.OCRInfo `json:"ocr"`
+		OCR      *imports.OCRInfo  `json:"ocr"`
+		LLMError *imports.LLMError `json:"llm_error"`
 	}
 	if len(an) > 0 && json.Unmarshal(an, &parsed) == nil && parsed.OCR != nil && parsed.OCR.Used {
 		f.OCR = parsed.OCR
+	}
+	if f.Error != nil && len(an) > 0 && json.Unmarshal(an, &parsed) == nil {
+		f.LLMError = parsed.LLMError
 	}
 	return f, nil
 }
@@ -376,7 +380,18 @@ func (s *Store) RetryJob(ctx context.Context, id string) (imports.Job, error) {
 	if err != nil {
 		return j, err
 	}
-	if j.Status != "failed" && j.Status != "cancelled" && j.Status != "partial_failure" {
+	switch j.Status {
+	case "failed", "cancelled", "partial_failure":
+	case "awaiting_review":
+		// Some files failed (e.g. the model was unreachable) while the rest were planned: re-run only those.
+		var n int
+		if err = s.Pool.QueryRow(ctx, `SELECT count(*) FROM file_records WHERE task_id=$1 AND processed=true AND error IS NOT NULL AND archive_status<>'archived'`, id).Scan(&n); err != nil {
+			return j, err
+		}
+		if n == 0 {
+			return j, ErrState
+		}
+	default:
 		return j, ErrState
 	}
 	tx, err := s.Pool.Begin(ctx)
@@ -384,7 +399,7 @@ func (s *Store) RetryJob(ctx context.Context, id string) (imports.Job, error) {
 		return j, err
 	}
 	defer tx.Rollback(context.Background())
-	if _, err = tx.Exec(ctx, `UPDATE file_records SET processed=false, error=NULL WHERE task_id=$1 AND stored_path IS NOT NULL AND stored_path<>'' AND archive_status<>'archived'`, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE file_records SET processed=false, error=NULL WHERE task_id=$1 AND stored_path IS NOT NULL AND stored_path<>'' AND archive_status<>'archived' AND (processed=false OR error IS NOT NULL)`, id); err != nil {
 		return j, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE import_jobs SET status='queued', cancel_requested=false, last_error=NULL, plan_id=NULL, updated_at=now(),

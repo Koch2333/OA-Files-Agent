@@ -8,6 +8,8 @@ import { errMsg, useAsync } from '../utils/useAsync'
 import { ACTIVE } from '../utils/format'
 import { summarize } from '../utils/importLimits'
 import { useAutomation } from '../utils/automation'
+import { useImportUploader } from '../utils/importUpload'
+import UploadProgress from '../components/UploadProgress.vue'
 import PageHeader from '../components/PageHeader.vue'
 import StateView from '../components/StateView.vue'
 import Icon from '../components/Icon.vue'
@@ -29,6 +31,7 @@ const instruction = ref('')
 const picked = ref<PickedFile[]>([])
 const templateId = ref('')
 const submitting = ref(false)
+const uploader = useImportUploader()
 const err = ref<string | null>(null)
 const lastId = ref<string | null>(null)
 const tpls = useAsync(() => api.listTemplates())
@@ -38,7 +41,7 @@ watch(() => ai.status, () => auto.revalidate())
 
 const ready = computed(() => !!ai.status?.configured)
 const summary = computed(() => summarize(picked.value))
-const canSubmit = computed(() => ready.value && picked.value.length > 0 && !summary.value.blocking && !submitting.value && instruction.value.length <= MAX_INSTR)
+const canSubmit = computed(() => ready.value && picked.value.length > 0 && !submitting.value && instruction.value.length <= MAX_INSTR)
 
 const remoteConns = ref<StorageConnection[]>([])
 const remoteOpen = ref(false)
@@ -67,11 +70,16 @@ function done(id: string) {
   picked.value = []; instruction.value = ''; lastId.value = id
   void tasks.run()
 }
+// 失败后点“重试”复用同一个幂等键：即使上一次请求其实已到达服务器，也不会创建重复任务；改动文件或说明后换新键。
+let submitKey: string | null = null
+watch([picked, instruction, templateId], () => { submitKey = null })
 async function submit() {
   if (!canSubmit.value) return
   submitting.value = true; err.value = null
   try {
-    const job = await api.createImport(picked.value, { templateId: templateId.value || null, idempotencyKey: crypto.randomUUID(), options: auto.options(instruction.value) })
+    submitKey ??= crypto.randomUUID()
+    const job = await uploader.start(picked.value, { templateId: templateId.value || null, idempotencyKey: submitKey, options: auto.options(instruction.value) })
+    submitKey = null
     done(job.id)
   } catch (e) { err.value = errMsg(e); await afterError(e) } finally { submitting.value = false }
 }
@@ -118,7 +126,8 @@ async function importRemote(p: { connectionId: string; paths: string[] }) {
         </div>
       </fieldset>
 
-      <ErrorBanner :message="err" />
+      <UploadProgress v-if="submitting" :progress="uploader.progress.value" @cancel="uploader.cancel()" />
+      <ErrorBanner :message="err" retry :busy="submitting" @retry="submit" />
       <div class="row wrap">
         <button class="btn filled has-icon" :disabled="!canSubmit" data-testid="ai-submit" @click="submit"><Icon :name="submitting ? 'progress_activity' : 'send'" :class="{ spin: submitting }" sm />{{ submitting ? '正在提交…' : auto.mode.value === 'auto' ? `提交并全自动归档（${picked.length}）` : `提交任务（${picked.length}）` }}</button>
         <span v-if="!ready" class="muted">请先配置大模型。</span>

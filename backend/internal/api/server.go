@@ -206,7 +206,7 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, status int, code, msg string, details map[string]any) {
-	if status >= 500 && code != "SETUP_REQUIRED" && code != "NOT_SUPPORTED" {
+	if status >= 500 && code != "SETUP_REQUIRED" && code != "NOT_SUPPORTED" && code != "INSUFFICIENT_STORAGE" { // a full disk is an operating condition, not a server fault
 		details = s.recordServerError(r, status, code, msg, "", details)
 	}
 	s.writeFail(w, r, status, code, msg, details)

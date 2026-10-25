@@ -416,7 +416,8 @@ func TestImportRemoteExpandsFoldersAndAppliesTheSameRulesAsUploads(t *testing.T)
 	w.files["inbox/合同/old.doc"] = []byte("legacy")
 	w.files["inbox/合同/empty.pdf"] = []byte{}
 	w.files["inbox/single.png"] = []byte("PNG")
-	w.files["inbox/huge.pdf"] = bytes.Repeat([]byte("x"), int(imports.MaxFileBytes)+1)
+	s.cfg.Imports.Limits.MaxUploadBytes = 1 << 20 // optional operator valve; there is no default cap
+	w.files["inbox/huge.pdf"] = bytes.Repeat([]byte("x"), 1<<20+1)
 	ctx := context.Background()
 	v := create(t, s, "A", "w1", func(in *Input) { in.BasePath = "inbox" })
 	b, err := s.ImportRemote(ctx, v.ID, []string{"合同", "single.png", "huge.pdf"}, "", "key-1", "t")
@@ -497,11 +498,17 @@ func TestImportRemoteLimitsAndReadErrors(t *testing.T) {
 	w.files["one.pdf"] = []byte("ok")
 	ctx := context.Background()
 	v := create(t, s, "A", "w1", nil)
-	_, err := s.ImportRemote(ctx, v.ID, []string{"many"}, "", "", "t")
+	b0, err := s.ImportRemote(ctx, v.ID, []string{"many"}, "", "k-many", "t")
+	if err != nil || len(b0.Files) != 105 {
+		t.Fatalf("no default file-count cap: 105 files must import: %v", err)
+	}
+	s.cfg.Imports.Limits.MaxBatchFiles = 100 // optional operator valve
+	_, err = s.ImportRemote(ctx, v.ID, []string{"many"}, "", "", "t")
 	var ie *imports.Error
 	if !errors.As(err, &ie) || ie.Status != 413 {
-		t.Fatalf("a folder with more than 100 files is refused before downloading anything: %v", err)
+		t.Fatalf("with the optional cap set, a folder above it is refused before downloading anything: %v", err)
 	}
+	s.cfg.Imports.Limits.MaxBatchFiles = 0
 	w.openErr = cloud.ErrPermission
 	b, err := s.ImportRemote(ctx, v.ID, []string{"one.pdf"}, "", "", "t")
 	if err != nil || len(b.Files) != 1 || b.Files[0].Error == nil || !strings.HasPrefix(*b.Files[0].Error, "[REMOTE_READ_FAILED]") || !strings.Contains(*b.Files[0].Error, "权限不足") || b.Job.Status != "failed" {

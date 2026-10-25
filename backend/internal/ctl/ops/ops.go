@@ -128,12 +128,17 @@ func (e Env) Restart(ctx context.Context, svc string, pr Progress) error {
 			return err
 		}
 		if svc == "" {
-			args := []string{"restart", "postgres"}
+			var args []string
+			if !e.P.Inst.ExternalDB() {
+				args = append(args, "postgres")
+			}
 			if e.P.Inst.HTTPS() {
 				args = append(args, "caddy")
 			}
-			if err := e.stream(ctx, pr, args...); err != nil {
-				return err
+			if len(args) > 0 {
+				if err := e.stream(ctx, pr, append([]string{"restart"}, args...)...); err != nil {
+					return err
+				}
 			}
 		}
 	default:
@@ -271,6 +276,9 @@ func (e Env) Backup(ctx context.Context, o BackupOptions, pr Progress) (string, 
 	}
 	if err := os.MkdirAll(out, 0o700); err != nil {
 		return "", err
+	}
+	if e.P.Inst.ExternalDB() {
+		return "", errors.New("数据库在外部服务器上，oa-agentctl backup 不含数据库：请用数据库自带的工具备份（pg_dump / mysqldump --single-transaction / BACKUP DATABASE）；用 bash 版 oa-agentctl.sh backup 可备份 .env、密钥与归档文件")
 	}
 	running, err := e.P.Running(ctx)
 	if err != nil {
@@ -500,6 +508,9 @@ func ValidateBackup(file string) error {
 // Restore overwrites the database and archive from a backup. The previous archive directory is
 // renamed to archive.pre-restore-<time>, never deleted. The caller must have confirmed.
 func (e Env) Restore(ctx context.Context, file string, pr Progress) error {
+	if e.P.Inst.ExternalDB() {
+		return errors.New("数据库在外部服务器上：oa-agentctl restore 只还原内置数据库，不会动外部数据库；请用数据库自带的工具还原（bash 版 oa-agentctl.sh restore 可还原外部库安装的文件与密钥）")
+	}
 	if err := ValidateBackup(file); err != nil {
 		return err
 	}

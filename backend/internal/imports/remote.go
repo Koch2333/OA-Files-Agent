@@ -21,16 +21,16 @@ type RemoteFile struct {
 	Open    func(ctx context.Context) (io.ReadCloser, error)
 }
 
-// ImportRemote ingests remote files with exactly the same rules as a multipart upload: at most MaxFiles files,
-// MaxFileBytes each, supported formats only; unsupported/oversized/empty/unreadable files become per-file
+// ImportRemote ingests remote files with exactly the same rules as a multipart upload: the optional operator caps (Limits),
+// supported formats only; unsupported/oversized/empty/unreadable files become per-file
 // failures instead of failing the batch. describe turns a read error into a user-facing message.
 // seed binds the idempotency fingerprint to the source (e.g. the connection id).
 func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, templateID, seed string, describe func(error) string) (batch Batch, err error) {
 	if len(files) == 0 {
 		return batch, &Error{400, "INVALID_PATHS", "请选择要导入的文件"}
 	}
-	if len(files) > MaxFiles {
-		return batch, &Error{413, "TOO_MANY_FILES", "每批最多 100 个文件"}
+	if s.Limits.TooManyFiles(len(files)) {
+		return batch, &Error{413, "TOO_MANY_FILES", fmt.Sprintf("超过管理员设置的每批文件数上限（%d）", s.Limits.MaxBatchFiles)}
 	}
 	id, err := NewID()
 	if err != nil {
@@ -85,9 +85,12 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 			fail("UNSUPPORTED_FORMAT", msg, "", max64(rf.Size, 0), "application/octet-stream")
 			continue
 		}
-		if rf.Size > MaxFileBytes {
-			fail("FILE_TOO_LARGE", "单文件上限 20 MiB", "", rf.Size, contentType)
+		if s.Limits.TooLarge(rf.Size) {
+			fail("FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes), "", rf.Size, contentType)
 			continue
+		}
+		if cerr := s.Limits.CheckSpace(s.Root, max64(rf.Size, 0)); cerr != nil {
+			return batch, cerr
 		}
 		rc, oerr := rf.Open(ctx)
 		if oerr != nil {
@@ -110,12 +113,15 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 			return batch, openErr
 		}
 		h := sha256.New()
-		size, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(rc, MaxFileBytes+1))
+		size, copyErr := io.Copy(io.MultiWriter(f, h), limitedReader(rc, s.Limits.MaxUploadBytes))
 		rc.Close()
 		syncErr := f.Sync()
 		closeErr := f.Close()
 		sum := hex.EncodeToString(h.Sum(nil))
 		switch {
+		case IsNoSpace(copyErr) || IsNoSpace(syncErr) || IsNoSpace(closeErr):
+			os.Remove(stored)
+			return batch, NoSpaceError(max64(rf.Size, size), 0)
 		case copyErr != nil || syncErr != nil || closeErr != nil:
 			os.Remove(stored)
 			msg := "读取远端文件失败"
@@ -123,9 +129,9 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 				msg = describe(copyErr)
 			}
 			fail("REMOTE_READ_FAILED", msg, "", 0, contentType)
-		case size > MaxFileBytes:
+		case s.Limits.TooLarge(size):
 			os.Remove(stored)
-			fail("FILE_TOO_LARGE", "单文件上限 20 MiB", "", size, contentType)
+			fail("FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes), "", size, contentType)
 		case size == 0:
 			os.Remove(stored)
 			fail("EMPTY_FILE", "文件为空", sum, 0, contentType)
@@ -169,4 +175,12 @@ func safeFailurePath(i int, raw string) string {
 		clean = fmt.Sprintf("远端文件-%d", i+1)
 	}
 	return clean
+}
+
+// limitedReader caps r at max+1 bytes (so an over-cap file is detectable); max <= 0 means unlimited.
+func limitedReader(r io.Reader, max int64) io.Reader {
+	if max <= 0 {
+		return r
+	}
+	return io.LimitReader(r, max+1)
 }

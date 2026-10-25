@@ -19,7 +19,7 @@ const ENV_ALLOW = [
   // network settings the LLM/cloud calls may need
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'SSL_CERT_FILE',
   // harmless OA_ switches an admin may set on purpose
-  'OA_LOG_LEVEL', 'OA_STORAGE', 'OA_LLM_PRESETS_FILE',
+  'OA_LOG_LEVEL', 'OA_STORAGE', 'OA_LLM_PRESETS_FILE', 'OA_LLM_OAUTH_OPENROUTER_AUTHORIZE_URL', 'OA_LLM_OAUTH_OPENROUTER_EXCHANGE_URL',
 ]
 
 function cleanEnv(extra) {

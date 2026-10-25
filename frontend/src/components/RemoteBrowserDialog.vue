@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, type StorageConnection, type StorageEntry, type StorageListing } from '../api'
 import { errMsg } from '../utils/useAsync'
 import { fmtBytes, fmtTime } from '../utils/format'
-import { crumbs, kindIcon, quotaHint, REMOTE_IMPORT_EXT, REMOTE_IMPORT_MAX_FILES } from '../utils/storage'
+import { crumbs, kindIcon, quotaHint, REMOTE_IMPORT_EXT } from '../utils/storage'
 import Dialog from './Dialog.vue'
 import StateView from './StateView.vue'
 import Icon from './Icon.vue'
@@ -52,8 +52,6 @@ function toggle(e: StorageEntry) {
 }
 const selFiles = computed(() => [...selected.value.values()].filter((e) => !e.is_dir))
 const selDirs = computed(() => [...selected.value.values()].filter((e) => e.is_dir))
-const overLimit = computed(() => selFiles.value.length > REMOTE_IMPORT_MAX_FILES)
-const bigFiles = computed(() => selFiles.value.filter((e) => e.size_bytes > 20 * 1024 * 1024).length)
 const allChecked = computed(() => { const sel = entries.value.filter(supported); return !!sel.length && sel.every((e) => selected.value.has(e.path)) })
 function toggleAll() {
   const m = new Map(selected.value)
@@ -112,16 +110,14 @@ function submit() { emit('import', { connectionId: connId.value, paths: [...sele
       <div class="row wrap">
         <span data-testid="remote-count">已选 <b>{{ selected.size }}</b> 项（{{ selFiles.length }} 个文件，{{ selDirs.length }} 个文件夹，文件夹递归导入）</span>
       </div>
-      <p class="muted small">每批最多 {{ REMOTE_IMPORT_MAX_FILES }} 个文件、单文件 20 MiB、仅支持 docx/xlsx/pdf/png/jpg；超出限制或格式不支持的文件会作为失败项计入，不会让整批失败。</p>
-      <div v-if="overLimit" class="banner"><Icon name="warning" sm />已选文件超过 {{ REMOTE_IMPORT_MAX_FILES }} 个，请减少后分批导入。</div>
-      <div v-if="bigFiles" class="banner"><Icon name="warning" sm />其中 {{ bigFiles }} 个文件超过 20 MiB，将作为失败项。</div>
+      <p class="muted small">不限制文件数量和大小；仅支持 docx/xlsx/pdf/png/jpg，格式不支持或空文件会作为失败项计入，不会让整批失败。超大文件只做元数据判断并标记为待人工审核。</p>
       <div v-if="conn && quotaHint(conn.kind)" class="banner info"><Icon name="info" sm />{{ quotaHint(conn.kind) }}</div>
       <div v-if="error" class="banner error" role="alert"><Icon name="error" sm /><div>{{ error }}</div></div>
     </template>
 
     <template #actions>
       <button class="btn" type="button" @click="emit('close')">{{ selectable ? '取消' : '关闭' }}</button>
-      <button v-if="selectable" class="btn filled has-icon" type="button" data-testid="remote-import" :disabled="!selected.size || busy || overLimit" @click="submit">
+      <button v-if="selectable" class="btn filled has-icon" type="button" data-testid="remote-import" :disabled="!selected.size || busy" @click="submit">
         <Icon :name="busy ? 'progress_activity' : 'download'" :class="{ spin: busy }" sm />{{ busy ? '正在导入…' : `导入（${selected.size}）` }}
       </button>
     </template>

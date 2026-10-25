@@ -10,6 +10,8 @@ import StateView from '../components/StateView.vue'
 import Icon from '../components/Icon.vue'
 import Dialog from '../components/Dialog.vue'
 import FilePreview from '../components/FilePreview.vue'
+import RetryNotice from '../components/RetryNotice.vue'
+import { summarizeLlmFailures, type LlmTaskFailure } from '../utils/llmError'
 
 const auth = useAuth()
 const props = defineProps<{ id: string }>()
@@ -25,7 +27,23 @@ const confirmExec = ref(false)
 const confirmRollback = ref(false)
 // 同一页面内多次点击“执行”使用同一把幂等键；刷新页面后重新生成，后端据计划状态保证不重复执行
 const idemKey = crypto.randomUUID()
-onMounted(plan.run)
+// 未进入计划的文件里，因大模型 HTTP 错误失败的：在计划页给出原因与一键重试（只重新识别这些文件）
+const llmFail = ref<LlmTaskFailure | null>(null)
+const taskUpdated = ref<string | undefined>()
+const retrying = ref(false)
+async function loadLlmFail() {
+  if (!plan.data.value) return
+  try {
+    const [files, task] = await Promise.all([api.listTaskFiles(plan.data.value.task_id), api.getTask(plan.data.value.task_id)])
+    llmFail.value = summarizeLlmFailures(files); taskUpdated.value = task.updated_at
+  } catch { llmFail.value = null }
+}
+async function retryLlm() {
+  if (!p.value || retrying.value) return
+  retrying.value = true
+  try { await api.retryTask(p.value.task_id); ui.toast('已重新排队：只重新识别失败的文件，计划会重新生成', 'success'); llmFail.value = null } catch (e) { ui.toast(errMsg(e), 'error') } finally { retrying.value = false }
+}
+onMounted(async () => { await plan.run(); void loadLlmFail() })
 
 const p = computed<ArchivePlan | undefined>(() => plan.data.value)
 const attention = computed(() => p.value?.items.filter((i) => i.review_required || i.warnings.length) ?? [])
@@ -87,6 +105,7 @@ async function execute() {
 
   <StateView :loading="plan.loading.value && !p" :error="plan.error.value" :empty="false" @retry="plan.run">
     <template v-if="p">
+      <RetryNotice v-if="llmFail && !locked" class="llmn" :view="llmFail.view" :busy="retrying" :readonly="!auth.canWrite" :since="taskUpdated" :title="`${llmFail.count} 个文件因大模型错误未识别，不在本计划中`" @retry="retryLlm" />
       <section class="card bar">
         <div class="row wrap grow">
           <span class="chip" :class="{ attention: ['awaiting_review', 'approved'].includes(p.status), success: p.status === 'executed', progress: p.status === 'executing', error: p.status === 'failed' }">{{ { draft: '草稿', awaiting_review: '待审批', approved: '已批准，待执行', executing: '执行中', executed: '已执行', failed: '执行失败' }[p.status] }}</span>
@@ -152,6 +171,7 @@ async function execute() {
 </template>
 
 <style scoped>
+.llmn { margin-bottom: 16px; }
 .bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; padding: 14px 20px; }
 .diff { min-width: 260px; max-width: 420px; } .diff > div { display: flex; gap: 6px; align-items: center; padding: 2px 6px; border-radius: 4px; min-width: 0; }
 .old { background: color-mix(in srgb, var(--md-sys-color-error) 10%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--md-sys-color-error) 40%, transparent); color: var(--md-sys-color-on-surface-variant); }

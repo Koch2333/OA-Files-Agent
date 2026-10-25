@@ -2,7 +2,9 @@
 
 > **版本定位**：Windows 版面向个人，本机单用户（local 模式，Electron 外壳另行构建）；**Linux 版是企业版**：多用户、初始化向导默认 `enterprise` 模式、管理员默认强制 MFA（TOTP / Passkey）、审计日志、Docker 隔离部署。
 >
-> **诚实声明**：`deploy/linux/` 下的安装脚本、`oa-agentctl.sh` 与 Compose 文件只在离线环境用假的 `docker`/`curl`/`ss`/`systemctl` shim 测试过（`bash deploy/linux/test/run.sh`）。**没有在真实 Docker 上运行过**：镜像构建、`docker compose config`、容器健康检查、Caddy 证书申请、真实发行版上的 Docker 安装都未验证（CI 的 `deploy.yml` 会补做其中一部分）。首次部署请先在测试机上走一遍。
+> **诚实声明（验证范围，准确到实际运行过的东西）**：安装脚本、`oa-agentctl.sh` 与 Compose 文件有两层验证。**(1) 离线套件** `bash deploy/linux/test/run.sh`：假的 `docker`/`curl`/`ss`/`systemctl`/包管理器 shim，1300 多条断言，在 tmpfs 与 ext4 上各跑一遍；**(2) 真实 Docker 引擎**：在 Docker Desktop 29.9（Linux 虚拟机）上，用 `deploy/linux/test/docker-host.sh` 起一个 Debian 12 的“服务器”容器（通过 `docker.sock`，Docker-outside-of-Docker）和本地 `registry:2`，跑 `deploy/linux/test/real-e2e.sh`：镜像仓库模式下用**真实伪终端、以管道方式**（`cat install.sh | bash`）走完向导安装、再次运行时的“健康同版本→只显示状态”快速路径、真实容器占用端口的检测与命名、升级/降级判定、**已有 PostgreSQL 16 容器**的外部库流程（错误密码、非专用库被拒、DDL 预览与第二次确认、密码不出现在日志和进程参数）、卸载保留数据、再次运行复用旧数据。使用的镜像是本机已有镜像重新打标签的测试镜像（api 叠加了当前源码编出的 `oa-agent`/`oa-admin`，deploy 镜像由本检出打包），**不是**CI 构建的发布镜像。
+>
+> **仍然没有验证**：真实发行版上用 apt/dnf/yum/zypper/apk 安装 Docker 与前置包（只有 shim）；get.docker.com 与发行版软件包回退；Caddy 真实证书申请；真实阿里云 ACR 登录/推送与 GitHub 托管 runner；**MySQL 与 SQL Server 作为外部库的安装器端到端**（镜像为省磁盘已删除，安装器侧只有 shim；它们的引擎检查逻辑是后端 `dbadmin` 包，另有自己的真实引擎测试）；ARM64；systemd 单元（测试主机容器里没有 systemd）；Podman、rootless Docker；`lsof` 回退（没有 `ss` 的主机）；TLS 校验到企业 CA 的真实证书链。首次部署请先在测试机上走一遍。
 >
 > **镜像仓库模式的验证范围**：第 11 节的镜像仓库流程已在 Docker Desktop 上用本地 `registry:2`（`localhost:15000/koch2333`）做过端到端实测（三个镜像的构建与推送、管道安装、`oa-agentctl upgrade --tag` 升级/回滚且数据与密钥不变）；**未对真实阿里云 ACR 登录/推送，也未在 GitHub 托管 runner 上运行过工作流**。
 
@@ -26,6 +28,8 @@ sudo bash install.sh --yes --domain oa.example.com --email admin@example.com \
 常用参数：`--dir`（默认 `/opt/oa-agent`）、`--port`、`--domain`、`--email`、`--mirror cn|default`、`--version`、`--registry` / `--image-tag`（第 11 节）、`--archive-dir`、`--spool-dir`、`--data-dir`（应用数据，含 `secret.key`）、`--pg-dir`、`--extra-mount name=/宿主机/路径[:ro|:rw]`（可重复，默认只读）、`--install-docker`（`--yes` 下允许自动安装 Docker）、`--systemd`、`--open-firewall`、`--no-start`、`--upgrade`、`--uninstall [--purge]`、`--help`。
 
 **第 12 节的新选项**：`--check` / `--dry-run`（只读检查，什么都不改）、`--offline <镜像包.tar>`（离线安装）、`--docker-mirror <URL>`（经确认后写入 Docker 镜像加速）、`--detect-public-ip`（结束时探测外网地址）、`--reinstall`（重建容器，保留数据）。**强烈建议在生产服务器上先运行一次 `sudo bash install.sh --check [同样的参数]`**，确认全是 `[PASS]`、了解每条 `[WARN]` 之后再正式安装。
+
+**第 14 节**：安装器会先**检测**本机已有什么（Docker/Compose、前置工具、已有安装、旧数据、端口占用者、已有数据库服务），只补缺少的；全新安装用向导一次问一个问题并给复核页；`--config`/`OA_INSTALL_*`/`--print-config` 预置答案；`--status` 只读查看状态；对健康的同版本安装重新运行只显示状态。
 
 **退出码**：`0` 成功；`1` 失败；`2` 参数/取值错误；`3` 环境检查未通过（有 `[FAIL]`，此时尚未做任何改动；`--check` 有失败项时同样返回 3）；`4` 用户取消；`130` 被 Ctrl-C/TERM 中断（可安全重跑）。
 
@@ -57,7 +61,7 @@ sudo bash install.sh --yes --domain oa.example.com --email admin@example.com \
 - 提供 `--domain` 时启用 Caddy 自动 HTTPS，API 仅监听 127.0.0.1，`OA_TRUSTED_PROXY=1`，`OA_PUBLIC_URL=https://域名`。
 - **Passkey 只能在 HTTPS（或 localhost）下使用**。没有域名则为纯 HTTP：Passkey 不可用，只能用 TOTP，口令与会话明文传输——强烈建议配域名（`oa-agentctl domain <域名>`）。
 - 更换域名会使已注册 Passkey 失效（绑定在旧域名），需在 设置→安全 更新 RP ID/来源；TOTP 不受影响。
-- 前置自己的反向代理（nginx / 1Panel / Caddy）：保持 http 模式，把代理指向 `127.0.0.1:端口`，必须传 `X-Forwarded-Proto`、`X-Forwarded-For`，并执行 `oa-agentctl config set` 之外的手工修改：在 `.env` 设置 `OA_TRUSTED_PROXY=1`、`OA_PUBLIC_URL=https://域名`、`OA_BIND_ADDR=127.0.0.1`，然后 `oa-agentctl restart`。代理需支持 SSE（关闭缓冲）和大文件上传。
+- 前置自己的反向代理（nginx / 1Panel / Caddy）：保持 http 模式，把代理指向 `127.0.0.1:端口`，必须传 `X-Forwarded-Proto`、`X-Forwarded-For`，并执行 `oa-agentctl config set` 之外的手工修改：在 `.env` 设置 `OA_TRUSTED_PROXY=1`、`OA_PUBLIC_URL=https://域名`、`OA_BIND_ADDR=127.0.0.1`，然后 `oa-agentctl restart`。代理需支持 SSE（关闭缓冲）和**不限大小的上传**：nginx 设置 `client_max_body_size 0; proxy_request_buffering off; proxy_buffering off; proxy_read_timeout 3600s;`，Caddy 默认没有请求体限制（仓库模板已把 `response_header_timeout` 设为 0）。上传不限制大小，但磁盘必须够用（不足时 507 并给出需要/剩余），可选的运维安全阀 `OA_MAX_UPLOAD_BYTES`/`OA_MAX_BATCH_FILES`、`OA_DISK_RESERVE_BYTES` 见 `docs/大文件与批量导入.md`。
 
 ## 5. 初始化向导
 
@@ -211,6 +215,8 @@ oa-agentctl upgrade --tag sha-旧提交 --no-backup
 
 ### 12.1 安装流程
 
+（第 14 节给出了现在的完整流程：先检测，再决定，再提问。以下是早先的描述。）
+
 `解析参数 → root 与单实例锁 → （已有安装且在终端交互）选择：修复/升级/重装/卸载/取消 → 配置问答 → 环境预检 → 安装/检查 Docker → Docker 与仓库预检 →（可选）Docker 镜像加速 → 获取安装包 → 生成配置（绝不覆盖已有 .env、绝不重新生成密钥）→ 拉取或载入镜像 → 启动并等待健康 → 摘要`。
 
 - **截断安全**：脚本所有可执行逻辑都在函数里，最后一行 `main "$@" "$EOS_SENTINEL"` 才开始执行，并且 `main` 要求最后一个参数是结束哨兵。`curl | bash` 或 `docker run … | sudo bash` 被截断在任何位置，都不会安装半套东西（会提示“脚本不完整”）。
@@ -294,4 +300,254 @@ sudo bash install.sh --offline oa-agent-images-sha-0a1b2c3-amd64.tar --yes --arc
 
 ## 13. 使用已有的 PostgreSQL / MySQL / SQL Server
 
-默认仍使用 compose 自带的 PostgreSQL。要复用企业已有数据库，在 `.env` 的 `COMPOSE_FILE` 末尾追加 `docker-compose.external-db.yml` 并设置 `OA_DB_PROVIDER/HOST/PORT/NAME/USER/PASSWORD/TLS_MODE`（需要 Docker Compose 2.24+），自带 postgres 服务随之不再启动。专用库、最小权限的 SQL 与限制见 `多数据库部署与迁移指南.md`。install.sh / oa-agentctl 暂无对应选项，需手工编辑 `.env`。
+默认仍使用 compose 自带的 PostgreSQL。要复用企业已有数据库，在 `.env` 的 `COMPOSE_FILE` 末尾追加 `docker-compose.external-db.yml` 并设置 `OA_DB_PROVIDER/HOST/PORT/NAME/USER/PASSWORD/TLS_MODE`（需要 Docker Compose 2.24+），自带 postgres 服务随之不再启动。专用库、最小权限的 SQL 与限制见 `多数据库部署与迁移指南.md`。现在 `install.sh` 的向导与 `--db`/`--config` 已支持（见 §14 与 `多数据库部署与迁移指南.md` §6.1）；也可以按上面手工编辑 `.env`。
+
+## 14. 检测与安装向导（先检测、再决定、再提问）
+
+这一节说明 `install.sh` 现在怎么工作。与 1Panel 的逐项对照见 [安装脚本对比-1Panel.md](安装脚本对比-1Panel.md)（§A 检测逻辑、§B 交互逻辑、§C 对照表）。
+
+### 14.1 流程
+
+`解析参数 → 读取 --config / OA_INSTALL_* → root/锁 → 【检测】（只读，打印组件表）→ 选定要管理的安装并决定做什么 → 【向导】（仅全新安装）→ 复核页 → 预检闸门（FAIL 即退出 3，此时未做任何改动）→ 只安装缺少的前置包/Docker/Compose 插件 → 外部数据库验证 → 取得安装包 → 写文件/.env → 拉取镜像并启动 → 写状态文件 → 摘要`
+
+- **检测永远先于一切**：`--check`、`--status` 与正式安装都会打印同一张表；它只读，不需要 root，不写日志。
+- **同版本且健康的已有安装**：重新运行只显示状态与访问信息（快速、不拉镜像、不执行 `up`），退出码 0；交互运行时是一个菜单，默认选 6「无需操作」。要升级/重装/卸载用菜单或 `--upgrade/--reinstall/--uninstall`。
+- **没有终端且没有 `--yes`**：打印说明并以退出码 2 结束（不会悄悄装一个默认的纯 HTTP 实例）。已有安装时只显示状态。
+
+### 14.2 检测表的状态词与各行
+
+| 状态词 | 含义 |
+|---|---|
+| `[PASS]` | 满足，无需动作 |
+| `[FOUND]` | 已存在：沿用或不碰（已有 Docker/Compose、已有安装、占用端口的进程、别的数据库服务） |
+| `[MISS]` | 缺少：安装器只补这一项，需要同意（`--install-docker` / `--install-prereqs` 或交互确认） |
+| `[TODO]` | 需要决定/处理（Docker 没运行、只有旧版 compose v1、旧数据没有 `.env`、记录指向的目录丢了） |
+| `[WARN]` / `[FAIL]` / `[INFO]` | 风险 / 不能继续（退出码 3）/ 仅供参考 |
+
+| 行 | 内容 |
+|---|---|
+| 系统资源 | 架构、内核、cgroup、CPU/内存、时钟同步（TOTP）、SELinux、本机地址；磁盘在最终安装目录确定后判定 |
+| 前置工具 | `curl tar gzip sha256sum awk`（必需）、`openssl flock ss`（推荐）；缺哪个只装哪个，用检测到的包管理器 |
+| systemd | 是否可提供开机单元 |
+| Docker 引擎 | 版本（<20.10 失败）、守护进程是否运行、是否开机自启、是否 rootless、端点（`DOCKER_HOST`/context）、Podman 冒充警告；已有则跳过安装，没运行只启动 |
+| Compose | v2 插件及版本（外部数据库层需要 ≥2.24）；只有旧版 `docker-compose` v1 或没有插件时**只装插件**，不重装 Docker |
+| 已有安装 | 状态文件 `/etc/oa-agent/install.json`、`/etc/oa-agent/install_dir`、`/opt/oa-agent`、`--dir`、容器标签/镜像名、`docker compose ls`；解析各目录 `.env`（标签、项目名、端口、域名、数据库模式）并给出健康状态 |
+| 旧数据 | 没有 `.env` 却有 `secret.key`、PostgreSQL 数据文件、非空归档、含 `.env` 的备份：沿用同一把密钥 / 从备份恢复 `.env` / 带解释地拒绝；**绝不在旧数据上生成新密钥** |
+| 端口 | 80/443/所选端口的占用者（进程或容器）；反向代理占用 80/443 时提供「放在它后面」的配置片段 |
+| 已有数据库服务 | 5432/3306/1433 的监听者（含是否只监听 127.0.0.1）、systemd 单元、数据库容器；只列为候选，**不连接** |
+| 防火墙 | ufw / firewalld / iptables；只报告 |
+| 网络 | 镜像仓库、Docker Hub 可达性（4 秒超时）、阿里云 ECS 元数据；只用于**预选**镜像源问题的默认答案 |
+
+已有安装的决策：
+
+| 检测到 | 终端 | `--yes` |
+|---|---|---|
+| 无安装 | 向导 | 参数/配置文件/默认值 |
+| 健康、同版本、无变更请求 | 菜单默认 6「无需操作」 | 只显示状态，退出码 0 |
+| 不健康/已停止 | 菜单默认 1「修复/继续」 | 修复/继续 |
+| 请求更新的标签 | 菜单提示「可升级：x -> y」 | 需 `--upgrade` |
+| 请求更旧的标签 | 提示迁移不可回退 | 拒绝，除非 `--allow-downgrade` |
+| 多套安装 | 先选一套 | 要求 `--dir` |
+| 同名 compose 项目 | 自动改名 `oa-agent-2…` | 同左；显式 `--project` 冲突则拒绝 |
+
+标签比较：`1.2.3` 这类按版本排序（预发布版 `1.2.3-rc.1` 比 `1.2.3` 旧）；`sha-<提交>` 与版本号无法比较大小（提示请确认）；`latest`/分支名是「可移动标签」，同名时无法判断是否有更新，选「升级」才会拉取最新镜像。
+
+### 14.3 向导问题与复核页
+
+向导一次问一个问题，默认值来自检测：安装目录 → HTTP 端口（默认被占用则建议下一个空闲端口并说明占用者）→ 域名/HTTPS（及邮箱；80/443 被占用时三选一：放在已有反向代理后面〔推荐〕/ 忽略域名只用 HTTP / 仍用内置 Caddy）→ 数据库（1 内置 PostgreSQL〔推荐〕、2 已有 PostgreSQL、3 已有 MySQL 8+、4 已有 SQL Server 2019+；已有库再问主机、端口、库名、用户、隐藏输入的密码、TLS 模式、CA 文件）→ 存储目录（归档、暂存/应用数据/数据库目录、额外挂载）→ 镜像源 → 镜像标签。全部回答后是**复核页**（密码遮蔽），`[Y]继续 / [e]修改某项（按编号）/ [c]取消`；取消退出码 4，未做任何更改。
+
+校验与重问：每个答案都有友好的错误说明；无效最多重问 5 次，超过以退出码 2 中止。Ctrl-C 随时安全（退出码 130）。
+
+提问读自 `/dev/tty`：`curl … | sudo bash`、`docker run … | sudo bash` 时脚本占用标准输入，答案取自终端。密码用 `read -s` 隐藏输入，不进进程参数、环境、日志。
+
+### 14.4 预置答案：`--config`、环境变量、`--print-config`
+
+优先级：命令行参数 > `OA_INSTALL_<键>` 环境变量 > `--config` 文件 > 向导 > 默认值。配置文件/环境变量给出的项不再追问，只出现在复核页；`--yes` 接受默认值，但没有安全默认的必需答案（外部库的主机、密码）会失败并说明。
+
+`--config <文件>`：`key=value`，`#` 注释，值可加引号。**文件权限必须是 600**（其他人可读写的文件、符号链接、属主不是 root/当前用户的文件一律拒绝，退出码 2）。**数据库密码只能写在这个文件里**（`db_password=…`，或 `db_password_file=<另一个 600 文件>`）；命令行参数和环境变量里的密码一律不接受（`OA_INSTALL_DB_PASSWORD` 会被忽略并警告）。
+
+| 键 | 含义 | 对应参数 |
+|---|---|---|
+| `dir` `port` `domain` `email` `project` | 安装目录、HTTP 端口、域名、证书邮箱、compose 项目名 | `--dir --port --domain --email --project` |
+| `behind_proxy` | `yes`：放在已有反向代理后面（需 `domain`） | `--behind-proxy` |
+| `mirror` | `cn` / `default` | `--mirror` |
+| `image_tag` `registry` | 镜像标签、仓库 | `--image-tag --registry` |
+| `archive_dir` `spool_dir` `app_dir` `pg_dir` | 存储目录 | `--archive-dir` 等 |
+| `extra_mount` | `名称=/宿主机/路径[:ro\|:rw]`，可重复 | `--extra-mount` |
+| `db_mode` | `bundled` / `external`（或直接写 `postgres`/`mysql`/`mssql`） | `--db` |
+| `db_provider` `db_host` `db_port` `db_name` `db_user` `db_tls` `db_ca_file` `db_schema` | 外部库连接设置（`db_tls`: `disable/require/verify-ca/verify-full`） | `--db-*` |
+| `db_password` / `db_password_file` | 外部库密码（**仅限配置文件**） | `--db-password-file` |
+| `secret_key_file` | 目标库已有 OA 数据时，原 `OA_SECRET_KEY` 所在的 600 文件 | - |
+| `systemd` `open_firewall` `install_docker` | `yes/no` | `--systemd --open-firewall --install-docker` |
+
+`--print-config`：把本次答案（**不含密码**）按同一格式写到标准输出后退出，不做任何更改，也不检查数据库连接。第二台服务器：`sudo bash install.sh --print-config > answers.conf`，在新机器上补上 `db_password=…`、`chmod 600 answers.conf`，再 `sudo bash install.sh --config answers.conf --yes`。
+
+### 14.5 反向代理、外部数据库、旧数据
+
+- **已有反向代理（nginx / Caddy / 1Panel / 宝塔）占用 80/443**：向导选「放在它后面」或无人值守加 `--behind-proxy --domain oa.example.com`。OA 只监听 `127.0.0.1:<端口>`，`.env` 写 `OA_TRUSTED_PROXY=1`、`OA_PUBLIC_URL=https://域名`、`OA_BEHIND_PROXY=1`，不启用 Caddy；结束时打印可直接粘贴的 nginx 与 Caddy 配置片段（关闭缓冲以支持 SSE、不限上传大小、传 `X-Forwarded-*`）。证书由你的代理负责。
+- **使用已有数据库**：详见 `多数据库部署与迁移指南.md` §6.1。要点：在安装任何东西之前先用 `oa-admin db-check` 验证（连接、版本、权限、隔离性、空库或只含 OA 表），失败时可重试/修改/中止；通过后显示 DDL 预览，第二次确认后才建表；密码只经标准输入。
+- **旧数据**：安装器拒绝在旧数据上生成新密钥。PostgreSQL 数据文件存在但没有 `.env`：有备份则恢复 `.env`（交互询问，`--yes` 需 `--adopt-data`）；没有则拒绝并说明（可用 `--pg-dir` 指向空目录，旧文件原样保留、绝不删除）。只有 `secret.key` 时沿用同一把密钥。
+
+### 14.6 状态文件 `/etc/oa-agent/install.json`
+
+每次安装成功后写入（无密钥，权限 644），每个安装一行 JSON：`dir`、`project`、`version`、`registry`、`db`（`bundled` 或 `postgres/mysql/mssql`）、`port`、`domain`、`status`（`installed`/`removed`）、各数据目录、`updated`。下次运行时先读它，再扫描容器标签、默认目录和 `.env`。`.env` 仍是版本与端口的权威来源；`oa-agentctl upgrade/uninstall` 会同步更新它。卸载（保留数据）把条目标为 `removed`，`--purge` 才删除条目；写不了（只读 `/etc`）只警告，不影响安装。
+
+### 14.7 一次运行的样子（真实引擎上的记录）
+
+以下是在真实 Docker 引擎（Docker Desktop 的 Linux 虚拟机 + 本地 `registry:2`，见开头的验证说明）上，用真实伪终端以管道方式（`cat install.sh | bash`）跑出来的输出，只裁掉了过长的行与无关的拉取进度。端口 18080 被一个测试容器占用，所以向导点名并拒绝了它。
+
+```text
+$ docker run --rm localhost:15000/koch2333/oa-agent-deploy:1.0.0 > install.sh        # on a real server: <registry>/oa-agent-deploy:latest | sudo bash -s -- ...
+$ cat install.sh | sudo bash -s -- --registry localhost:15000/koch2333      # stdin is the script; the answers come from the terminal (/dev/tty)
+        OA file-archiving agent - Linux one-click installer
+==> Detection: what is already on this server
+[PASS] OS: Debian GNU/Linux 12 (bookworm) / amd64
+[PASS] Kernel 6.18.33.2-microsoft-standard-WSL2
+[PASS] cgroup v2 (unified hierarchy)
+[INFO] CPU: 20 core(s); RAM: 7616 MB; free disk at /opt: 947 GB
+[PASS] RAM 7616 MB
+[WARN] Cannot verify time synchronization: make sure NTP is enabled (TOTP depends on correct time).
+[PASS] Host addresses: 192.168.65.6 192.168.65.3 [fdc4:f303:9324::6] [fdc4:f303:9324::3]
+[INFO] systemd not detected: the containers restart with Docker (restart: unless-stopped); no systemd unit is offered.
+[PASS] Required tools present: curl tar gzip sha256sum awk
+[FOUND] Docker Engine 29.9.2: daemon running, boot state unknown, rootful, endpoint unix:///var/run/docker.sock -> reused, not reinstalled
+[FOUND] Compose v2 plugin 5.6.1 (>= 2.24: the external-database layer works) -> reused
+[PASS] OA Agent: no existing installation found (checked the state file, container labels/images, compose projects and /opt/oa-agent) -> fresh install
+[PASS] Ports free: 80 443 8080
+[FOUND] Existing database container: inst-pg (image postgres:16-alpine, running, ports 5432/tcp) -> a candidate only, never modified
+Detection summary: 8 passed, 3 found, 0 missing, 0 need action, 1 warning(s), 0 failed
+[PASS] Docker Hub is reachable (the postgres/caddy base images can be pulled directly)
+[PASS] Image registry reachable: localhost:15000
+==> Configuration wizard
+One question at a time; the value in brackets is a default derived from the detection, press Enter to accept it. A review screen follows where every setting can be edited
+Install directory (program, .env and mounts.json) [/opt/oa-agent]: relative/dir
+[!] must be an absolute path with only letters, digits and _ . / - (no spaces), and not a system directory such as / /etc /opt /var itself
+HTTP port [8080]: 70000
+[!] the port must be a number from 1 to 65535
+HTTP port [8080]: 18080
+[!] port 18080 is already in use by Docker container inst-dummy (image alpine:3.21). Choose another (suggestion: 18081)
+HTTP port [8080]: 18081
+Domain (empty = HTTP only, no Passkeys) []:
+Database:
+  1) Use the bundled PostgreSQL (recommended for a new standalone server, nothing to prepare)
+  2) Use an existing PostgreSQL 14+ server
+  3) Use an existing MySQL 8.0+ server (MariaDB is not supported)
+  4) Use an existing SQL Server 2019+ server
+Choice [1-4] [1]: 9
+[!] enter 1-4
+Choice [1-4] [1]:
+Working directory (archive root): every archived file is stored here. Any absolute local path works, e.g. a mounted data disk or a NAS mount point.
+Archive root directory [/var/lib/oa-inst-test/a/opt/oa-agent/data/archive]: archive
+[!] must be an absolute path with only letters, digits and _ . / - (no spaces), and not a system directory (/ /etc /usr /var /tmp /home ..., nor below /etc /usr /proc /va
+Archive root directory [/var/lib/oa-inst-test/a/opt/oa-agent/data/archive]: /etc/oa-archive
+[!] must be an absolute path with only letters, digits and _ . / - (no spaces), and not a system directory (/ /etc /usr /var /tmp /home ..., nor below /etc /usr /proc /va
+Archive root directory [/var/lib/oa-inst-test/a/opt/oa-agent/data/archive]: /var/lib/oa-inst-test/a/srv/my archive
+[!] must be an absolute path with only letters, digits and _ . / - (no spaces), and not a system directory (/ /etc /usr /var /tmp /home ..., nor below /etc /usr /proc /va
+Archive root directory [/var/lib/oa-inst-test/a/opt/oa-agent/data/archive]: /var/lib/oa-inst-test/a/srv/archive
+  ... (storage questions, mirror, image tag: 1.0.0) ...
+== Review your settings (passwords are masked) ==
+  1) Install dir        /var/lib/oa-inst-test/a/opt/oa-agent
+  2) HTTP port          18081
+  3) Access             plain HTTP (no Passkeys)
+  4) Database           bundled PostgreSQL (container in the compose stack)
+  5) Storage            archive /var/lib/oa-inst-test/a/srv/archive; spool /var/lib/oa-inst-test/a/opt/oa-agent/data/spool; app data /var/lib/oa-inst-test/a/opt/oa-agent/
+  6) Mirror             default
+  7) Images/tag         localhost:15000/koch2333 : 1.0.0
+  Also: the systemd unit and the firewall are asked at the end; the admin account is created by the setup wizard with a one-time token (shown when the installation ends).
+Proceed? [Y]es / [e]dit a setting / [c]ancel: e
+Edit which setting? [1-7]: 2
+HTTP port [18081]: 18081
+== Review your settings (passwords are masked) ==
+  1) Install dir        /var/lib/oa-inst-test/a/opt/oa-agent
+  ... (pull, start, wait healthy) ...
+  Installation complete!
+
+  URL:             http://192.168.65.6:18081
+  Other URL:       http://192.168.65.3:18081
+  Other URL:       http://[fdc4:f303:9324::6]:18081
+  Other URL:       http://[fdc4:f303:9324::3]:18081
+  SETUP TOKEN:     5QJQPK5VL4IMVDSOWBOF677J57KGB64DGJO54QQ
+  ...
+  [What was detected and done]
+  - already present, skipped: Docker Engine 29.9.2 already present, not reinstalled
+  - already present, skipped: Compose plugin 5.6.1 already present
+  - installed: Generated .env (mode 600, random secrets
+  - State file: /etc/oa-agent/install.json
+```
+
+
+使用已有 PostgreSQL（先报错的密码、再报错的非专用库、最后通过，并显示 DDL 预览）：
+
+```text
+# existing PostgreSQL (container postgres:16-alpine reachable through the host); wrong password first, then a non-dedicated database, then the right one
+Database:
+  1) Use the bundled PostgreSQL (recommended for a new standalone server, nothing to prepare)
+  2) Use an existing PostgreSQL 14+ server
+  3) Use an existing MySQL 8.0+ server (MariaDB is not supported)
+  4) Use an existing SQL Server 2019+ server
+Choice [1-4] [1]: 2
+  Database:        existing PostgreSQL host.docker.internal:55442/oa (user oa, TLS disable; password in .env)
+==> Checking the existing database (before anything is installed)
+  PostgreSQL host.docker.internal:55442 / dirty, user oa, TLS disable
+  [FAIL] Connection: failed to connect to `user=oa database=dirty`: 192.168.65.254:55442 (host.docker.internal): failed SASL auth: FATAL: password authentication failed for user "oa" (SQLSTA
+  r) retry with the same settings   c) change the database settings   a) abort (nothing is changed)
+Choice [r/c/a] [r]: c
+PostgreSQL host (for a database on this host use host.docker.internal or the LAN address, not localhost) [host.docker.internal]:
+Port [55442]:
+Database name (must be dedicated: empty, or holding only OA Agent tables) [dirty]: dirty
+User [oa]:
+TLS mode disable/require/verify-ca/verify-full (verify-full recommended for production) [disable]:
+Database password (input is not echoed):
+  PostgreSQL host.docker.internal:55442 / dirty, user oa, TLS disable
+  [PASS] Connection: 延迟 2 ms
+  [PASS] Character set / collation: UTF8；比较区分大小写（搜索使用不区分大小写的 ILIKE）
+  [PASS] Time zone: 连接固定使用 UTC（当前会话 UTC），时间一律以 UTC 存储
+  [PASS] Permissions: 对 schema public 具有 USAGE/CREATE
+  [PASS] Least privilege: 账号不是超级用户，也没有 CREATEROLE / CREATEDB
+  [FAIL] Isolation (dedicated database/schema): schema public 中存在非 OA Agent 的表（orders）。请使用专用数据库或专用 schema（空的或仅包含 OA Agent 表）；用
+  [INFO] Schema version: 目标库为空，需要管理员批准后初始化
+  [INFO] schema state: empty
+  r) retry with the same settings   c) change the database settings   a) abort (nothing is changed)
+Choice [r/c/a] [r]: c
+PostgreSQL host (for a database on this host use host.docker.internal or the LAN address, not localhost) [host.docker.internal]:
+Port [55442]:
+Database name (must be dedicated: empty, or holding only OA Agent tables) [dirty]: oa
+User [oa]:
+TLS mode disable/require/verify-ca/verify-full (verify-full recommended for production) [disable]:
+Database password (input is not echoed):
+  PostgreSQL host.docker.internal:55442 / oa, user oa, TLS disable
+  [PASS] Connection: 延迟 1 ms
+  [PASS] Character set / collation: UTF8；比较区分大小写（搜索使用不区分大小写的 ILIKE）
+  [PASS] Time zone: 连接固定使用 UTC（当前会话 UTC），时间一律以 UTC 存储
+  [PASS] Permissions: 对 schema public 具有 USAGE/CREATE
+  [PASS] Least privilege: 账号不是超级用户，也没有 CREATEROLE / CREATEDB
+  [PASS] Isolation (dedicated database/schema): schema public 仅包含 OA Agent 的表（专用数据库）
+  [INFO] Schema version: 目标库为空，需要管理员批准后初始化
+  [INFO] schema state: empty
+[ OK ] The database passed the checks (version, permissions and isolation are fine)
+OA Agent would create its schema in host.docker.internal:55442/oa: 10 migration(s), 64 DDL statement(s) in total (plan fingerprint cdc8d473f01c3bd0d073b362).
+    migration 1 001_initial.up.sql (3 statements)
+    migration 2 002_business.up.sql (18 statements)
+    migration 3 003_file_management.up.sql (5 statements)
+    migration 4 004_llm_settings.up.sql (1 statements)
+    migration 5 005_vision.up.sql (2 statements)
+    migration 6 006_storage.up.sql (5 statements)
+  ... (y: create the tables; the installation continues) ...
+```
+
+
+说明：数据库检查清单里的具体说明文字（括号后的中文）来自后端 `dbadmin` 包，目前只有中文；标题与结论行随界面语言。
+
+### 14.8 故障排查（检测与向导）
+
+| 现象 | 处理 |
+|---|---|
+| 退出码 2，提示「没有可用的终端来回答安装问题」 | 用 `ssh -t`；或先 `docker run --rm <deploy 镜像> > install.sh` 再 `sudo bash install.sh`；或加 `--yes`（配合 `--config`） |
+| `[TODO] … 但该目录没有可用的 .env` | 状态文件/容器指向的安装目录被移动或删除；安装器不碰它。需要时用 `--dir` 指向新位置，或编辑/删除状态文件里对应行 |
+| 「发现多套安装」 | 加 `--dir <目录>`；要另装一套独立的，用不同的 `--dir` 与 `--project` |
+| 拒绝：旧数据库文件没有 `.env` | 恢复旧 `.env`（备份里的 `env`），或 `--pg-dir` 指向空目录，或自行移走旧数据；绝不会生成新密钥覆盖旧数据 |
+| `--config` 报权限错误 | `chmod 600 <文件>`；不接受符号链接 |
+| 外部库检查失败 | 清单里逐项说明原因（密码、网络、权限、隔离性）；主机不能填 localhost；本机数据库填 `host.docker.internal` 并让它监听该地址；`--db-tls disable` 仅用于测试 |
+| 「目标库已有 OA Agent 数据」 | 提供原 `OA_SECRET_KEY`（交互输入或 `secret_key_file`），否则拒绝 |
+| 80/443 被占用 | 用向导的「放在它后面」或 `--behind-proxy`；否则停掉占用者 |
+| 想只看状态 | `install.sh --status`（不需要 root）；`--check` 额外打印将执行的计划 |

@@ -101,7 +101,7 @@ describe('mock llm api', () => {
   })
   it('test: ok by default, bad key fails', async () => {
     expect(await mockApi.testLlm({ base_url: deepseek.base_url, model: 'deepseek-flash', api_key: 'good' })).toMatchObject({ ok: true })
-    expect(await mockApi.testLlm({ base_url: deepseek.base_url, model: 'deepseek-flash', api_key: 'bad' })).toMatchObject({ ok: false, message: '密钥无效（401）' })
+    expect(await mockApi.testLlm({ base_url: deepseek.base_url, model: 'deepseek-flash', api_key: 'bad' })).toMatchObject({ ok: false, message: '密钥无效或没有权限（HTTP 401）' })
   })
   it('models returns the preset models', async () => expect(await mockApi.listLlmModels({ base_url: deepseek.base_url })).toEqual(['deepseek-flash', 'deepseek-v4-pro']))
 })
@@ -180,7 +180,7 @@ describe('canFetchModels', () => {
 describe('mock presets', () => {
   it('match the catalog: no qwen-intl, openai without suggestions, verified date', async () => {
     const p = await mockApi.listLlmPresets()
-    expect(p.map((x) => x.id)).toEqual(['deepseek', 'qwen', 'openai', 'ollama', 'custom'])
+    expect(p.map((x) => x.id)).toEqual(['deepseek', 'qwen', 'openai', 'ollama', 'openrouter', 'custom'])
     expect(p.every((x) => x.checked_at === '2026-10-22' && typeof x.note === 'string')).toBe(true)
     const openai = p.find((x) => x.id === 'openai')!
     expect(openai.models).toEqual([]); expect(openai.default_model).toBe('')

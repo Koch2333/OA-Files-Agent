@@ -264,6 +264,7 @@ type personalLoaded struct {
 	key    string
 	src    string // manual | oauth
 	prov   string
+	label  string
 	state  string // ok | unconfigured | unavailable
 	exists bool
 }
@@ -284,7 +285,7 @@ func (m *Manager) loadPersonal(ctx context.Context, userID string) (personalLoad
 	p := personalLoaded{set: s, exists: true, state: "ok"}
 	if len(s.APIKeyEnc) > 0 {
 		if k, uerr := m.box.Unseal(s.APIKeyEnc); uerr == nil {
-			p.key, p.src, p.prov = splitKey(string(k))
+			p.key, p.src, p.prov, p.label = splitKeyLabel(string(k))
 		} else {
 			p.state = "unavailable"
 		}
@@ -439,7 +440,7 @@ func personalView(p personalLoaded) ConfigView {
 	v := ConfigView{Mode: p.set.Mode, PresetID: p.set.PresetID, BaseURL: p.set.BaseURL, Model: p.set.Model, VisionModel: p.set.VisionModel, AllowVision: p.set.AllowVision, APIKeySet: len(p.set.APIKeyEnc) > 0, State: p.state}
 	if p.key != "" {
 		v.APIKeyHint = KeyHint(p.key)
-		v.KeySource, v.KeyProvider = p.src, p.prov
+		v.KeySource, v.KeyProvider, v.KeyLabel = p.src, p.prov, p.label
 	} else if v.APIKeySet {
 		v.APIKeyHint = "••••"
 	}

@@ -20,6 +20,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args: ['--no-sandbox'], defaultViewport: { width: 1440, height: 900 } })
 const page = await browser.newPage()
+await page.evaluateOnNewDocument(() => { try { localStorage.setItem('oa.llm.ui', 'advanced') } catch { /* ignore */ } }) // LLM settings default to simple mode
 const errors = []
 page.on('pageerror', (e) => errors.push(String(e)))
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
@@ -156,7 +157,7 @@ await shot('13-file-manager-restored')
 
 // 7. Settings → 模型 Provider: preset selection, free Base URL / model edit, leave the backend in offline mode
 await page.goto(base + '/settings', { waitUntil: 'networkidle0' })
-check('settings shows 模型 Provider card', await waitText('模型 Provider') && await waitText('识别方式'))
+check('settings shows 模型 Provider card', await waitText('全局大模型') && await waitText('识别方式'))
 check('switch to 大模型', await clickText('[data-mode]', '大模型'))
 await page.waitForSelector('#llm-base')
 check('DeepSeek preselected', await page.waitForFunction(() => document.querySelector('[data-preset="deepseek"]')?.getAttribute('aria-checked') === 'true', { timeout: 10000 }).then(() => true, () => false))

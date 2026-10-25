@@ -1,12 +1,137 @@
 # 安装脚本对比：1Panel 与 OA Agent（`deploy/linux/install.sh`）
 
-> 目的：把 1Panel 的服务器安装脚本当作“成熟的一键安装体验”的参照，找出我们的 Linux 安装器在**生产环境**中缺什么，决定采纳或放弃，并记录理由。
+> **本文分两部分。** 第一部分（§A、§B、§C）是 2026-10-25 重做的、针对用户真正关心的两件事：1Panel 的安装器**如何检测已有组件来判断是否需要安装**（§A 检测逻辑），以及它**如何与用户交互**（§B 交互逻辑），并给出逐项采纳/改造/放弃的对照表（§C）。第二部分（§D 起）是此前那一轮的对比，偏重命令行参数、退出码、重试等，保留作参考，它**没有**回答检测与交互这两个问题。
 >
-> 来源与许可：研究对象是 `https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh`（以及无 `v2` 的旧路径）和 GitHub `1Panel-dev/installer` 仓库 v2 分支的 `install.sh` / `1pctl`（读取日期 2026-10-23；`1Panel-dev/1Panel` 的 `dev-v2` 分支与 `1Panel-dev/installer` 的 `main` 分支上没有找到对应路径）。下载文件只读不执行，放在临时目录。1Panel 为 GPL-3.0，本项目为 AGPL-3.0；**我们没有复制它的代码**，只借鉴“做什么”的思路，实现全部是自己写的，所以没有需要在 `THIRD-PARTY-LICENSES.md` 里补记的改编代码。
+> 来源与许可：研究对象是 `https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh`、无 `v2` 的旧路径 `…/package/quick_start.sh`，以及 GitHub `1Panel-dev/installer` 仓库 `v2` 分支的 `install.sh`、`1pctl`、`lang/en.sh`、`initscript/`（读取日期 2026-10-25；分支只有 `v1`、`v1.10.21`、`v2`，没有 `main`/`dev`）。下载文件只读不执行，放在临时目录。1Panel 为 GPL-3.0，本项目为 AGPL-3.0；**没有复制它的代码**，只借鉴“做什么”，实现全部自己写。所以没有需要在 `THIRD-PARTY-LICENSES.md` 补记的改编代码。
 >
-> 重要：1Panel 是“面板 + 若干二进制”的安装，我们是“Docker Compose 栈 + 管理工具”的安装，所以并不是每一项都适合照搬。
+> 重要：1Panel 是“面板 + 两个二进制 + systemd 服务”，我们是“Docker Compose 栈 + 管理工具”，组件不同，不能逐项照搬。
 
-## 1. 对比表
+## A. 检测逻辑（1Panel 实际做了什么，我们怎么做）
+
+### A.1 1Panel 实际的检测（读 `install.sh` v2 得到的事实）
+
+`quick_start.sh` 只负责：用 `uname -a` 字符串匹配得到架构（amd64/arm64/armv7/ppc64le/s390x/riscv64，否则退出）→ 取最新版本号 → 下载 `tar.gz` 并（仅当本地已有同名包时）用 `checksums.txt` 比对哈希决定是否跳过下载 → 解压后运行包内 `install.sh`。之后的检测全部在 `install.sh` 里：
+
+| 检测点 | 1Panel 的做法 | 它据此决定什么 |
+|---|---|---|
+| 是否已安装 1Panel | `which 1panel`：存在就记录“已安装，请勿重复安装”并 `exit 1`。**没有**“升级/修复/重装”提示（升级走面板内或 `1pctl update`）。不看 systemd 单元、不看版本 | 已安装 → 直接中止 |
+| 旧数据 | 选定安装目录后，若存在 `<目录>/1panel/db/core.db` 则 `USE_EXISTING=true`：不清空 `<目录>/1panel/*`，并把 `1pctl` 里的 `CHANGE_USER_INFO=use_existing`，即沿用旧账号信息；否则 `rm -rf <目录>/1panel/*` | 复用旧数据 / 清空重来 |
+| Docker | `which docker`；有则取 `docker --version` 的前两段数字；用 `systemctl start docker && systemctl status docker`（无 systemd 则 `service dockerd …`）的输出里有没有 `running` 判断守护进程；主版本 <20 只记一条“建议手动升级”警告，**不拦截** | 有且在运行 → 跳过安装；有但没运行 → 只警告；没有 → 询问是否安装 |
+| Compose | **不检测**（既不查 v1 也不查 v2 插件）；Docker 版本也不与 Compose 关联 | 无 |
+| 镜像加速 | 有 Docker 时：若 `curl ipinfo.io/country` 为 `CN` 则询问是否配置 `registry-mirrors`；`/etc/docker/daemon.json` 已存在则再询问是否**整体替换**（先备份），写完立即重启 Docker | 仅国家判断，第三方服务 |
+| 在线/离线安装 Docker | 安装包里有 `docker/` 目录就询问用内置离线包还是在线；在线时 CN 用 4 个镜像源延迟测速选最快 | 决定 Docker 来源 |
+| 端口 | 默认随机 10000–65535；用 `netstat -tlun \| grep ":$port "`（无则 `ss`，再无则 `lsof`）判断占用；占用则重问（无人值守最多换 10 次随机口）。**不显示谁占用** | 占用 → 重问 |
+| 防火墙 | 有 `firewall-cmd`/`ufw` 就**自动**放行所选端口，必要时先启动防火墙服务 | 自动改防火墙 |
+| systemd | `command -v systemctl`：有则安装 core/agent 两个 unit；否则按 `/etc/rc.common`(procd)、`/sbin/openrc-run`(OpenRC)、SysV 三选一 | 决定服务管理方式 |
+| root | `Check_Root`：非 root 退出 | 中止 |
+| 系统资源、内核、内存、磁盘、cgroup、SELinux、时间同步、已有数据库服务、反向代理 | **都不检查** | 无 |
+| 结束后 | 轮询 systemd 状态最多 5 次、`ss -tlun` 等端口最多 30 次；用 `ip route get 8.8.8.8` 找内网地址，**默认**请求 `api64.ipify.org` 取公网地址 | 报告访问地址 |
+
+结论：1Panel 的“检测”很浅——只有“有没有 1panel 命令”“有没有 core.db”“有没有 docker 命令/是否在运行”“端口是否被占”四类，决定“中止/复用/跳过 Docker 安装/重问端口”。没有检测 Compose、已有数据库、端口占用者、系统资源、旧版本比较，也没有“同版本且健康就什么都不做”的快速路径。
+
+### A.2 我们现在的检测阶段（`install.sh` 先于一切运行，只读）
+
+先打印一张组件表（每行一个状态词，同时写入安装日志），再用结果驱动后面的每个决定：
+
+| 状态词 | 含义 |
+|---|---|
+| `[PASS]` | 满足要求，无需动作 |
+| `[FOUND]` | 已存在，沿用或不碰（已有 Docker、已有安装、别的数据库服务、占用端口的进程） |
+| `[MISS]` | 缺少，安装器将只补这一项（需要同意：`--install-docker` / `--install-prereqs` 或交互确认） |
+| `[TODO]` | 需要决定或处理（Docker 没运行、compose 只有 v1、旧数据没有 .env、状态文件指向的目录丢了） |
+| `[WARN]` / `[FAIL]` | 风险 / 不能继续（FAIL 在改动任何东西之前以退出码 3 结束） |
+| `[INFO]` | 仅供参考 |
+
+检测内容与它如何决定“装不装”：
+
+| 行 | 检测方法（均只读） | 决定 |
+|---|---|---|
+| 系统/内核/cgroup/内存/CPU/磁盘/时钟/SELinux/本机地址 | `uname`、`/etc/os-release`、`stat -f /sys/fs/cgroup`、`/proc/meminfo`、`df`、`timedatectl`/`chronyc`、`getenforce`、`ip` | 阈值给 PASS/WARN/FAIL；磁盘在**最终安装目录确定后**再判 |
+| 前置工具 | `curl tar gzip sha256sum awk`（必需）与 `openssl flock ss`（推荐）逐个 `command -v` | **只**用检测到的包管理器（apt/dnf/yum/zypper/apk）装缺少的那几个包 |
+| systemd | `systemctl` 且 `/run/systemd/system` 存在 | 决定是否提供开机单元 |
+| Docker 引擎 | CLI 是否存在（Podman 冒充会警告）；`docker info` 判断守护进程；`docker version` 取版本（<20.10 失败）；`systemctl is-enabled docker`；`docker info` 的 SecurityOptions 判 rootless；`DOCKER_HOST`/`docker context` 取端点 | 有且运行 → **跳过安装**；有但没运行 → 只尝试启动；没有 → 才安装 |
+| Compose | `docker compose version --short`（v2 插件，≥2.24 才能用外部数据库层）；插件缺失时再看有没有旧版 `docker-compose` | 缺 v2 插件 → **只装插件**，不重装 Docker |
+| 已有 OA Agent 安装 | 依次找：状态文件 `/etc/oa-agent/install.json`、`/etc/oa-agent/install_dir`、`/opt/oa-agent`、`--dir`、`docker ps -a` 的容器标签（`com.docker.compose.project(.working_dir)`）与镜像名 `oa-agent-api/worker`、`docker compose ls`；再解析各目录 `.env`（标签、项目名、端口、域名、数据库模式、仓库）并用容器状态判断健康 | 见 A.3 的决策表 |
+| 旧数据（孤儿数据） | 目录里有 `secret.key`、`pgdata/PG_VERSION`、非空归档、可恢复 `.env` 的备份，但没有 `.env` | 沿用同一把密钥、从备份恢复 `.env`，或带解释地拒绝；**绝不在旧数据上生成新密钥** |
+| 端口 | 80/443/所选端口；`ss -ltnp`（无则 `lsof`）取占用进程，再对照 `docker ps` 的端口映射 | 占用者是反向代理 → 给“放在它后面”的配置片段；否则建议下一个空闲端口 |
+| 已有数据库服务 | 5432/3306/1433 的监听者（含绑定地址是否只有 127.0.0.1）、`systemctl list-unit-files` 里的 postgresql/mysql/mariadb/mssql-server、`docker ps` 里的 postgres/mysql/mariadb/mssql 镜像（排除本安装自己的） | 只报告，作为“使用已有数据库”的候选；**不连接、不试任何凭据** |
+| 防火墙 | ufw / firewalld / iptables INPUT DROP | 只报告，是否放行在结束时询问 |
+| 网络 | 镜像仓库可达性、Docker Hub 可达性（4 秒超时）、阿里云 ECS 元数据（原有） | 只用来**预选**镜像源问题的默认答案（cn/default），由人确认；`--yes` 下不悄悄改 |
+
+### A.3 已有安装的决策表（同一份检测结果，不同处理）
+
+| 检测到 | 交互（终端） | 无人值守 `--yes` |
+|---|---|---|
+| 没有安装 | 向导 | 用参数/配置文件/默认值安装 |
+| 已安装、健康、版本与请求一致，无变更请求 | 菜单默认选 6「无需操作：显示状态与访问信息」 | 只显示状态与访问信息，退出码 0（快速、只读为主，不拉镜像、不 `up`） |
+| 已安装但不健康/已停止 | 菜单默认选 1「修复/继续」 | 修复/继续（保留 `.env` 与数据） |
+| 请求的标签更新（semver/`sha-`/可移动标签） | 菜单提示“可升级：x -> y”，选 2 升级 | 需显式 `--upgrade` |
+| 请求的标签更旧 | 提示数据库迁移不可回退 | 拒绝，除非 `--allow-downgrade` |
+| 多套安装 | 先问管理哪一套 | 要求 `--dir` |
+| 状态文件/容器指向的目录没有 `.env` | `[TODO]` 行，不碰它 | 同左 |
+| 新装目录的 compose 项目名与已有安装相同 | 自动换成 `oa-agent-2…` 并说明 | 同左；显式 `--project` 冲突则拒绝（同名项目会互相接管容器） |
+
+## B. 交互逻辑（1Panel 实际做了什么，我们怎么做）
+
+### B.1 1Panel 的实际交互
+
+| 方面 | 1Panel 的做法 |
+|---|---|
+| 提问顺序 | 语言（5 种，数字选择，写入 `.selected_language`）→ 安装目录（默认 `/opt`，120 秒超时后用默认）→ 是否安装 Docker（`[y/n]`，默认 y；有内置离线包再问一次）→ 是否配置镜像加速（仅 CN）→ 面板端口 → 安全入口 → 用户名 → 密码。一问一答，没有汇总页 |
+| 默认值 | 端口随机（10000–65535），入口/用户名/密码都是 `md5sum` 截取的 10 位随机串，直接回车采用 |
+| 校验与重问 | 目录必须以 `/` 开头；端口 1–65535 且未被占用；入口与用户名 `^[a-zA-Z0-9_]{3,30}$`；密码 `^[a-zA-Z0-9_!@#$%*,.?]{8,30}$`。非法则提示并**无限重问**（`continue`），没有次数上限；是/否问题非法也一直重问 |
+| 密码输入 | 若有 `stty`：`stty cbreak -echo` + `dd if=/dev/tty bs=1 count=1` 逐字符读，打 `*`，支持退格；这是唯一显式读 `/dev/tty` 的地方 |
+| 通过管道 | `quick_start.sh` 先下载解压再 `bash install.sh`（脚本是文件），所以其他提问用普通 `read -p` 读**标准输入**；如果用户把整个安装脚本通过管道喂给 bash，这些 `read` 会读到脚本自身，**没有任何 `/dev/tty` 兜底，也没有“没有终端”的提示** |
+| 无人值守 | `--non-interactive/-y` 或环境变量；每个值都有对应参数/环境变量（`PANEL_PORT` 等，**包括密码参数** `--password`，脚本里自己建议用环境变量）；未给的项用默认值；Docker 安装与镜像加速在无人值守下默认 **不做**；给出的值非法直接退出 |
+| 确认/汇总 | 没有确认页；结束时 `Show_Result` 打印外网/内网地址、用户名、**明文密码**、官网/文档链接、安全组提醒；日志文件里事后用 `sed` 把密码打码 |
+| 其他 | 没有“返回上一步/修改某项”；没有 `--config` 文件；没有 `--print-config`；无人值守没有“缺少必需答案就失败”的概念（所有项都有随机默认） |
+
+### B.2 我们的向导（`install.sh`，仅全新安装时）
+
+- **显示检测结果在前，再一次问一个问题，默认值来自检测**：安装目录 → HTTP 端口（默认被占用则建议下一个空闲端口并说明占用者）→ 域名/HTTPS（及邮箱；80/443 被反向代理占用时给出三选一：放在它后面〔默认，结束时打印 nginx/Caddy 片段〕/忽略域名用 HTTP/仍用内置 Caddy）→ 数据库（内置 PostgreSQL〔推荐〕/ 已有 PostgreSQL 14+ / MySQL 8+ / SQL Server 2019+；已有库依次问主机、端口、库名、用户、**隐藏输入的密码**、TLS 模式、CA 文件）→ 存储目录（归档 / 暂存 / 应用数据 / 数据库目录、额外挂载）→ 镜像源（默认值依检测预选）→ 镜像标签。
+- **复核页**：列出每一项（密码遮蔽），问 `[Y]继续 / [e]修改某项 / [c]取消`，选 `e` 后按编号重问该项；无效输入提示再问。
+- **校验与重问**：每个答案都有友好的校验消息；无效最多 5 次，超过以退出码 2 中止（不会无限循环，也不会悄悄采用默认）。
+- **外部数据库在安装任何东西之前先验证**：用 `oa-agent-api` 镜像里的 `oa-admin db-check`（复用 `internal/dbadmin`）检查连接、版本、权限、隔离性、是否为空库或只含 OA 的表；密码只经标准输入传入容器，不出现在进程参数、环境、日志、屏幕；失败时给出原因并让你选 重试/修改设置/中止。通过后展示 DDL 预览（迁移数、语句数、计划指纹），要**第二次明确确认**才执行 `oa-admin db-init --apply --plan <指纹>`；无人值守不替你批准 DDL。
+- **读取答案的位置**：`open_tty` 打开 `/dev/tty`（`OA_INSTALL_TTY` 仅测试用），所以 `curl … | sudo bash` 与 `docker run … | sudo bash` 时提问照样可用（脚本占用标准输入，答案取自终端）；隐藏输入用 `read -s`。**没有终端且没有 `--yes`**：打印明确说明（ssh 加 `-t`、先下载再运行、或加 `--yes`/`--config`）并以退出码 2 结束，**不会**悄悄装一个默认的纯 HTTP 实例。
+- **预置答案**：`--config <文件>`（key=value；权限必须 600，符号链接/他人可读的文件被拒；**密码只能写在这个文件里**，命令行与环境变量一律不接受）、`OA_INSTALL_<KEY>` 环境变量、各命令行参数。优先级：命令行 > 环境变量 > 配置文件 > 向导 > 默认值。配置文件/环境变量给出的项不再追问，只出现在复核页。`--print-config` 把答案（**不含密码**）按同一格式写到标准输出，供第二台服务器复用。`--yes` 接受默认值，但没有安全默认的必需答案（外部库的主机、密码）会失败并说明。
+- **结束摘要**：访问地址、初始化令牌、数据库模式、各目录、状态文件位置，以及“检测与处理结果”（因已存在而跳过了什么、装了什么、改了什么）、下一步与重跑/升级/卸载方法。
+
+## C. 1Panel 行为 → 我们的做法（采纳 / 改造 / 放弃）
+
+| # | 1Panel 行为 | 决定 | 我们的做法与理由 |
+|---|---|---|---|
+| 1 | `which 1panel` 存在就中止 | **改造** | 不中止：识别已有安装（状态文件、容器标签、.env），按 A.3 给出 状态/修复/升级/重装/卸载；同版本健康则“无需操作” |
+| 2 | 有 `core.db` 就复用旧数据，否则清空目录 | **改造（更安全）** | 绝不 `rm -rf` 任何东西。旧数据存在且没有 `.env`：沿用旧 `secret.key`、从备份恢复 `.env`，或拒绝并解释；旧数据库文件没有对应 `.env` 时一律拒绝 |
+| 3 | `which docker` + `systemctl start docker` 输出里找 `running` | **采纳并加强** | 有 CLI → 再看 `docker info`、版本 ≥20.10、是否开机自启、rootless、端点；已有且运行则跳过；没运行只启动；缺才装 |
+| 4 | Docker 主版本 <20 仅警告 | **改造** | <20.10 直接 FAIL（改动前以退出码 3 结束），因为 compose 文件用到的特性需要它 |
+| 5 | 不检测 Compose | **新增** | 检测 v2 插件及版本（≥2.24 才允许外部数据库层），只有旧 v1 时**只装插件**，不重装 Docker |
+| 6 | 内置离线 Docker 包、在线测速选源、第三方脚本副本 | **放弃**（沿用此前决定） | 体积、供应链风险；用 get.docker.com + 发行版软件包回退 |
+| 7 | 用 `ipinfo.io/country` 判断是否在中国 | **改造** | 不访问第三方定位服务；用 Docker Hub 4 秒可达性探测，**只预选**镜像源问题的默认答案，由人确认；`--yes` 不悄悄改 |
+| 8 | 自动写 `daemon.json` 并立即重启 Docker | **放弃** | 仍只在 `--docker-mirror` + 交互确认后修改，重启再确认一次 |
+| 9 | `netstat/ss/lsof` 判断端口占用，不说谁占用 | **采纳并加强** | 报告占用者（进程/容器），建议空闲端口；80/443 被反向代理占用时打印 nginx/Caddy 配置片段，并支持 `--behind-proxy` |
+| 10 | 自动放行防火墙、必要时启动防火墙 | **放弃** | 只报告，放行在结束时单独询问；`--yes` 不改 |
+| 11 | systemd / procd / OpenRC / SysV | **部分** | 只做 systemd（可选）；其他平台靠容器 `restart: unless-stopped` |
+| 12 | 一问一答、无汇总、无回退 | **改造** | 复核页 + 按编号修改 + 取消 |
+| 13 | 无限重问 | **改造** | 最多 5 次，超过以退出码 2 中止，避免死循环 |
+| 14 | 随机端口/入口/用户/密码 | **放弃** | 管理员由初始化向导 + 一次性令牌创建并强制 MFA；默认端口可预期，更适合防火墙/代理规则；默认端口被占用时才建议空闲端口 |
+| 15 | 密码逐字符读 `/dev/tty` 并打 `*` | **改造** | 外部库密码用 `read -s` 从终端读，不回显，不进参数/环境/日志 |
+| 16 | 管道执行时提问读标准输入（会读到脚本自己） | **改造** | 提问一律读 `/dev/tty`；没有终端且无 `--yes` 时明确报错 |
+| 17 | `--password` 参数 / `PANEL_PASSWORD` 环境变量 | **放弃** | 秘密只能来自 600 权限的配置文件或隐藏输入 |
+| 18 | 无人值守每项都有随机默认 | **改造** | 有安全默认才用默认；外部库主机/密码没有安全默认 → 失败并说明 |
+| 19 | 无配置文件 / 无导出 | **新增** | `--config`、`OA_INSTALL_*`、`--print-config` |
+| 20 | 结束时打印明文密码，日志事后打码 | **放弃** | 安装器不生成账号口令；摘要只打印初始化令牌，日志从不写入密钥 |
+| 21 | 安装上报 `installation-log.sh`、`curl -k` | **放弃** | 不上报，强制 TLS 与校验 |
+| 22 | 无“升级/降级”判断 | **新增** | 标签比较：semver 排序、`sha-`、可移动标签；降级默认拒绝 |
+| 23 | 无已有数据库概念 | **新增** | 检测本机数据库服务作为候选；外部库先验证（连接/权限/隔离性）再征求建表批准 |
+| 24 | 无状态文件 | **新增** | `/etc/oa-agent/install.json`（目录、项目、标签、仓库、数据库模式、端口，无密钥），先读它再扫描；`.env` 仍是版本/端口的权威来源 |
+
+---
+
+# D. 此前一轮的对比（命令行参数、退出码、重试等）
+
+> 下面是之前的内容，只覆盖参数与加固项，保留作参考。其中“已有安装”“端口/目录/口令交互”两行已被上面的 §A–§C 取代。
+
+## D.1 对比表
 
 “采纳”= 已在本次改动中实现（括号内是选项名/位置）；“已有”= 之前就具备；“放弃”= 不做，理由在最后一列。
 
@@ -35,7 +160,7 @@
 | 21 | 网络可靠性 | 脚本下载有 `--retry`；镜像相关无 | `curl --retry`；`docker pull` 失败即退出 | **采纳**：`docker pull`/`compose pull`/get.docker.com/构建都带重试和退避（默认 3 次：5、15 秒；`OA_RETRIES`、`OA_RETRY_BASE` 可调），“镜像不存在/拒绝访问”等永久错误不重试；Docker 自带层级续传，重试从断点继续；仍失败时逐个镜像排查并指出**出错的具体镜像**；阿里云 ECS 在同地域时提示改用 VPC 内网地址（只提示，不擅自切换） |
 | 22 | 退出码 | 失败统一 1 | 失败统一 1 | **采纳**：0 成功、1 失败、2 参数错误、3 环境检查未通过、4 用户取消、130 被中断（`--help`、脚本头部、部署指南都有说明） |
 
-## 2. 1Panel 里我们**没有**采纳的做法（汇总）
+## D.2 1Panel 里我们**没有**采纳的做法（汇总）
 
 - `curl -k`（跳过 TLS 校验）、下载后不校验、安装上报：不符合我们“校验后才使用”的原则。
 - 默认访问 `ipinfo.io` / `api64.ipify.org`：我们默认不访问任何第三方服务。
@@ -44,23 +169,23 @@
 - 随机端口/入口/用户名/口令：我们的管理员由初始化向导创建，并强制 MFA。
 - 多语言（5 种）、OpenWrt/OpenRC/SysV 初始化脚本、内置离线 Docker 包：超出当前目标。
 
-## 3. 本次实现要点
+## D.3 当时的实现要点
 
-### 3.1 流程（新）
+### D.3.1 流程（新）
 
 `解析参数 → root/锁 → 已有安装菜单（交互）→ 配置问答 → 预检（系统部分；FAIL 即退出 3）→ 安装/检查 Docker → 预检（Docker/镜像仓库）→（可选）镜像加速 → 获取安装包（本地源码 / 镜像 oa-agent-deploy / --offline 载入）→ 生成配置（不覆盖 .env）→ 拉取或载入镜像 → 启动并等待健康 → 摘要`。`--check` 在“配置问答”之后、任何改动之前结束。
 
-### 3.2 与“保持现状”的约束
+### D.3.2 与“保持现状”的约束
 
 内置的生产镜像仓库 `DEFAULT_REGISTRY`、`--registry`、`--build-from-source`/`OA_BUILD_FROM_SOURCE`、已有安装沿用 `.env` 记录的镜像来源、管道安装（`docker run --rm <deploy 镜像> | sudo bash`、`curl | bash`）、`.env` 不覆盖、密钥不重新生成、`mounts.json`/`oa-agentctl mounts apply`/`--archive-dir` 等全部保持不变，原有 372 条断言继续通过。
 
-### 3.3 离线安装
+### D.3.3 离线安装
 
 1. 在能访问仓库的机器上：`scripts/save-images.sh --registry <仓库/命名空间> --tag sha-<7位> [--out DIR] [--with-caddy] [--arch amd64|arm64]`。脚本把 api、worker、deploy（以及默认的 PostgreSQL 基础镜像，`--no-postgres` 可去掉）`docker save` 成**一个** tar，写出 `.sha256`，**先校验再发布**（tar 里必须列出每个镜像、校验和能复算），并从 deploy 镜像取出对应的 `install.sh`。
 2. 把三个文件拷到服务器：`sudo bash install.sh --offline oa-agent-images-<tag>-<arch>.tar [其他参数]`。安装器读 tar 里的 `manifest.json` 得到仓库名和标签（与显式的 `--registry/--image-tag` 冲突则报错），校验 SHA-256（缺校验和时 `--yes` 拒绝，可用 `--skip-verify` 或环境变量 `OA_OFFLINE_SHA256`），`docker load`，确认三个镜像都在、架构与本机一致，然后从已载入的 deploy 镜像取出安装包，全程不访问镜像仓库。
 3. 升级：做一个新 tar，`sudo bash install.sh --offline <新 tar> --upgrade`（已有安装必须显式 `--upgrade` 才会换标签；`oa-agentctl upgrade` 在离线安装脚本里以 `OA_OFFLINE=1` 运行，不拉取、不刷新管理文件）。
 
-### 3.4 尚未验证/局限（务必知悉）
+### D.3.4 尚未验证/局限（务必知悉）
 
 - apt/dnf/yum/zypper/apk 的软件包回退链只在假的包管理器 shim 下测过；各发行版的包名和是否带 Compose v2 不同，回退失败时脚本会明确报错并指向官方文档。
 - `daemon.json` 的“解析并合并”依赖 python3/jq/perl(JSON::PP)；在没有任何一个的主机上，非空 `daemon.json` 一律不修改（只打印手动步骤）。

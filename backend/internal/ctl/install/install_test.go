@@ -65,3 +65,31 @@ func TestLayers(t *testing.T) {
 		t.Errorf("https off: %s", off)
 	}
 }
+
+func TestExternalDBLayer(t *testing.T) {
+	// the external-database layer survives the mounts/https layer edits and removes the bundled postgres from the service list
+	in := "docker-compose.yml:docker-compose.mounts.yml:docker-compose.external-db.yml"
+	if got := EnsureMountsLayer(in); got != in {
+		t.Errorf("mounts layer changed the external layer: %s", got)
+	}
+	on := SetHTTPSLayer(in, true)
+	if on != "docker-compose.yml:docker-compose.mounts.yml:docker-compose.external-db.yml:docker-compose.https.yml" {
+		t.Errorf("https on: %s", on)
+	}
+	if off := SetHTTPSLayer(on, false); off != in {
+		t.Errorf("https off: %s", off)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("COMPOSE_FILE="+in+"\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, BaseCompose), []byte("services: {}\n"), 0o644)
+	i, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !i.ExternalDB() {
+		t.Error("ExternalDB")
+	}
+	if got := i.Services(); len(got) != 2 || got[0] != "api" || got[1] != "worker" {
+		t.Errorf("services without the bundled database: %v", got)
+	}
+}

@@ -6,6 +6,9 @@ import { autoBannerText, llmLabel, modeBadge } from '../utils/autoSummary'
 import { errMsg, useAsync } from '../utils/useAsync'
 import { ACTIVE, shortId } from '../utils/format'
 import { useUi } from '../stores/ui'
+import { useAi } from '../stores/ai'
+import { summarizeLlmFailures } from '../utils/llmError'
+import RetryNotice from '../components/RetryNotice.vue'
 import PageHeader from '../components/PageHeader.vue'
 import StatusChip from '../components/StatusChip.vue'
 import AgentProgress from '../components/AgentProgress.vue'
@@ -29,7 +32,14 @@ const correcting = ref(false)
 const previewing = ref<FileRecord | null>(null)
 const busy = ref(false)
 
-const terminalFail = computed(() => ['failed', 'partial_failure', 'cancelled'].includes(task.data.value?.status ?? ''))
+const ai = useAi()
+const llmFail = computed(() => summarizeLlmFailures(files.data.value))
+// awaiting_review 且有失败文件时同样可重试（后端只重新识别失败的文件，计划会重新生成）
+const terminalFail = computed(() => ['failed', 'partial_failure', 'cancelled'].includes(task.data.value?.status ?? '') || (task.data.value?.status === 'awaiting_review' && !!llmFail.value))
+watch(llmFail, (f) => {
+  if (f && task.data.value) ai.reportFailure({ taskId: props.id, view: f.view, count: f.count, since: task.data.value.updated_at })
+  else ai.clearFailure(props.id)
+})
 
 function onEvent(e: AgentEvent) {
   void task.run()
@@ -41,7 +51,7 @@ watch(() => task.data.value?.status, (s) => { if (s && !ACTIVE.includes(s) && s 
 
 async function act(kind: 'cancel' | 'retry') {
   busy.value = true
-  try { await (kind === 'cancel' ? api.cancelTask(props.id) : api.retryTask(props.id)); ui.toast(kind === 'cancel' ? '已请求取消' : '已重新排队', 'success'); await task.run(); if (kind === 'retry') trace.value?.connect() }
+  try { await (kind === 'cancel' ? api.cancelTask(props.id) : api.retryTask(props.id)); ui.toast(kind === 'cancel' ? '已请求取消' : '已重新排队', 'success'); await task.run(); if (kind === 'retry') { void files.run(); trace.value?.connect() } }
   catch (e) { ui.toast(errMsg(e), 'error') } finally { busy.value = false }
 }
 </script>
@@ -64,6 +74,7 @@ async function act(kind: 'cancel' | 'retry') {
         <span class="chip"><Icon name="smart_toy" sm />{{ llmLabel(task.data.value) }}</span>
         <span v-if="task.data.value.instruction" class="grow instr"><span class="muted">给 AI 的说明：</span>{{ task.data.value.instruction }}</span>
       </section>
+      <RetryNotice v-if="llmFail && !ACTIVE.includes(task.data.value.status)" class="llmn" :view="llmFail.view" :busy="busy" :readonly="!auth.canWrite" :since="task.data.value.updated_at" :title="`大模型调用失败（${llmFail.count} 个文件未识别）`" @retry="act('retry')" />
       <section class="card steps" aria-label="处理阶段">
         <AgentProgress :task="task.data.value" />
         <div class="progressbar" :class="{ indet: ACTIVE.includes(task.data.value.status) && !task.data.value.processed_files }"><i :style="{ width: (task.data.value.total_files ? (task.data.value.processed_files / task.data.value.total_files) * 100 : 0) + '%' }" /></div>
@@ -83,7 +94,7 @@ async function act(kind: 'cancel' | 'retry') {
                     <td><span v-if="f.detected_department">{{ f.detected_department }}</span><span v-else class="chip attention">待审核</span></td>
                     <td><span v-if="f.detected_type">{{ f.detected_type }}</span><span v-else class="chip attention">待审核</span></td>
                     <td class="nowrap"><span v-if="f.detected_date">{{ f.detected_date }}</span><span v-else class="chip attention">待审核</span></td>
-                    <td><span v-if="f.error" class="chip error" :title="f.error"><Icon name="error" sm />解析失败</span><span v-else-if="f.review_required" class="chip attention">需确认</span><span v-else class="chip success">已识别</span></td>
+                    <td><span v-if="f.error" class="chip error" :title="f.error"><Icon name="error" sm />{{ f.llm_error ? `模型出错${f.llm_error.status ? ' ' + f.llm_error.status : ''}` : '解析失败' }}</span><span v-else-if="f.review_required" class="chip attention">需确认</span><span v-else class="chip success">已识别</span></td>
                   </tr>
                 </tbody>
               </table>
@@ -105,6 +116,7 @@ async function act(kind: 'cancel' | 'retry') {
 </template>
 
 <style scoped>
+.llmn { margin-bottom: 16px; }
 .steps { display: flex; flex-direction: column; gap: 14px; margin-bottom: 16px; }
 .split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr); gap: 16px; align-items: start; }
 .hd { padding: 14px 20px; border-bottom: 1px solid var(--md-sys-color-outline-variant); }

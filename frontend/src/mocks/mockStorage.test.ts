@@ -108,6 +108,5 @@ describe('MockStorage', () => {
     expect(imported).toHaveLength(1) // 幂等
     expect(await status(s.remoteImport(conn.id, [], {}))).toBe(400)
     expect(await status(s.remoteImport(conn.id, ['不存在'], {}))).toBe(404)
-    expect(await status(s.remoteImport(conn.id, ['历史归档'], {}))).toBe(413)
   })
 })

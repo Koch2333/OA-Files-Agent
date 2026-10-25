@@ -1,6 +1,6 @@
 /**
  * 存储连接的演示实现（仅演示数据）：内存连接、虚拟远端目录树、测试结果、同步进度模拟，
- * 校验规则与服务端一致（必填 → 422、重名 → 409、导入超 100 个文件 → 413）。凭据永不回显。
+ * 校验规则与服务端一致（必填 → 422、重名 → 409）。凭据永不回显。
  */
 import {
   ApiError, type ImportJob, type ImportOptions, type Page, type PickedFile, type Replication, type ReplicationQuery, type ReplicationStatus, type StorageConnection,
@@ -421,7 +421,6 @@ export class MockStorage {
       const node = walk(c.base_path, p)
       if (!node) throw bad(404, 'NOT_FOUND', `远端路径不存在：${p}`)
       total += countFiles(node)
-      if (total > 100) throw bad(413, 'PAYLOAD_TOO_LARGE', '所选内容超过 100 个文件，请分批导入')
       const flat: { path: string; size: number }[] = []
       flatten(node, p, flat)
       const parent = p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : ''

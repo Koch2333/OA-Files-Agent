@@ -98,6 +98,12 @@ var routeAccess = normalizeAccess(map[string]access{
 	"POST /v1/storage/connections/{id}/test": adm, "GET /v1/storage/connections/{id}/browse": opr, "POST /v1/storage/connections/{id}/replicate": adm,
 	"GET /v1/storage/replications": adm, "POST /v1/storage/replications/{id}/retry": adm,
 	"POST /v1/imports/remote": opr,
+	// unbounded imports: resumable chunked uploads, batch commit, local-path import (the latter additionally requires local mode + loopback, checked in the handler)
+	"GET /v1/imports/config": opr, "POST /v1/imports/uploads": opr,
+	"GET /v1/imports/uploads/{id}": opr, "PUT /v1/imports/uploads/{id}": opr, "DELETE /v1/imports/uploads/{id}": opr,
+	"POST /v1/imports/uploads/{id}/complete": opr,
+	"GET /v1/imports/batches/{id}": opr, "DELETE /v1/imports/batches/{id}": opr, "POST /v1/imports/batches/{id}/commit": opr,
+	"POST /v1/imports/from-paths": opr,
 })
 
 func normalizeAccess(in map[string]access) map[string]access {

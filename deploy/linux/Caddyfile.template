@@ -23,8 +23,12 @@ __DOMAIN__ {
 		header_up X-Forwarded-For {remote_host}
 		header_up X-Real-IP {remote_host}
 		flush_interval -1          # keep SSE (task progress) streaming
+		# Large uploads: Caddy has NO request-body size limit by default (do not add `request_body { max_size }`), and it streams
+		# request bodies to the API without buffering them on disk. The API only answers after it has read a whole multipart
+		# body, so the response-header timeout must not cut a multi-GB upload: 0 = no limit (chunked uploads are short anyway).
 		transport http {
-			response_header_timeout 10m
+			dial_timeout 10s
+			response_header_timeout 0
 		}
 	}
 }

@@ -386,3 +386,56 @@ func TestRollbackIsRefusedAfterFileManagerChanges(t *testing.T) {
 		t.Fatalf("ledger must be untouched, rows=%d", total)
 	}
 }
+
+// A provider failure on one file ends that file in a typed, retryable LLM error; retrying the task re-runs only that file.
+func TestLLMFailureIsStoredAndRetryRerunsOnlyFailedFile(t *testing.T) {
+	st := testStore(t)
+	ok := harness.Result{Department: sp("财务部"), DocumentType: sp("合同"), DocumentDate: sp("2026-01-01")}
+	pe := &harness.ProviderError{Status: 429, Code: harness.LLMRateLimited, Retryable: true, RetryAfterSec: 30, Attempts: 4, Msg: "retryable status"}
+	an := &countingAnalyzer{fakeAnalyzer: fakeAnalyzer{results: map[string]harness.Result{"a.pdf": ok, "b.pdf": ok}, errs: map[string]error{"b.pdf": pe}}, calls: map[string]int{}}
+	svc, spool, _ := newSvc(t, st, an)
+	ctx := context.Background()
+	b := importFiles(t, st, spool, map[string]string{"a.pdf": "A", "b.pdf": "B"})
+	j, err := st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.process(ctx, j)
+	files, _ := st.JobFiles(ctx, b.Job.ID)
+	var bad *imports.File
+	for i := range files {
+		if files[i].SourceName == "b.pdf" {
+			bad = &files[i]
+		}
+	}
+	if bad == nil || bad.Error == nil || bad.LLMError == nil || bad.LLMError.Status != 429 || bad.LLMError.Code != harness.LLMRateLimited || !bad.LLMError.Retryable || bad.LLMError.RetryAfterSeconds != 30 || bad.LLMError.Attempts != 4 {
+		t.Fatalf("typed error not stored: %+v", bad)
+	}
+	if !strings.Contains(*bad.Error, "429") {
+		t.Fatalf("message: %s", *bad.Error)
+	}
+	got, _ := st.GetJob(ctx, b.Job.ID)
+	if got.Status != "awaiting_review" {
+		t.Fatalf("status %s", got.Status)
+	}
+	// the failed file is retryable even though the rest of the task is awaiting review; a second click is a conflict
+	an.errs = nil
+	if _, err := st.RetryJob(ctx, b.Job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RetryJob(ctx, b.Job.ID); !errors.Is(err, store.ErrState) {
+		t.Fatalf("second retry must conflict, got %v", err)
+	}
+	j, err = st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.process(ctx, j)
+	if an.calls["a.pdf"] != 1 || an.calls["b.pdf"] != 2 {
+		t.Fatalf("only the failed file may be re-run: %v", an.calls)
+	}
+	got, _ = st.GetJob(ctx, b.Job.ID)
+	if got.Status != "awaiting_review" || got.SuccessCount != 2 || got.FailureCount != 0 {
+		t.Fatalf("after retry: %+v", got)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -17,6 +18,22 @@ type Model struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	Note  string `json:"note,omitempty"`
+}
+
+// KeyStep is one step of the guided key-creation window (plain Chinese; says where to look, never exact positions).
+type KeyStep struct {
+	Title string `json:"title"`
+	Hint  string `json:"hint"`
+	Warn  string `json:"warn,omitempty"`
+}
+
+type KeyGuide struct {
+	SuggestedName string    `json:"suggested_name"`
+	Steps         []KeyStep `json:"steps"`
+	// LoginSteps is the shorter list shown while the "sign in with the platform" page is open (OpenRouter only).
+	LoginSteps []KeyStep `json:"login_steps,omitempty"`
+	CostNote   string    `json:"cost_note,omitempty"`
+	LoginNote  string    `json:"login_note,omitempty"`
 }
 
 type Preset struct {
@@ -30,6 +47,12 @@ type Preset struct {
 	DocsURL      string  `json:"docs_url"`
 	// KeyURL is the provider page where an API key is created by hand (the "open key page" link).
 	KeyURL string `json:"key_url,omitempty"`
+	// KeyHosts is the host allow-list of the desktop key helper window (exact hosts, or ".suffix" entries that match the
+	// suffix and its sub-domains); KeyURL must be on it. KeyPattern is the usual shape of the key (RE2), used by the key
+	// detectors on both sides; KeyGuide is the step-by-step text of the guided window. All optional.
+	KeyHosts   []string  `json:"key_hosts,omitempty"`
+	KeyPattern string    `json:"key_pattern,omitempty"`
+	KeyGuide   *KeyGuide `json:"key_guide,omitempty"`
 	// OAuthLogin is true when "sign in with the platform" is implemented for this preset (set from the flow registry).
 	OAuthLogin bool `json:"oauth_login"`
 	// VisionModels are suggestions for the optional vision fallback (models that accept image input).
@@ -103,6 +126,9 @@ func parsePresets(raw []byte) ([]Preset, error) {
 				}
 			}
 		}
+		if err := validateKeyHelper(*p); err != nil {
+			return nil, fmt.Errorf("preset %s: %v", p.ID, err)
+		}
 		if p.DefaultModel != "" {
 			if validModel(p.DefaultModel) != nil {
 				return nil, fmt.Errorf("preset %s: invalid default model", p.ID)
@@ -150,4 +176,56 @@ func presetByID(id string) (Preset, bool) {
 		}
 	}
 	return Preset{}, false
+}
+
+// validateKeyHelper checks the guided-window data: https key_url on the host allow-list, sane host entries, a
+// compilable key pattern and a bounded guide.
+func validateKeyHelper(p Preset) error {
+	for _, h := range p.KeyHosts {
+		bare := strings.TrimPrefix(h, ".")
+		if h != strings.ToLower(h) || bare == "" || strings.ContainsAny(bare, "/:@* ") || strings.HasPrefix(bare, ".") || strings.HasSuffix(bare, ".") {
+			return fmt.Errorf("invalid key_hosts entry %q", h)
+		}
+		if strings.HasPrefix(h, ".") && strings.Count(bare, ".") < 1 {
+			return fmt.Errorf("key_hosts suffix %q is too broad", h)
+		}
+	}
+	if len(p.KeyHosts) > 0 {
+		if p.KeyURL == "" {
+			return fmt.Errorf("key_hosts needs key_url")
+		}
+		u, err := url.Parse(p.KeyURL)
+		loop := u != nil && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost")
+		if err != nil || (u.Scheme != "https" && !(loop && u.Scheme == "http")) || u.User != nil || (u.Port() != "" && !loop) {
+			return fmt.Errorf("key_url must be a plain https URL (http only for a loopback test host) when key_hosts is set")
+		}
+		host, ok := strings.ToLower(u.Hostname()), false
+		for _, h := range p.KeyHosts {
+			if h == host || (strings.HasPrefix(h, ".") && (host == h[1:] || strings.HasSuffix(host, h))) {
+				ok = true
+			}
+		}
+		if !ok && !loop { // a loopback key_url is only honoured by the desktop shell in its env-gated test mode
+			return fmt.Errorf("key_url host %q is not in key_hosts", host)
+		}
+	}
+	if p.KeyPattern != "" {
+		if _, err := regexp.Compile(p.KeyPattern); err != nil {
+			return fmt.Errorf("invalid key_pattern: %v", err)
+		}
+	}
+	if g := p.KeyGuide; g != nil {
+		if len(g.Steps) == 0 || len(g.Steps) > 8 || len([]rune(g.SuggestedName)) > 40 {
+			return fmt.Errorf("invalid key_guide")
+		}
+		if len(g.LoginSteps) > 8 {
+			return fmt.Errorf("invalid key_guide login_steps")
+		}
+		for _, s := range g.Steps {
+			if strings.TrimSpace(s.Title) == "" {
+				return fmt.Errorf("key_guide step without title")
+			}
+		}
+	}
+	return nil
 }

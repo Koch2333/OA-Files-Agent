@@ -7,6 +7,10 @@ const { resolveDataDir, resolveServerDir, defaultArchiveRoot, isPortable, exeDir
 const { validateDir, copyVerify, switchWorkdir, isInside, programDirs, freeBytes } = require('./workdir')
 const { createSettings } = require('./settings-ctl')
 const { checkExternalUrl } = require('./external-url')
+const { createKeyHelper } = require('./keyhelper-ctl')
+const { parseTestHosts } = require('./keyhelper-core')
+const { isElevated } = require('./elevation')
+const { pickPaths } = require('./pick-paths')
 const { runSetup } = require('./setup-ctl')
 const { Config } = require('./config')
 const { createLogger } = require('./logger')
@@ -380,6 +384,13 @@ ipcMain.handle('desktop:info', (e) => {
   if (!fromApp(e)) return null
   return { version: app.getVersion(), archiveRoot: (backend && backend.archiveRoot) || config.get('archiveRoot', ''), dataDir, portable: isPortable() }
 })
+// Running as administrator silently breaks drag-and-drop from Explorer (Windows UIPI); the UI shows a banner.
+let elevatedP = null
+ipcMain.handle('desktop:elevated', (e) => {
+  if (!fromApp(e)) return false
+  if (!elevatedP) elevatedP = isElevated()
+  return elevatedP
+})
 ipcMain.handle('desktop:open-settings', (e) => {
   if (fromApp(e)) settings.show()
 })
@@ -387,6 +398,41 @@ ipcMain.handle('desktop:open-folder', (e, what) => {
   if (!fromApp(e)) return
   if (what === 'archive' && backend) shell.openPath(backend.archiveRoot)
   else if (what === 'logs') openLogs()
+})
+// Native chooser for the local-path import: the paths go straight to the backend (POST /v1/imports/from-paths), no HTTP upload.
+ipcMain.handle('desktop:pick-paths', async (e, opts) => {
+  if (!fromApp(e)) return []
+  return pickPaths((o) => dialog.showOpenDialog(win, o), opts)
+})
+
+// Guided key-creation window (keyhelper-ctl.js). The provider, its page, host allow-list, key format and guide text all come
+// from the preset the LOCAL backend serves (backend/internal/llm/presets.json); the web UI only passes the preset id.
+// OA_KEYHELPER_TEST_HOSTS (loopback host:port list for the local fake provider of test/e2e-keyhelper.mjs) is read from the
+// main process environment only and ignored in packaged builds.
+const keyHelper = createKeyHelper({
+  appWindow: () => win,
+  appOrigin: () => appOrigin || '',
+  fromApp: (e) => fromApp(e),
+  testHosts: parseTestHosts(process.env.OA_KEYHELPER_TEST_HOSTS, app.isPackaged),
+  log,
+  openExternal: (url) => {
+    const safe = checkExternalUrl(url)
+    if (!safe) return false
+    shell.openExternal(safe)
+    return true
+  },
+  fetchPresets: async () => {
+    if (!appOrigin) throw new Error('backend not ready')
+    const r = await session.defaultSession.fetch(`${appOrigin}/v1/llm/presets`) // carries the local session cookie
+    if (!r.ok) throw new Error(`presets ${r.status}`)
+    return (await r.json()).data
+  },
+})
+ipcMain.handle('desktop:open-key-helper', async (e, providerId, opts) => {
+  if (!fromApp(e)) return { ok: false, message: '不允许的调用。' }
+  if (typeof providerId !== 'string' || providerId.length > 40) return { ok: false, message: '不支持的服务商。' }
+  const o = opts && typeof opts === 'object' ? { mode: opts.mode, authorizeUrl: typeof opts.authorizeUrl === 'string' ? opts.authorizeUrl.slice(0, 2048) : '' } : {}
+  return keyHelper.show(providerId, o)
 })
 
 ipcMain.handle('desktop:open-external', (e, url) => {
@@ -489,7 +535,8 @@ function openLogs() {
 // ---------- session hardening ----------
 function hardenSession(ses) {
   const trusted = (wcUrl) => isInternalUrl(wcUrl)
-  const allowed = new Set(['clipboard-sanitized-write', 'notifications'])
+  // clipboard-read: the LLM key-paste hint ("clipboard has a key, paste it?") reads the clipboard on window focus; internal pages only, never silently applied by the UI
+  const allowed = new Set(['clipboard-sanitized-write', 'clipboard-read', 'notifications'])
   ses.setPermissionRequestHandler((wc, permission, cb) => cb(allowed.has(permission) && trusted(wc.getURL())))
   ses.setPermissionCheckHandler((wc, permission, origin) => allowed.has(permission) && trusted(origin || (wc && wc.getURL())))
   ses.webRequest.onHeadersReceived((details, cb) => {

@@ -29,6 +29,9 @@ type OAuthFlow struct {
 	AuthorizeURL string // browser page (https)
 	ExchangeURL  string // POST {code, code_verifier, code_challenge_method} -> {key}
 	KeyLabel     string
+	// KeyInfoURL (optional) answers GET with the new key as Bearer and {"data":{"label":...}}; used only to show the
+	// key's name to the user. A failure never fails the flow.
+	KeyInfoURL string
 	// APIBase overrides the preset Base URL after connecting (tests with a fake provider only).
 	APIBase string
 	// Hosts are the only hosts the desktop shell may open for this flow (https only).
@@ -41,6 +44,7 @@ var oauthFlows = map[string]OAuthFlow{
 		AuthorizeURL: "https://openrouter.ai/auth",
 		ExchangeURL:  "https://openrouter.ai/api/v1/auth/keys",
 		KeyLabel:     "OA Agent",
+		KeyInfoURL:   "https://openrouter.ai/api/v1/key",
 		Hosts:        []string{"openrouter.ai"},
 	},
 }
@@ -347,7 +351,8 @@ func (m *Manager) oauthComplete(key [32]byte, sub Subject, flow OAuthFlow, code,
 		m.oauthSet(key, func(r *oauthRec) { r.status, r.message = OAuthFailed, msg })
 		return
 	}
-	cfg, serr := m.oauthStoreKey(ctx, sub, rec.scope, flow, apiKey)
+	label := m.oauthKeyLabel(ctx, flow, apiKey)
+	cfg, serr := m.oauthStoreKey(ctx, sub, rec.scope, flow, apiKey, label)
 	if serr != nil {
 		log.Printf("llm oauth: saving the key failed (%s)", rec.provider)
 		m.oauthSet(key, func(r *oauthRec) { r.status, r.message = OAuthFailed, "保存密钥失败，请重试" })
@@ -420,26 +425,114 @@ func (m *Manager) oauthExchange(ctx context.Context, f OAuthFlow, code, verifier
 // key can never start with a control character (validKey), so the marker is unambiguous.
 const keyTagPrefix = "\x00oa:oauth:"
 
-func tagKey(provider, key string) string { return keyTagPrefix + provider + "\x00" + key }
+func tagKey(provider, key string) string { return tagKeyLabel(provider, "", key) }
+
+// tagKeyLabel also carries the key's display name (fetched from the provider after the exchange):
+// "\x00oa:oauth:<provider>[\x01<label>]\x00<key>". Older blobs without a label stay readable.
+func tagKeyLabel(provider, label, key string) string {
+	if label = cleanKeyLabel(label); label != "" {
+		provider += "\x01" + label
+	}
+	return keyTagPrefix + provider + "\x00" + key
+}
+
+// labelTagPrefix marks a pasted key that carries a user-typed name: "\x00oa:label:<label>\x00<key>" (source stays "manual").
+const labelTagPrefix = "\x00oa:label:"
+
+// tagManualLabel returns the plain key when there is no usable label.
+func tagManualLabel(label, key string) string {
+	if label = cleanKeyLabel(label); label == "" {
+		return key
+	}
+	return labelTagPrefix + label + "\x00" + key
+}
+
+// cleanKeyLabel keeps a label short and printable (it is shown in the UI and must not carry control characters).
+func cleanKeyLabel(l string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.TrimSpace(l) {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if n++; n > 80 {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
 
 // splitKey returns the plain key and where it came from ("manual" or "oauth", with the provider id).
 func splitKey(plain string) (key, source, provider string) {
+	key, source, provider, _ = splitKeyLabel(plain)
+	return
+}
+
+func splitKeyLabel(plain string) (key, source, provider, label string) {
+	if strings.HasPrefix(plain, labelTagPrefix) {
+		rest := plain[len(labelTagPrefix):]
+		if i := strings.IndexByte(rest, 0); i >= 0 {
+			return rest[i+1:], "manual", "", rest[:i]
+		}
+	}
 	if strings.HasPrefix(plain, keyTagPrefix) {
 		rest := plain[len(keyTagPrefix):]
 		if i := strings.IndexByte(rest, 0); i >= 0 {
-			return rest[i+1:], "oauth", rest[:i]
+			head := rest[:i]
+			if j := strings.IndexByte(head, 1); j >= 0 {
+				head, label = head[:j], head[j+1:]
+			}
+			return rest[i+1:], "oauth", head, label
 		}
 	}
-	return plain, "manual", ""
+	return plain, "manual", "", ""
+}
+
+// oauthKeyLabel asks the provider for the new key's name (OpenRouter: GET /api/v1/key -> data.label). Best effort:
+// any failure returns "" and the UI falls back to the masked suffix. The key is only sent to the flow's own URL.
+func (m *Manager) oauthKeyLabel(ctx context.Context, f OAuthFlow, apiKey string) string {
+	u := f.KeyInfoURL
+	if u == "" {
+		return ""
+	}
+	if f.APIBase != "" {
+		u = strings.TrimRight(f.APIBase, "/") + "/key"
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	res, err := m.oa().http.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return ""
+	}
+	var out struct {
+		Data struct {
+			Label string `json:"label"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&out) != nil {
+		return ""
+	}
+	return cleanKeyLabel(out.Data.Label)
 }
 
 // oauthStoreKey saves the key and the provider's preset as the configuration of scope.
-func (m *Manager) oauthStoreKey(ctx context.Context, sub Subject, scope string, f OAuthFlow, apiKey string) (ConfigView, error) {
+func (m *Manager) oauthStoreKey(ctx context.Context, sub Subject, scope string, f OAuthFlow, apiKey, label string) (ConfigView, error) {
 	preset, ok := presetByID(f.ProviderID)
 	if !ok {
 		return ConfigView{}, bad("INVALID_PRESET", "未知的预设")
 	}
-	enc, err := m.box.Seal([]byte(tagKey(f.ProviderID, apiKey)))
+	enc, err := m.box.Seal([]byte(tagKeyLabel(f.ProviderID, label, apiKey)))
 	if err != nil {
 		return ConfigView{}, err
 	}

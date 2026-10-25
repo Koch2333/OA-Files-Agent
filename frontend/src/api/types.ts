@@ -93,6 +93,14 @@ export interface ReadinessInfo {
 /** 浏览器选择/拖拽得到的待导入文件：保留相对路径，绝不使用本机绝对路径。 */
 export interface PickedFile { file: File; relativePath: string }
 
+/** 可续传分片上传 / 本机路径导入（契约 imports 标签）。没有大小或数量上限；config 里的上限为运维可选安全阀，null = 不限制。 */
+export type ImportConfig = S['ImportConfig']
+export type UploadSession = S['UploadSession']
+export type ImportBatchStatus = S['ImportBatchStatus']
+export type PathImportStatus = S['PathImportStatus']
+export interface CreateUploadInput { batch_id?: string; name: string; path?: string; size: number; sha256?: string }
+export interface FromPathsInput { batch_id?: string; paths: string[]; include_hidden?: boolean; commit?: boolean; template_id?: string; options?: ImportOptions; idempotencyKey?: string }
+
 export interface ApiErrorBody { error: { code: string; message: string; request_id?: string; details?: Record<string, unknown> } }
 
 export class ApiError extends Error {
@@ -111,6 +119,18 @@ export interface Api {
   readonly capabilities: Capabilities
   readiness(): Promise<ReadinessInfo>
   createImport(files: PickedFile[], opts: { templateId?: string | null; idempotencyKey?: string; options?: ImportOptions }): Promise<ImportJob>
+  getImportConfig(): Promise<ImportConfig>
+  createUpload(input: CreateUploadInput): Promise<UploadSession>
+  getUpload(id: string): Promise<UploadSession>
+  /** 追加一个分片（幂等）；offset 不一致时抛 ApiError(409, OFFSET_MISMATCH, details.offset)。 */
+  putUploadChunk(id: string, offset: number, chunk: Blob, signal?: AbortSignal): Promise<UploadSession>
+  completeUpload(id: string): Promise<UploadSession>
+  abortUpload(id: string): Promise<void>
+  getImportBatch(batchId: string): Promise<ImportBatchStatus>
+  discardImportBatch(batchId: string): Promise<void>
+  commitImportBatch(batchId: string, opts: { templateId?: string | null; idempotencyKey?: string; options?: ImportOptions }): Promise<ImportJob>
+  /** 仅桌面本机模式：后端按绝对路径流式复制（不移动源文件）。 */
+  importFromPaths(input: FromPathsInput): Promise<PathImportStatus>
   listTasks(q?: TaskQuery): Promise<Page<ImportJob>>
   getTask(id: string): Promise<ImportJob>
   cancelTask(id: string): Promise<ImportJob>

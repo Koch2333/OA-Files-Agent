@@ -9,7 +9,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/diagnose.test.js test/workdir.test.js test/settings-model.test.js test/external-url.test.js",
+    "test": "node --test test/diagnose.test.js test/workdir.test.js test/settings-model.test.js test/external-url.test.js test/elevation.test.js test/pick-paths.test.js test/keyhelper-core.test.js",
     "icons": "node scripts/make-icons.js"
   },
   "devDependencies": {

@@ -12,6 +12,9 @@ services:
     profiles: ["bundled-db-disabled"]
   api:
     depends_on: !reset {}
+    # host.docker.internal = the Docker host, so a database installed on this very server is reachable (it must listen on an
+    # address the containers can reach, not only on 127.0.0.1). Needs Docker 20.10+.
+    extra_hosts: ["host.docker.internal:host-gateway"]
     environment:
       OA_DATABASE_URL: !reset null
       OA_DB_PROVIDER: ${OA_DB_PROVIDER:?set OA_DB_PROVIDER in .env}
@@ -23,4 +26,5 @@ services:
       OA_DB_SCHEMA: ${OA_DB_SCHEMA:-}
       OA_DB_TLS_MODE: ${OA_DB_TLS_MODE:-require}
       OA_DB_TLS_CA_PEM: ${OA_DB_TLS_CA_PEM:-}
+      OA_DB_TLS_CA_FILE: ${OA_DB_TLS_CA_FILE:-}   # container path; install.sh copies the CA to <app data dir>/db-ca.pem = /data/db-ca.pem
       OA_DB_TLS_SERVER_NAME: ${OA_DB_TLS_SERVER_NAME:-}

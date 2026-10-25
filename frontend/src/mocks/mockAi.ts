@@ -31,6 +31,37 @@ interface Deps {
   presets: LlmPreset[]
   models: (baseUrl: string) => string[]
   audit: (actor: string, action: string, target: string, summary: string) => void
+  /** 登录授权成功 / 断开后写入全局配置与密钥 */
+  setGlobalLlm: (c: LlmConfig, key: string) => void
+}
+
+/**
+ * 演示用故障注入（按密钥内容触发，便于演示“重试”）：sk-bad / bad → 401；sk-down → 503（一直失败）；
+ * sk-flaky → 每个动作第一次 503，之后正常；sk-limit → 每个动作第一次 429（带 Retry-After 5 秒），之后正常。
+ */
+const faultSeen = new Map<string, number>()
+export function resetMockFaults() { faultSeen.clear() }
+export interface MockFault { status: number; message: string; retryAfter?: number }
+export function mockProviderFault(action: 'test' | 'models', rawKey: string): MockFault | null {
+  const k = rawKey.trim()
+  const first = () => { const id = `${action}:${k}`; const n = faultSeen.get(id) ?? 0; faultSeen.set(id, n + 1); return n === 0 }
+  if (k === 'bad' || k.includes('sk-bad')) return { status: 401, message: '密钥无效或没有权限（HTTP 401）' }
+  if (k.includes('sk-down')) return { status: 503, message: '服务商暂时不可用（HTTP 503）' }
+  if (k.includes('sk-flaky') && first()) return { status: 503, message: '服务商暂时不可用（HTTP 503）' }
+  if (k.includes('sk-limit') && first()) return { status: 429, message: '请求过于频繁或额度不足（HTTP 429）', retryAfter: 5 }
+  return null
+}
+/** 模型列表：命中故障时抛出与真实 API 相同形状的错误（上游失败 502；限速 429 带 Retry-After） */
+export function mockModelsGuard(key: string): void {
+  const f = mockProviderFault('models', key)
+  if (!f) return
+  const e = new ApiError(f.status === 429 ? 429 : 502, f.status === 429 ? 'RATE_LIMITED' : 'UPSTREAM_ERROR', f.message, 'mock-req')
+  if (f.retryAfter) e.retryAfter = f.retryAfter
+  throw e
+}
+export function mockTestFault(key: string): LlmTestResult | null {
+  const f = mockProviderFault('test', key)
+  return f ? { ok: false, latency_ms: 420, message: f.message, tool_calling: null, vision_ok: null } : null
 }
 
 const emptyPersonal = (): LlmConfig => ({ mode: 'heuristic', preset_id: '', base_url: '', model: '', api_key_set: false, api_key_hint: '', vision_model: '', allow_vision: false, state: 'unconfigured', updated_at: null })
@@ -42,6 +73,7 @@ export function createMockAi(d: Deps, initial: 'none' | 'global' | 'personal'): 
     : emptyPersonal()
   let personalKey = initial === 'personal' ? 'sk-personal-demo' : ''
   const testHits: number[] = []
+  let oauthSeq = 0
 
   const role = () => d.role() ?? 'viewer'
   const g = () => d.globalCfg()
@@ -80,16 +112,45 @@ export function createMockAi(d: Deps, initial: 'none' | 'global' | 'personal'): 
   }
   function fakeTest(input: LlmTestInput): LlmTestResult {
     const key = input.api_key?.trim() || personalKey
-    if (key === 'bad') return { ok: false, latency_ms: 420, message: '密钥无效（401）', tool_calling: null, vision_ok: null }
+    const fault = mockTestFault(key)
+    if (fault) return fault
     return { ok: true, latency_ms: 420, message: '连接正常', tool_calling: !/reasoner/i.test(input.model), vision_ok: input.vision_model?.trim() ? !/bad/i.test(input.vision_model) : null }
   }
 
   const api: MockAiApi = {
     async getLlmStatus() { await delay(120); return status() },
     // 演示数据没有真实的平台账号：登录授权不可用（按钮对 oauth_login=false 的演示预设本就不显示）
-    async startLlmOauth() { throw new ApiError(422, 'OAUTH_UNSUPPORTED', '演示模式不支持登录授权', 'mock-req') },
-    async getLlmOauthStatus() { throw new ApiError(422, 'OAUTH_UNKNOWN_STATE', '演示模式不支持登录授权', 'mock-req') },
-    async disconnectLlmOauth() { throw new ApiError(422, 'NOT_OAUTH_KEY', '演示模式不支持登录授权', 'mock-req') },
+    // 演示：没有真实的 OpenRouter 账号。网页版“跳转”回到本页（?llm_oauth=ok），状态里直接返回“已连接”和一把示例 Key（名称 OA Agent）。
+    // ?mock_oauth_test=fail 让登录后的自动测试第一次失败，用来演示“重试”。
+    async startLlmOauth(i) {
+      await delay(250)
+      if (i.provider !== 'openrouter') throw new ApiError(422, 'OAUTH_UNSUPPORTED', '该服务商没有可用的登录授权方式，请手动填写 API Key', 'mock-req')
+      if (i.scope === 'personal') needPersonal()
+      const q = new URLSearchParams(typeof location === 'undefined' ? '' : location.search) // 保留 ?mock_* 参数
+      q.set('llm_oauth', 'ok')
+      const origin = typeof location === 'undefined' ? '' : location.origin
+      return { authorize_url: `${origin}/settings?${q.toString()}#llm`, state: `mock-${i.scope}-${++oauthSeq}`, expires_at: new Date(Date.now() + 600_000).toISOString() }
+    },
+    async getLlmOauthStatus(state) {
+      await delay(700)
+      const m = /^mock-(personal|global)-\d+$/.exec(state)
+      if (!m) throw new ApiError(422, 'OAUTH_UNKNOWN_STATE', '登录授权请求不存在或已过期，请重新发起', 'mock-req')
+      const scope = m[1] as 'personal' | 'global'
+      const cfg: LlmConfig = { mode: 'llm', preset_id: 'openrouter', base_url: 'https://openrouter.ai/api/v1', model: 'openrouter/auto', api_key_set: true, api_key_hint: '••••c0de', key_source: 'oauth', key_provider: 'openrouter', key_label: 'OA Agent', vision_model: '', allow_vision: false, state: 'ok', updated_at: now() }
+      if (scope === 'personal') { needPersonal(); personal = cfg; personalKey = 'sk-or-v1-mock-c0de' } else d.setGlobalLlm(cfg, 'sk-or-v1-mock-c0de')
+      d.audit('演示用户', 'llm.oauth.connect', 'openrouter', `登录授权已连接：openrouter / ${scope}`)
+      const failTest = typeof location !== 'undefined' && new URLSearchParams(location.search).get('mock_oauth_test') === 'fail'
+      const test: LlmTestResult = failTest ? { ok: false, latency_ms: 600, message: '服务商暂时不可用（HTTP 503）', tool_calling: null, vision_ok: null } : { ok: true, latency_ms: 480, message: '连接成功', tool_calling: true, vision_ok: null }
+      return { status: 'connected', provider: 'openrouter', scope, config: { ...cfg }, test, ...(failTest ? { message: '已获得密钥并保存，但连接测试未通过：服务商暂时不可用（HTTP 503）' } : {}) }
+    },
+    async disconnectLlmOauth(scope) {
+      await delay(250)
+      const cur = scope === 'personal' ? personal : g()
+      if (cur.key_source !== 'oauth') throw new ApiError(422, 'NOT_OAUTH_KEY', '当前密钥不是通过登录授权获得的，请在表单中清除 API Key', 'mock-req')
+      const cleared: LlmConfig = { ...cur, api_key_set: false, api_key_hint: '', key_source: undefined, key_provider: undefined, key_label: undefined, state: 'unconfigured', updated_at: now() }
+      if (scope === 'personal') { personal = cleared; personalKey = '' } else d.setGlobalLlm(cleared, '')
+      return { ...cleared }
+    },
     async getPersonalLlm() { await delay(120); needPersonal(); return { ...personal } },
     async savePersonalLlm(input) {
       await delay(300); needPersonal()
@@ -120,6 +181,7 @@ export function createMockAi(d: Deps, initial: 'none' | 'global' | 'personal'): 
     async listPersonalLlmModels(input) {
       await delay(300); needPersonal()
       personalUrl(input.base_url)
+      mockModelsGuard(input.api_key?.trim() || personalKey)
       return d.models(input.base_url)
     },
     async getAiPolicy() {

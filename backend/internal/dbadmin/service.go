@@ -53,6 +53,7 @@ type Service struct {
 	Audit         func(ctx context.Context, actor, action, target, summary string)
 	Now           func() time.Time
 	// Hooks lets the cross-database migration workflow add its own checks (maintenance mode etc.).
+	direct *sqldb.Config // set by SetDirect (target "direct")
 	mu     sync.Mutex
 	tokens map[string]initToken
 }
@@ -488,8 +489,17 @@ type InitPreview struct {
 	Transactional bool          `json:"transactional_ddl"`
 }
 
+// SetDirect makes the target "direct" refer to a configuration supplied by the caller (the oa-admin db-check / db-init
+// commands run before any deployment exists, so there is neither a saved pending entry nor a running database).
+func (s *Service) SetDirect(c sqldb.Config) { s.direct = &c }
+
 func (s *Service) targetConfig(target string) (sqldb.Config, bool, error) {
 	switch target {
+	case "direct":
+		if s.direct == nil {
+			return sqldb.Config{}, false, errors.New("no direct database configuration")
+		}
+		return *s.direct, false, nil
 	case "", "pending":
 		f, err := dbconfig.Load(s.DataDir)
 		if err != nil {
@@ -506,7 +516,7 @@ func (s *Service) targetConfig(target string) (sqldb.Config, bool, error) {
 		}
 		return s.Store.Pool.Config(), true, nil
 	}
-	return sqldb.Config{}, false, fmt.Errorf("%w: target must be pending or active", ErrInvalid)
+	return sqldb.Config{}, false, fmt.Errorf("%w: target must be pending, active or direct", ErrInvalid)
 }
 
 func (s *Service) targetDB(ctx context.Context, target string) (*sqldb.DB, bool, error) {

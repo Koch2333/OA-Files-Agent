@@ -12,6 +12,20 @@
     "needs_api_key": true,
     "docs_url": "https://api-docs.deepseek.com/",
     "key_url": "https://platform.deepseek.com/api_keys",
+    "key_hosts": ["platform.deepseek.com"],
+    "key_pattern": "^sk-[A-Za-z0-9]{20,64}$",
+    "key_guide": {
+      "suggested_name": "OA Agent",
+      "login_note": "需要先登录或注册 DeepSeek 开放平台账号（可能要手机号或邮箱验证码）。",
+      "cost_note": "DeepSeek 按用量计费，调用前账号里需要有可用余额；是否赠送额度、如何充值以网站页面上的说明为准。",
+      "steps": [
+        {"title": "登录或注册", "hint": "在左边的网页里登录 DeepSeek 开放平台；没有账号就先注册（按页面提示用手机号或邮箱验证）。登录后回到这里点“这一步完成了”。"},
+        {"title": "进入“API keys”页面", "hint": "登录后一般会直接停在密钥页面。如果不是，在网页左侧菜单里找名为“API keys”的入口。"},
+        {"title": "创建一个新密钥", "hint": "找一个名为“创建 API key”（Create new API key）的按钮，点一下。名称建议填 OA Agent，方便以后认出它。"},
+        {"title": "复制密钥", "hint": "点密钥旁边的“复制”按钮（或选中整串文字后按 Ctrl+C）。", "warn": "密钥通常只显示这一次，关掉弹窗就看不到了；如果没复制到，请重新创建一个。"},
+        {"title": "回到本窗口", "hint": "复制成功后，这里会自动识别并让你确认，不需要手动粘贴。"}
+      ]
+    },
     "vision_models": [
       {"id": "deepseek-flash", "label": "deepseek-flash", "note": "支持图片输入"}
     ],
@@ -32,6 +46,20 @@
     "needs_api_key": true,
     "docs_url": "https://help.aliyun.com/zh/model-studio/",
     "key_url": "https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key",
+    "key_hosts": [".aliyun.com"],
+    "key_pattern": "^sk-[A-Za-z0-9]{20,64}$",
+    "key_guide": {
+      "suggested_name": "OA Agent",
+      "login_note": "需要阿里云账号；首次使用可能要完成实名认证，并在百炼页面上同意并开通服务。登录页面可能跳转到阿里云的登录域名，这是正常的。",
+      "cost_note": "百炼按调用量计费；是否有免费额度、是否需要充值，以控制台页面上的说明为准。",
+      "steps": [
+        {"title": "登录阿里云账号", "hint": "在左边的网页里登录阿里云（可用账号密码、短信或扫码）；没有账号就先注册。首次进入百炼若提示“开通”，按页面提示同意并开通即可。"},
+        {"title": "进入“API-KEY”页面", "hint": "登录后应该停在 API Key 管理页面。如果不是，在页面左侧或“密钥管理”里找名为“API-KEY”的入口。"},
+        {"title": "创建一个新密钥", "hint": "找一个名为“创建 API-KEY”的按钮，点一下；业务空间保持默认即可。如有名称/描述栏，建议填 OA Agent。"},
+        {"title": "复制密钥", "hint": "在列表里找到新密钥，点它旁边的“查看”或“复制”图标，把整串密钥复制下来。", "warn": "请只复制以 sk- 开头的那一串，不要复制账号或空间信息。"},
+        {"title": "回到本窗口", "hint": "复制成功后，这里会自动识别并让你确认，不需要手动粘贴。"}
+      ]
+    },
     "vision_models": [
       {"id": "qwen3.7-plus", "label": "qwen3.7-plus", "note": "支持图片理解"},
       {"id": "qwen3.8-max", "label": "qwen3.8-max", "note": "支持图片理解"}
@@ -49,6 +77,20 @@
     "needs_api_key": true,
     "docs_url": "https://platform.openai.com/docs",
     "key_url": "https://platform.openai.com/api-keys",
+    "key_hosts": ["platform.openai.com", "auth.openai.com"],
+    "key_pattern": "^sk-(?:proj-|svcacct-|admin-)[A-Za-z0-9_-]{20,}$|^sk-[A-Za-z0-9]{20,}$",
+    "key_guide": {
+      "suggested_name": "OA Agent",
+      "login_note": "国内网络可能需要代理才能打开 OpenAI。用 Google、Microsoft 或 Apple 账号登录时，本窗口可能无法完成；那种情况请用邮箱密码登录，或点下面的“改用系统浏览器”（复制密钥后回到这个窗口也会自动识别）。",
+      "cost_note": "OpenAI 接口需要账号里有预付额度才能调用，具体充值入口和金额以官网 Billing 页面为准。",
+      "steps": [
+        {"title": "登录或注册", "hint": "在左边的网页里登录 OpenAI 平台；没有账号就先注册（需要邮箱和手机验证）。"},
+        {"title": "进入“API keys”页面", "hint": "登录后一般会停在密钥页面。如果不是，在页面左侧或右上角设置里找名为“API keys”的入口。"},
+        {"title": "创建一个新密钥", "hint": "找一个名为“Create new secret key”的按钮，点一下。名称建议填 OA Agent，权限保持默认即可。"},
+        {"title": "复制密钥", "hint": "点密钥旁边的复制按钮（Copy）。", "warn": "密钥只会显示这一次，点“Done”之后就再也看不到了；没复制到就需要重新创建。"},
+        {"title": "回到本窗口", "hint": "复制成功后，这里会自动识别并让你确认，不需要手动粘贴。"}
+      ]
+    },
     "vision_models": [],
     "checked_at": "2026-10-22",
     "note": "模型更新频繁，这里不预设；请点击“获取模型列表”选择，或直接输入模型名。"
@@ -82,6 +124,25 @@
     "needs_api_key": true,
     "docs_url": "https://openrouter.ai/docs",
     "key_url": "https://openrouter.ai/settings/keys",
+    "key_hosts": [".openrouter.ai"],
+    "key_pattern": "^sk-or-v1-[A-Za-z0-9]{32,}$",
+    "key_guide": {
+      "suggested_name": "OA Agent",
+      "login_note": "国内网络可能需要代理才能打开 OpenRouter。用 Google 或 GitHub 账号登录时，本窗口可能无法完成；那种情况请用邮箱登录，或点下面的“改用系统浏览器”。",
+      "cost_note": "调用付费模型需要账号里有余额；是否有免费模型、如何充值，以 OpenRouter 网站页面上的说明为准。",
+      "login_steps": [
+        {"title": "登录 OpenRouter", "hint": "在左边的网页里登录；没有账号就先注册（按页面提示验证邮箱）。"},
+        {"title": "点“授权”", "hint": "登录后页面会问你是否允许 OA Agent 创建一把专用密钥，找名为“Authorize”（授权）的按钮点一下。"},
+        {"title": "等它自动完成", "hint": "授权后本窗口会自动关闭，设置里会显示“已创建密钥”并自动测试连接；你不需要复制任何东西。"}
+      ],
+      "steps": [
+        {"title": "登录或注册", "hint": "在左边的网页里登录 OpenRouter；没有账号就先注册。"},
+        {"title": "进入“Keys”页面", "hint": "登录后一般会停在密钥页面。如果不是，在右上角头像菜单或设置里找名为“Keys”的入口。"},
+        {"title": "创建一个新密钥", "hint": "找一个名为“Create Key”的按钮，点一下，名称建议填 OA Agent。"},
+        {"title": "复制密钥", "hint": "点密钥旁边的复制按钮。", "warn": "密钥只会显示这一次，关掉弹窗就看不到了；没复制到就需要重新创建。"},
+        {"title": "回到本窗口", "hint": "复制成功后，这里会自动识别并让你确认，不需要手动粘贴。"}
+      ]
+    },
     "vision_models": [],
     "checked_at": "2026-10-24",
     "note": "模型 ID 形如 厂商/模型名；以“获取模型列表”为准。登录授权生成的 Key 可在 OpenRouter 的 Keys 页面随时吊销。"

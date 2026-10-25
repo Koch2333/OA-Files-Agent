@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { api } from '../api'
 import { useAi } from '../stores/ai'
+import { useAuth } from '../stores/auth'
+import { useUi } from '../stores/ui'
+import { errMsg } from '../utils/errorInfo'
+import RetryNotice from './RetryNotice.vue'
 import Icon from './Icon.vue'
 import ErrorBanner from './ErrorBanner.vue'
 
@@ -8,10 +13,21 @@ import ErrorBanner from './ErrorBanner.vue'
 const props = defineProps<{ compact?: boolean }>()
 const ai = useAi()
 const v = computed(() => ai.view)
+const auth = useAuth()
+const ui = useUi()
+const retrying = ref(false)
+/** 全局提示：最近有任务因大模型错误停下 → 一键重试该任务（只重新识别失败的文件）。 */
+async function retryFailedTask() {
+  const f = ai.failure
+  if (!f || retrying.value) return
+  retrying.value = true
+  try { await api.retryTask(f.taskId); ui.toast('已重新排队：只重新识别失败的文件', 'success'); ai.clearFailure(f.taskId) } catch (e) { ui.toast(errMsg(e), 'error') } finally { retrying.value = false }
+}
 </script>
 <template>
   <div class="lsb">
-  <ErrorBanner v-if="ai.error && !ai.status" :message="ai.error" />
+  <RetryNotice v-if="ai.failure" :view="ai.failure.view" :busy="retrying" :readonly="!auth.canWrite" :since="ai.failure.since" :title="`最近有 ${ai.failure.count} 个文件的大模型调用失败`" data-testid="llm-failure-banner" @retry="retryFailedTask" />
+  <ErrorBanner v-if="ai.error && !ai.status" :message="ai.error" retry :busy="ai.loading" @retry="ai.refresh()" />
   <template v-else-if="ai.status">
     <span v-if="v.ok" class="chip progress" data-testid="ai-llm-banner"><Icon name="smart_toy" sm />{{ v.chip }}</span>
     <section v-else-if="!props.compact" class="card nollm" role="alert" data-testid="ai-nollm-card">
@@ -28,7 +44,7 @@ const v = computed(() => ai.view)
   </div>
 </template>
 <style scoped>
-.lsb { margin-bottom: 16px; }
+.lsb { margin-bottom: 16px; } .lsb :deep(.retry-notice) { margin-bottom: 12px; }
 .nollm { display: flex; gap: 20px; align-items: flex-start; border: 2px solid var(--c-warn); background: var(--c-warn-container); color: var(--c-on-warn-container); }
 .nollm .big { font-size: 48px; flex: none; } .nollm .muted { color: inherit; opacity: .85; }
 @media (max-width: 800px) { .nollm { flex-direction: column; } }

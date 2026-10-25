@@ -107,7 +107,13 @@ func (a *Agent) AnalyzeFile(ctx context.Context, f FileInput, tpls []Template, e
 			if ctx.Err() != nil {
 				return a.seal(res, s), ctx.Err()
 			}
-			emit(Event{Phase: "analyze", Type: "provider_error", Summary: "模型调用失败", Details: map[string]any{"turn": turn}})
+			det := map[string]any{"turn": turn}
+			sum := "模型调用失败"
+			if pe, ok := AsProviderError(err); ok {
+				det["status"], det["code"], det["retryable"], det["attempts"], det["retry_after_seconds"] = pe.Status, pe.Code, pe.Retryable, pe.Attempts, pe.RetryAfterSec
+				sum = pe.UserMessage()
+			}
+			emit(Event{Phase: "analyze", Type: "provider_error", Summary: sum, Details: det})
 			res.Warnings = append(res.Warnings, "provider_error")
 			return a.seal(res, s), fmt.Errorf("provider chat failed: %w", err)
 		}

@@ -110,6 +110,18 @@ type File struct {
 	OCRUsed        bool      `json:"-"`
 	OCR            *OCRInfo  `json:"ocr"`
 	TemplateID     *string   `json:"-"`
+	// LLMError is set when the file failed because of a model-provider call (nil otherwise); retrying the task re-runs it.
+	LLMError *LLMError `json:"llm_error"`
+}
+
+// LLMError is the user-safe description of a provider failure (never a key, request or document text).
+type LLMError struct {
+	Code              string `json:"code"`
+	Status            int    `json:"status"`
+	Retryable         bool   `json:"retryable"`
+	RetryAfterSeconds int    `json:"retry_after_seconds"`
+	Attempts          int    `json:"attempts"`
+	Message           string `json:"message"`
 }
 
 // OCRInfo summarises how OCR went for a file (nil when OCR was not used).

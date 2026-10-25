@@ -11,6 +11,7 @@ import PageHeader from '../components/PageHeader.vue'
 import Icon from '../components/Icon.vue'
 import FilePicker from '../components/FilePicker.vue'
 import ErrorBanner from '../components/ErrorBanner.vue'
+import UploadProgress from '../components/UploadProgress.vue'
 import AutomationSelector from '../components/AutomationSelector.vue'
 import AutoRiskDialog from '../components/AutoRiskDialog.vue'
 import RemoteBrowserDialog from '../components/RemoteBrowserDialog.vue'
@@ -83,7 +84,8 @@ const submit = () => flow.submit()
           </div>
         </div>
 
-        <button class="btn filled has-icon" :disabled="!picked.length || submitting || summary.blocking" data-testid="import-submit" @click="submit">
+        <UploadProgress v-if="submitting" :progress="flow.progress.value" @cancel="flow.cancelUpload()" />
+        <button class="btn filled has-icon" :disabled="!picked.length || submitting" data-testid="import-submit" @click="submit">
           <Icon :name="submitting ? 'progress_activity' : 'auto_awesome'" :class="{ spin: submitting }" sm />{{ submitting ? '正在提交…' : `开始智能归档（${picked.length}）` }}
         </button>
         <p v-if="summary.rejected" class="muted">格式不支持的文件仍会提交，并在任务中显示“格式错误”，不会导致整批失败。</p>
@@ -92,7 +94,7 @@ const submit = () => flow.submit()
         <h2 class="t-title-m">支持的格式</h2>
         <div class="row wrap"><span class="chip">Word .docx</span><span class="chip">Excel .xlsx</span><span class="chip">PDF（含扫描件）</span><span class="chip">PNG / JPG</span></div>
         <p class="muted">图片与扫描 PDF 通过 OCR 识别，并与文件名联合判断部门、类型和日期。无法确认的字段会标为“待审核”，不会被虚构。</p>
-        <div class="banner info"><Icon name="info" sm /><div>浏览器只能上传你主动选择或拖入的文件，无法读取任意本机路径。若需直接授权本机目录，请使用后端的本机启动器能力（契约待定）。</div></div>
+        <div class="banner info"><Icon name="info" sm /><div>文件大小和数量不受限制：大文件自动分块上传，网络中断后可从断点继续。Windows 桌面版还可以直接选择本机文件/文件夹，免上传。超大文件只做元数据判断（不做全文识别），并标记为待人工审核。</div></div>
       </section>
     </aside>
   </div>

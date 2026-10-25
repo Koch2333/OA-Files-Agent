@@ -190,11 +190,32 @@ class SpoolTest(ServerCase):
         self.assertEqual(status, 200)
 
     def test_file_too_large(self):
-        big = os.path.join(self.spool, "big.pdf")
-        with open(big, "wb") as f:
-            f.truncate(20 * 1024 * 1024 + 1)
-        status, body = self.extract(big)
-        self.assertEqual((status, body["error"]["code"]), (413, "FILE_TOO_LARGE"))
+        import server
+        old, server.MAX_FILE_BYTES = server.MAX_FILE_BYTES, 1024 * 1024  # the cap only protects extraction memory
+        try:
+            big = os.path.join(self.spool, "big.pdf")
+            with open(big, "wb") as f:
+                f.truncate(server.MAX_FILE_BYTES + 1)
+            status, body = self.extract(big)
+            self.assertEqual((status, body["error"]["code"]), (413, "FILE_TOO_LARGE"))
+        finally:
+            server.MAX_FILE_BYTES = old
+
+    def test_extraction_cap_default_is_not_the_old_20_mib(self):
+        import server
+        self.assertGreater(server.MAX_FILE_BYTES, 20 * 1024 * 1024)
+
+    def test_extraction_cap_zero_means_unlimited(self):
+        import server
+        old, server.MAX_FILE_BYTES = server.MAX_FILE_BYTES, 0
+        try:
+            big = os.path.join(self.spool, "big2.pdf")
+            with open(big, "wb") as f:
+                f.truncate(2 * 1024 * 1024)
+            status, body = self.extract(big)
+            self.assertNotEqual(body.get("error", {}).get("code"), "FILE_TOO_LARGE")
+        finally:
+            server.MAX_FILE_BYTES = old
 
     def test_truncation(self):
         import docx

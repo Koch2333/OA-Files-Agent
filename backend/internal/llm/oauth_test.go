@@ -139,11 +139,20 @@ func TestOAuthRoundTripGlobalStoresKeyLikeManual(t *testing.T) {
 	if m.key != fakeOAuthKey {
 		t.Fatal("active key must be the plain key (tag stripped)")
 	}
+	if cfg.KeyLabel != "OA Agent" || cfg.APIKeyHint != "••••cdef" {
+		t.Fatalf("label/hint: %+v", cfg)
+	}
+	// the label also survives an unrelated save and never carries the key
+	defer func() {
+		if c := m.Config(); c.KeyLabel != "" {
+			t.Fatalf("a pasted key must drop the login label: %+v", c)
+		}
+	}()
 	// provenance survives an unrelated save (model change without a new key)
 	if _, err := m.Save(ctx, Input{Mode: ModeLLM, PresetID: "openrouter", BaseURL: cfg.BaseURL, Model: "other/model"}); err != nil {
 		t.Fatal(err)
 	}
-	if c := m.Config(); c.KeySource != "oauth" || c.Model != "other/model" {
+	if c := m.Config(); c.KeySource != "oauth" || c.Model != "other/model" || c.KeyLabel != "OA Agent" {
 		t.Fatalf("after save: %+v", c)
 	}
 	if len(*audit) == 0 || strings.Contains(strings.Join(*audit, "\n"), fakeOAuthKey) {
@@ -331,5 +340,61 @@ func TestOAuthLimitsAndTagging(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("openrouter preset missing")
+	}
+}
+
+func TestOAuthKeyLabelFallbackAndSanitising(t *testing.T) {
+	for _, tc := range []struct {
+		mode  int32
+		label string
+	}{{1, ""}, {2, "OA Agent"}} {
+		m, _, fp, _ := oauthMgr(t)
+		fp.keyInfo.Store(tc.mode)
+		ctx := context.Background()
+		s, _ := m.OAuthStartFlow(ctx, admin, "openrouter", "global", "http://x/cb", false)
+		state, code := fp.approve(t, s.AuthorizeURL)
+		m.OAuthCallback(state, code, "")
+		v := waitStatus(t, m, admin, state)
+		if v.Status != OAuthConnected {
+			t.Fatalf("a failing key-info call must not fail the flow: %+v", v)
+		}
+		c := m.Config()
+		if c.KeyLabel != tc.label || c.APIKeyHint == "" || !c.APIKeySet {
+			t.Fatalf("mode %d: %+v", tc.mode, c)
+		}
+		b, _ := json.Marshal([]any{c, v})
+		if strings.Contains(string(b), fakeOAuthKey) {
+			t.Fatalf("key leaked: %s", b)
+		}
+	}
+}
+
+func TestKeyLabelTagRoundTrip(t *testing.T) {
+	k, src, prov, label := splitKeyLabel(tagKeyLabel("openrouter", "My key", "abc"))
+	if k != "abc" || src != "oauth" || prov != "openrouter" || label != "My key" {
+		t.Fatal(k, src, prov, label)
+	}
+	// an old blob without a label still parses
+	if k, _, prov, label := splitKeyLabel(tagKey("openrouter", "abc")); k != "abc" || prov != "openrouter" || label != "" {
+		t.Fatal("legacy blob", k, prov, label)
+	}
+	if got := cleanKeyLabel("a\x00b\x01c\n" + strings.Repeat("x", 200)); strings.ContainsAny(got, "\x00\x01\n") || len([]rune(got)) > 80 {
+		t.Fatalf("not sanitised: %q", got)
+	}
+}
+
+func TestManualKeyLabelTagRoundTrip(t *testing.T) {
+	k, src, prov, label := splitKeyLabel(tagManualLabel("  OA Agent\n", "sk-abc"))
+	if k != "sk-abc" || src != "manual" || prov != "" || label != "OA Agent" {
+		t.Fatal(k, src, prov, label)
+	}
+	if got := tagManualLabel("", "sk-abc"); got != "sk-abc" {
+		t.Fatalf("empty label must not tag: %q", got)
+	}
+	if got := tagManualLabel("\x00\x01\n", "sk-abc"); got != "sk-abc" {
+		t.Fatalf("control-only label must not tag: %q", got)
+	}
+	if k, src, _, label := splitKeyLabel("sk-plain"); k != "sk-plain" || src != "manual" || label != "" {
+		t.Fatal("plain key", k, src, label)
 	}
 }

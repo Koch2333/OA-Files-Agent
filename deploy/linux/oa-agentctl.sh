@@ -139,10 +139,41 @@ service_state() {
     printf '%s' "${st:-missing}"
 }
 
+# db_external: the stack uses an EXISTING database server (docker-compose.external-db.yml): there is no postgres service to start,
+# dump or restore; the database is backed up with the engine's own tools
+db_external() { case ":$(env_get COMPOSE_FILE):" in *:docker-compose.external-db.yml:*) return 0 ;; *) return 1 ;; esac; }
+
 expected_services() {
     local s="postgres api worker"
+    if db_external; then s="api worker"; fi
     ! https_on || s="$s caddy"
     printf '%s' "$s"
+}
+
+# state_edit version TAG | removed | forget: keep the installer's state file (/etc/oa-agent/install.json) in step with this install
+state_edit() {
+    local sf="${OA_STATE_FILE:-/etc/oa-agent/install.json}" tmp l first=1
+    [ -f "$sf" ] && [ -w "$sf" ] || return 0
+    grep -q "\"dir\":\"$DIR\"" "$sf" 2>/dev/null || return 0
+    tmp="$(mktemp "$(dirname -- "$sf")/.install.json.XXXXXX" 2>/dev/null)" || return 0
+    {
+        printf '{"schema":1,"installs":[\n'
+        grep -E '^\{"dir":"' "$sf" | sed 's/,[[:space:]]*$//' | while IFS= read -r l; do
+            case "$l" in
+                "{\"dir\":\"$DIR\""*)
+                    case "$1" in
+                        forget) continue ;;
+                        removed) l="$(printf '%s' "$l" | sed 's/"status":"[^"]*"/"status":"removed"/')" ;;
+                        version) l="$(printf '%s' "$l" | sed "s/\"version\":\"[^\"]*\"/\"version\":\"$2\"/; s/\"updated\":\"[^\"]*\"/\"updated\":\"$(date -u +%FT%TZ)\"/")" ;;
+                    esac ;;
+            esac
+            [ "$first" = 1 ] || printf ',\n'
+            printf '%s' "$l"; first=0
+        done
+        printf '\n]}\n'
+    } >"$tmp"
+    chmod 644 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$sf" 2>/dev/null || rm -f -- "$tmp"
 }
 
 # ---------------------------------------------------------------------------------------------- commands
@@ -186,6 +217,8 @@ cmd_status() {
     local svc
     for svc in $(expected_services); do printf '  %-9s %s\n' "$svc" "$(service_state "$svc")"; done
     printf '\nURL: %s\n' "$(env_get OA_PUBLIC_URL)"
+    if db_external; then printf '%s: %s %s:%s/%s (%s)\n' "$(m '数据库' 'Database')" "$(env_get OA_DB_PROVIDER)" "$(env_get OA_DB_HOST)" "$(env_get OA_DB_PORT)" "$(env_get OA_DB_NAME)" "$(m '外部服务器；密码在 .env' 'external server; password in .env')"
+    else printf '%s: %s\n' "$(m '数据库' 'Database')" "$(m '内置 PostgreSQL' 'bundled PostgreSQL')"; fi
 }
 
 cmd_start() { need_install; need_docker; owner_fix; dc up -d; cmd_wait; }
@@ -199,7 +232,8 @@ cmd_restart() {
             # worker shares api's network namespace: always recreate both together
             dc up -d --force-recreate api worker
             if [ -z "$svc" ]; then
-                if https_on; then dc restart postgres caddy; else dc restart postgres; fi
+                if db_external; then if https_on; then dc restart caddy; fi
+                elif https_on; then dc restart postgres caddy; else dc restart postgres; fi
             fi
             ;;
         *) dc restart "$svc" ;;
@@ -260,6 +294,7 @@ config_key_ok() { # whitelist + per-key validation: config_key_ok KEY VALUE
         OA_STORAGE) [ "$v" = on ] || [ "$v" = off ] ;;
         OA_PG_MEM | OA_API_MEM | OA_WORKER_MEM | OA_CADDY_MEM | OA_LOG_MAX_SIZE) [[ "$v" =~ ^[0-9]+[kKmMgG]$ ]] ;;
         OA_LOG_MAX_FILE | OA_LLM_TIMEOUT_SECONDS) [[ "$v" =~ ^[0-9]+$ ]] ;;
+        OA_MAX_UPLOAD_BYTES | OA_MAX_BATCH_FILES | OA_DISK_RESERVE_BYTES | OA_UPLOAD_SESSION_TTL_HOURS | OA_EXTRACT_MAX_BYTES) [[ "$v" =~ ^[0-9]*$ ]] ;;
         OA_TZ) [[ "$v" =~ ^[A-Za-z0-9_+/-]{1,64}$ ]] ;;
         OA_LOG_LEVEL) [[ "$v" =~ ^(|info|debug)$ ]] ;;
         OA_PUBLIC_URL) [[ "$v" =~ ^https?://[A-Za-z0-9.:_-]+$ ]] ;;
@@ -363,21 +398,28 @@ cmd_backup() {
         esac
     done
     mkdir -p "$out"; chmod 700 "$out"
-    [ "$(service_state postgres)" = healthy ] || die "postgres 未运行；先执行 oa-agentctl start" "postgres is not running; run oa-agentctl start first"
+    if ! db_external; then
+        [ "$(service_state postgres)" = healthy ] || die "postgres 未运行；先执行 oa-agentctl start" "postgres is not running; run oa-agentctl start first"
+    fi
     local ad pd stage file
     ad="$(path_of OA_ARCHIVE_DIR archive)"; pd="$(path_of OA_APP_DIR app)"
     stage="$(mktemp -d "$out/.stage.XXXXXX")"
     # shellcheck disable=SC2064
     trap "rm -rf -- '$stage'; trap - RETURN" RETURN
     file="$out/oa-agent-backup-$(ts).tar.gz"
-    info "导出数据库 …" "Dumping database ..."
-    dc exec -T postgres pg_dump -U oa -d oa -Fc >"$stage/db.dump"
-    [ -s "$stage/db.dump" ] || die "pg_dump 输出为空" "pg_dump produced no output"
+    if db_external; then
+        warn "数据库在外部服务器上（$(env_get OA_DB_PROVIDER) $(env_get OA_DB_HOST)）：本备份【不含数据库】，只含 .env、密钥与归档文件。请用数据库自带的工具另行备份（pg_dump / mysqldump --single-transaction / BACKUP DATABASE），并与本备份对应保管。" \
+            "The database lives on an external server ($(env_get OA_DB_PROVIDER) $(env_get OA_DB_HOST)): this backup does NOT contain it, only .env, the key and the archive files. Back the database up with its own tools (pg_dump / mysqldump --single-transaction / BACKUP DATABASE) and keep that backup together with this one."
+    else
+        info "导出数据库 …" "Dumping database ..."
+        dc exec -T postgres pg_dump -U oa -d oa -Fc >"$stage/db.dump"
+        [ -s "$stage/db.dump" ] || die "pg_dump 输出为空" "pg_dump produced no output"
+    fi
     cp "$(env_file)" "$stage/env"; chmod 600 "$stage/env"
     mkdir -p "$stage/app"
     if [ -f "$pd/secret.key" ]; then cp "$pd/secret.key" "$stage/app/secret.key"; chmod 600 "$stage/app/secret.key"; fi
     if [ "$skip_archive" = 0 ] && [ -d "$ad" ]; then ln -s "$ad" "$stage/archive"; fi
-    printf 'oa-agent backup\ncreated=%s\nversion=%s\nskip_archive=%s\n' "$(date -u +%FT%TZ)" "$(env_get OA_VERSION)" "$skip_archive" >"$stage/MANIFEST"
+    printf 'oa-agent backup\ncreated=%s\nversion=%s\nskip_archive=%s\ndb=%s\n' "$(date -u +%FT%TZ)" "$(env_get OA_VERSION)" "$skip_archive" "$(if db_external; then echo external; else echo bundled; fi)" >"$stage/MANIFEST"
     info "打包文件 …" "Archiving files ..."
     tar -C "$stage" -czhf "$file" .
     chmod 600 "$file"
@@ -391,7 +433,15 @@ cmd_restore() {
     local file="${1:-}"
     [ -n "$file" ] || die "用法: restore <备份文件>" "usage: restore <backup-file>"
     [ -f "$file" ] || die "文件不存在: $file" "No such file: $file"
-    tar -tzf "$file" 2>/dev/null | grep -q '^\./db\.dump$' || die "不是有效的 OA 备份（缺少 db.dump）" "Not a valid OA backup (db.dump missing)"
+    local ext_backup=0
+    if tar -tzf "$file" 2>/dev/null | grep -q '^\./db\.dump$'; then
+        db_external && die "这份备份含内置数据库的 dump，而当前安装使用外部数据库：请用数据库自带的工具还原，不能用 oa-agentctl restore。" "This backup holds a dump of the bundled database but the current installation uses an external one: restore it with the database's own tools, not with oa-agentctl restore."
+    elif tar -xzOf "$file" ./MANIFEST 2>/dev/null | grep -q '^db=external$'; then
+        db_external || die "这份备份来自外部数据库的安装（不含数据库）；当前安装使用内置数据库，无法还原。" "This backup comes from an installation with an external database (it holds no database); the current installation uses the bundled one."
+        ext_backup=1
+    else
+        die "不是有效的 OA 备份（缺少 db.dump）" "Not a valid OA backup (db.dump missing)"
+    fi
     warn "还原会【覆盖】当前数据库与归档目录（旧归档目录会被改名保留为 archive.pre-restore-*）。" \
         "Restore OVERWRITES the current database and archive directory (the old archive dir is renamed to archive.pre-restore-*)."
     confirm "确认还原？" "Proceed with restore?" || { info "已取消" "Cancelled"; return 1; }
@@ -401,20 +451,24 @@ cmd_restore() {
     # shellcheck disable=SC2064
     trap "rm -rf -- '$stage'; trap - RETURN" RETURN
     tar -C "$stage" -xzf "$file"
-    [ -s "$stage/db.dump" ] || die "db.dump 为空" "db.dump is empty"
+    if [ "$ext_backup" = 0 ]; then [ -s "$stage/db.dump" ] || die "db.dump 为空" "db.dump is empty"; fi
 
     info "停止 api / worker …" "Stopping api / worker ..."
     dc stop worker api || true
-    dc up -d postgres
-    local n=0
-    until [ "$(service_state postgres)" = healthy ]; do
-        n=$((n + 1)); [ "$n" -le 60 ] || die "postgres 未就绪" "postgres did not become healthy"
-        sleep "${OA_POLL_SECONDS:-3}"
-    done
-    info "还原数据库 …" "Restoring database ..."
-    dc exec -T postgres psql -U oa -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS oa WITH (FORCE)'
-    dc exec -T postgres psql -U oa -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE oa OWNER oa'
-    dc exec -T postgres pg_restore -U oa -d oa --no-owner --exit-on-error <"$stage/db.dump"
+    if [ "$ext_backup" = 1 ]; then
+        info "外部数据库：不还原数据库（请用数据库自带的工具还原），只还原归档文件/密钥。" "External database: the database is not restored (use the database's own tools); only archive files and the key are restored."
+    else
+        dc up -d postgres
+        local n=0
+        until [ "$(service_state postgres)" = healthy ]; do
+            n=$((n + 1)); [ "$n" -le 60 ] || die "postgres 未就绪" "postgres did not become healthy"
+            sleep "${OA_POLL_SECONDS:-3}"
+        done
+        info "还原数据库 …" "Restoring database ..."
+        dc exec -T postgres psql -U oa -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS oa WITH (FORCE)'
+        dc exec -T postgres psql -U oa -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE oa OWNER oa'
+        dc exec -T postgres pg_restore -U oa -d oa --no-owner --exit-on-error <"$stage/db.dump"
+    fi
 
     if [ -d "$stage/archive" ]; then
         info "还原归档文件 …" "Restoring archive files ..."
@@ -469,7 +523,7 @@ refresh_management() {
         if [ -z "$want" ] || [ "$want" != "$got" ]; then rm -rf -- "$tmp"; return 2; fi
         ctl_tmp="$tmp/bin/oa-agentctl-linux-$arch"
     fi
-    for f in docker-compose.yml docker-compose.build.yml docker-compose.https.yml Caddyfile.template .env.example; do
+    for f in docker-compose.yml docker-compose.build.yml docker-compose.https.yml docker-compose.external-db.yml Caddyfile.template .env.example; do
         [ -f "$tmp/$f" ] || continue
         cp -f "$tmp/$f" "$DIR/.$f.new" && chmod 644 "$DIR/.$f.new" && mv -f "$DIR/.$f.new" "$DIR/$f"
     done
@@ -535,6 +589,7 @@ cmd_upgrade() {
         dc up -d --remove-orphans
     fi
     if cmd_wait; then
+        state_edit version "$tag"
         ok "升级完成" "Upgrade finished"
     elif registry_mode; then
         warn "升级后服务未就绪。回滚办法：oa-agentctl upgrade --tag ${oldver:-<旧标签>} --no-backup；必要时 oa-agentctl restore <升级前备份>（数据库迁移不会自动回退）" \
@@ -598,8 +653,10 @@ cmd_uninstall() {
         fi
         [ "$typed" = "$base" ] || { info "名称不符，已取消清除（容器已移除，数据保留）" "Name mismatch; purge cancelled (containers removed, data kept)"; return 1; }
         rm -rf -- "${DIR:?}"
+        state_edit forget
         ok "已清除 $DIR" "Purged $DIR"
     else
+        state_edit removed
         ok "已卸载容器；数据仍在 $DIR/data（含 .env 与密钥）。重新运行 install.sh 可恢复运行。" "Containers removed; data remains in $DIR/data (with .env and key). Re-run install.sh to bring it back."
     fi
     local self="${OA_CTL_SELF:-/usr/local/bin/oa-agentctl}"
@@ -639,7 +696,9 @@ cmd_doctor() {
     done
     port="$(env_get OA_PORT)"; port="${port:-8080}"
     if port_listening "$port"; then pass "端口 $port 在监听" "port $port is listening"; else bad "端口 $port 未监听" "port $port is not listening"; fi
-    if [ "$(service_state postgres)" = healthy ] && dc exec -T postgres psql -U oa -d oa -tAc 'select 1' >/dev/null 2>&1; then
+    if db_external; then
+        pass "数据库：外部 $(env_get OA_DB_PROVIDER) $(env_get OA_DB_HOST):$(env_get OA_DB_PORT)（由 API 的健康检查覆盖连接状态；备份需用数据库自带工具）" "database: external $(env_get OA_DB_PROVIDER) $(env_get OA_DB_HOST):$(env_get OA_DB_PORT) (connectivity is covered by the API health check; back it up with the database's own tools)"
+    elif [ "$(service_state postgres)" = healthy ] && dc exec -T postgres psql -U oa -d oa -tAc 'select 1' >/dev/null 2>&1; then
         pass "数据库连接正常" "database connection ok"
     else bad "无法连接数据库" "cannot connect to the database"; fi
     if command -v curl >/dev/null 2>&1; then

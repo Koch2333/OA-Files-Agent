@@ -13,8 +13,10 @@ import { mockPageUrl, mockPreview } from './mockPreview'
 import { basename } from '../utils/fsPaths'
 import { MockStorage } from './mockStorage'
 import { createMockAuth, type MockAuthCtl } from './mockAuth'
-import { createMockAi } from './mockAi'
+import { createMockAi, mockModelsGuard, mockTestFault } from './mockAi'
 import { createMockDiag } from './mockDiag'
+import { createMockUploads } from './mockUploads'
+import { faultKindFor, faultPersists, llmErrorFor } from './mockLlmFault'
 
 const delay = (ms = 250) => new Promise((r) => setTimeout(r, ms))
 const uid = () => crypto.randomUUID()
@@ -47,20 +49,38 @@ const templates: OATemplate[] = [
   { id: uid(), name: '集团通用 OA 模板', enabled: true, priority: 10, created_at: iso(30), match_rules: { filename_keywords: ['通知', '合同', '报表'], text_keywords: ['文号', '签发'] }, field_mappings: { department: '发文部门', document_type: '文种', date_source: 'ocr_text' } },
   { id: uid(), name: '财务报销单模板', enabled: false, priority: 20, created_at: iso(12), match_rules: { filename_keywords: ['报销', '发票'], text_keywords: ['报销人'] }, field_mappings: { department: '报销部门', document_type: '申请', date_source: 'filename' } },
 ]
-interface PresetSpec { id: string; name: string; description: string; note: string; base_url: string; models: [string, string][]; default_model?: string; needs_api_key?: boolean; vision?: [string, string][]; docs_url?: string }
+interface PresetSpec { id: string; name: string; description: string; note: string; base_url: string; models: [string, string][]; default_model?: string; needs_api_key?: boolean; vision?: [string, string][]; docs_url?: string; key_url?: string; oauth?: boolean }
+// 演示用的向导数据（真实数据在 backend/internal/llm/presets.json，由后端提供）
+const mockGuide = (host: string, pattern: string, extra: string): Pick<LlmPreset, 'key_hosts' | 'key_pattern' | 'key_guide'> => ({
+  key_hosts: [host], key_pattern: pattern,
+  key_guide: { suggested_name: 'OA Agent', login_note: extra, cost_note: '演示数据：是否收费以服务商页面为准。', steps: [
+    { title: '登录或注册', hint: '在服务商页面登录；没有账号就先注册。' },
+    { title: '进入“API keys”页面', hint: '在页面左侧菜单里找名为“API keys”的入口。' },
+    { title: '创建一个新密钥', hint: '找名为“创建 API Key”的按钮，名称建议填 OA Agent。' },
+    { title: '复制密钥', hint: '点密钥旁边的“复制”。', warn: '密钥通常只显示一次。' },
+    { title: '回到本窗口', hint: '复制成功后这里会自动识别。' },
+  ] },
+})
+const MOCK_KEY_GUIDES: Record<string, Pick<LlmPreset, 'key_hosts' | 'key_pattern' | 'key_guide'>> = {
+  deepseek: mockGuide('platform.deepseek.com', '^sk-[A-Za-z0-9]{20,64}$', '需要先登录或注册 DeepSeek 开放平台账号。'),
+  qwen: mockGuide('.aliyun.com', '^sk-[A-Za-z0-9]{20,64}$', '需要阿里云账号。'),
+  openai: mockGuide('platform.openai.com', '^sk-(?:proj-|svcacct-|admin-)[A-Za-z0-9_-]{20,}$|^sk-[A-Za-z0-9]{20,}$', '国内网络可能需要代理。'),
+}
 const preset = (p: PresetSpec): LlmPreset => ({
   id: p.id, name: p.name, description: p.description, note: p.note, checked_at: '2026-10-22', base_url: p.base_url,
   models: p.models.map(([id, label]) => ({ id, label })), default_model: p.default_model ?? p.models[0]?.[0] ?? '',
-  needs_api_key: p.needs_api_key ?? true, vision_models: (p.vision ?? []).map(([id, label]) => ({ id, label })), docs_url: p.docs_url ?? '', oauth_login: false,
+  needs_api_key: p.needs_api_key ?? true, vision_models: (p.vision ?? []).map(([id, label]) => ({ id, label })), docs_url: p.docs_url ?? '', ...(p.key_url ? { key_url: p.key_url } : {}), oauth_login: p.oauth ?? false,
+  ...(MOCK_KEY_GUIDES[p.id] ?? {}),
 })
 const LLM_PRESETS: LlmPreset[] = [
-  preset({ id: 'deepseek', name: 'DeepSeek', description: '性价比高，中文公文识别效果好', note: '推荐 deepseek-flash（支持工具调用与图片）；deepseek-v4-pro 不支持图片输入。', base_url: 'https://api.deepseek.com', docs_url: 'https://api-docs.deepseek.com',
+  preset({ id: 'deepseek', name: 'DeepSeek', description: '性价比高，中文公文识别效果好', note: '推荐 deepseek-flash（支持工具调用与图片）；deepseek-v4-pro 不支持图片输入。', base_url: 'https://api.deepseek.com', docs_url: 'https://api-docs.deepseek.com', key_url: 'https://platform.deepseek.com/api_keys',
     models: [['deepseek-flash', '推荐 · 支持工具与图片'], ['deepseek-v4-pro', '不支持图片']], vision: [['deepseek-flash', '支持图片']] }),
-  preset({ id: 'qwen', name: '通义千问（百炼）', description: '阿里云百炼', note: '国际站或工作空间的 Base URL 因账号而异，请从百炼控制台复制。', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', docs_url: 'https://help.aliyun.com/zh/model-studio/',
+  preset({ id: 'qwen', name: '通义千问（百炼）', description: '阿里云百炼', note: '国际站或工作空间的 Base URL 因账号而异，请从百炼控制台复制。', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', docs_url: 'https://help.aliyun.com/zh/model-studio/', key_url: 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key',
     models: [['qwen3.8-max', '效果最强'], ['qwen3.7-plus', '推荐 · 均衡'], ['qwen3.8-flash', '速度快']], default_model: 'qwen3.7-plus', vision: [['qwen3.7-plus', '视觉均衡'], ['qwen3.8-max', '视觉最强']] }),
-  preset({ id: 'openai', name: 'OpenAI', description: 'OpenAI 官方接口', note: '模型更新很快，未内置建议，请点击刷新获取可用模型或直接输入。', base_url: 'https://api.openai.com/v1', docs_url: 'https://platform.openai.com/docs/models', models: [] }),
+  preset({ id: 'openai', name: 'OpenAI', description: 'OpenAI 官方接口', note: '模型更新很快，未内置建议，请点击刷新获取可用模型或直接输入。', base_url: 'https://api.openai.com/v1', docs_url: 'https://platform.openai.com/docs/models', key_url: 'https://platform.openai.com/api-keys', models: [] }),
   preset({ id: 'ollama', name: 'Ollama 本机', description: '本地模型，文档不出本机，无需密钥', note: '需先在本机 ollama pull 对应模型。', base_url: 'http://127.0.0.1:11434/v1', docs_url: 'https://ollama.com/library',
     models: [['qwen3.8:27b', '本地示例']], needs_api_key: false, vision: [['qwen3.8:27b', '本地示例']] }),
+  preset({ id: 'openrouter', name: 'OpenRouter', description: '聚合多家模型的网关；支持用 OpenRouter 账号登录授权', note: '演示：登录授权会返回一把示例 Key。', base_url: 'https://openrouter.ai/api/v1', docs_url: 'https://openrouter.ai/docs', key_url: 'https://openrouter.ai/settings/keys', oauth: true, models: [['openrouter/auto', '自动路由']] }),
   preset({ id: 'custom', name: '自定义', description: '任意 OpenAI 兼容服务', note: '填写服务商的 Base URL 与模型名。', base_url: '', models: [], needs_api_key: false }),
 ]
 let llmKey = ''
@@ -73,7 +93,8 @@ if (MOCK_LLM !== 'none') llmKey = 'sk-demo-global'
 const authCtl: MockAuthCtl = {}
 const mockAi = createMockAi({
   role: () => authCtl.currentRole?.() ?? null, globalCfg: () => llmConfig, presets: LLM_PRESETS,
-  models: (url) => (LLM_PRESETS.find((p) => p.base_url.replace(/\/+$/, '') === url.trim().replace(/\/+$/, ''))?.models ?? []).map((m) => m.id),
+  setGlobalLlm: (c, k) => { llmConfig = c; llmKey = k },
+  models: (url) => url.trim().replace(/\/+$/, '') === 'https://api.openai.com/v1' ? ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1'] : (LLM_PRESETS.find((p) => p.base_url.replace(/\/+$/, '') === url.trim().replace(/\/+$/, ''))?.models ?? []).map((m) => m.id),
   audit: (actor, action, target, summary) => { audit.unshift({ id: uid(), timestamp: now(), actor, action, target, summary }) },
 }, MOCK_LLM)
 const mockDiag = createMockDiag()
@@ -178,10 +199,15 @@ function setStatus(id: string, status: TaskStatus, patch: Partial<ImportJob> = {
   tasks.set(id, { ...t, ...patch, status, updated_at: now() })
 }
 
-function simulate(taskId: string) {
+/** 已因大模型错误而失败过的文件：重试后可重试的错误只会成功（401/404 一直失败）。 */
+const llmTried = new Set<string>()
+
+/** only：重试时只重新处理这些文件，其余已完成的识别结果保持不变。 */
+function simulate(taskId: string, only?: Set<string>) {
   const rt = runtime.get(taskId)!
   const at = (ms: number, fn: () => void) => rt.timers.push(window.setTimeout(fn, ms))
-  const fs = () => [...files.values()].filter((f) => f.task_id === taskId)
+  const allFs = () => [...files.values()].filter((f) => f.task_id === taskId)
+  const fs = () => (only ? allFs().filter((f) => only.has(f.id)) : allFs())
   let ms = 400
   PHASES.forEach((p) => {
     at(ms, () => {
@@ -196,6 +222,14 @@ function simulate(taskId: string) {
           emit(taskId, { phase: p.phase, event_type: 'tool_call', file_id: f.id, summary: `read_document · ${f.source_name}`, details: { tool: /image|pdf/.test(f.mime_type) ? 'ocr' : 'parse' } })
         } else if (!cur.error) {
           const tk = tasks.get(taskId)!
+          const kind = tk.llm_source && tk.llm_source !== 'none' ? faultKindFor(f.source_name, allFs()[0]?.id === f.id) : null
+          if (kind && (faultPersists(kind) || !llmTried.has(f.id))) {
+            llmTried.add(f.id)
+            const le = llmErrorFor(kind)
+            files.set(f.id, { ...cur, error: le.message, llm_error: le, review_required: true, detected_department: null, detected_type: null, detected_date: null })
+            emit(taskId, { phase: p.phase, event_type: 'provider_error', file_id: f.id, summary: le.message, details: { status: le.status, code: le.code, retryable: le.retryable, attempts: le.attempts, retry_after_seconds: le.retry_after_seconds } })
+            return
+          }
           if (tk.llm_source && tk.llm_source !== 'none') emit(taskId, { phase: p.phase, event_type: 'tool_call', file_id: f.id, summary: `llm_classify · ${tk.llm_model}（${tk.llm_source === 'personal' ? '个人' : '全局'}）`, details: { tool: 'llm' } })
           emit(taskId, { phase: p.phase, event_type: 'file_classified', file_id: f.id, summary: `${f.source_name} → ${cur.detected_department ?? '待审核'} / ${cur.detected_type ?? '待审核'} / ${cur.detected_date ?? '待审核'}` })
         }
@@ -206,7 +240,7 @@ function simulate(taskId: string) {
     } else ms += 900
   })
   at(ms, () => {
-    const items: ArchivePlanItem[] = fs().filter((f) => !f.error).map((f) => {
+    const items: ArchivePlanItem[] = allFs().filter((f) => !f.error).map((f) => {
       const date = f.detected_date ?? '未知日期'
       const dept = f.detected_department ?? '待审核'
       const ty = f.detected_type ?? '待审核'
@@ -220,7 +254,7 @@ function simulate(taskId: string) {
     })
     const plan: ArchivePlan = { id: uid(), task_id: taskId, items, status: 'awaiting_review', version: 1, requires_approval: true, approved_by: null, approved_at: null, operation_id: null }
     plans.set(plan.id, plan)
-    const failed = fs().filter((f) => f.error).length
+    const failed = allFs().filter((f) => f.error).length
     setStatus(taskId, 'awaiting_review', { plan_id: plan.id, success_count: items.length, failure_count: failed, processed_files: tasks.get(taskId)!.total_files })
     emit(taskId, { phase: 'planning', event_type: 'plan_ready', summary: `归档计划已生成，共 ${items.length} 项，等待审批` })
     if (tasks.get(taskId)?.automation === 'auto') at(1200, () => autoExecute(taskId, plan))
@@ -287,16 +321,18 @@ const getOr404 = <T,>(m: Map<string, T>, id: string, what: string): T => {
   return v
 }
 
+const uploads = createMockUploads((picked, o) => mockApi.createImport(picked, o))
+
 export const mockApi: Api = {
   mode: 'mock',
   capabilities: { retryTask: true, providerStatus: true, rollback: true, webauthn: false },
+  ...uploads,
 
   async readiness() { await delay(150); return { alive: true, ready: true, database: 'ok', worker: 'ok' } },
 
   async createImport(picked: PickedFile[], opts?: { templateId?: string | null; idempotencyKey?: string; options?: ImportOptions }) {
     await delay(500)
     if (!picked.length) throw new ApiError(400, 'INVALID_ARGUMENT', '未选择文件')
-    if (picked.length > 100) throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '每批最多 100 个文件')
     const resolved = mockAi.ctl.resolveImport(opts?.options) // 与契约一致的服务端规则：可能抛出 403/422
     const id = uid()
     const job: ImportJob = { id, status: 'queued', total_files: picked.length, processed_files: 0, success_count: 0, failure_count: 0, plan_id: null, ...resolved, created_at: now(), updated_at: now() }
@@ -327,10 +363,20 @@ export const mockApi: Api = {
   async retryTask(id) {
     await delay(200)
     const t = getOr404(tasks, id, '任务')
-    if (!['failed', 'cancelled', 'partial_failure'].includes(t.status)) throw new ApiError(409, 'TASK_NOT_RETRYABLE', '仅失败或已取消的任务可重试')
-    setStatus(id, 'queued', { processed_files: 0, success_count: 0, failure_count: 0 })
-    emit(id, { phase: 'queued', event_type: 'task_retry', summary: '任务已重新排队' })
-    simulate(id)
+    // 与后端一致：重复点击（任务已在重新排队/运行）返回当前状态而不是报错
+    if (['queued', 'scanning', 'extracting', 'analyzing', 'planning'].includes(t.status)) return t
+    const failedFiles = [...files.values()].filter((f) => f.task_id === id && f.error && f.archive_status !== 'archived')
+    const retryable = ['failed', 'cancelled', 'partial_failure'].includes(t.status) || (t.status === 'awaiting_review' && failedFiles.length > 0)
+    if (!retryable) throw new ApiError(409, 'TASK_NOT_RETRYABLE', '仅失败或已取消的任务可重试')
+    // 只重新处理失败的文件，已成功的识别结果保留；旧计划作废后重新生成
+    const only = new Set(failedFiles.map((f) => f.id))
+    if (!only.size) for (const f of files.values()) if (f.task_id === id && f.archive_status !== 'archived') only.add(f.id)
+    for (const fid of only) { const f = files.get(fid)!; files.set(fid, { ...f, error: null, llm_error: null, review_required: false, archive_status: 'pending', ...classify(f.source_name, f.source_path) }) }
+    if (t.plan_id) plans.delete(t.plan_id)
+    setStatus(id, 'queued', { plan_id: null, processed_files: t.total_files - only.size, success_count: t.total_files - only.size, failure_count: 0 })
+    audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'task.retry', target: id, summary: '重新排队任务' })
+    emit(id, { phase: 'queued', event_type: 'task_retry', summary: `任务已重新排队，仅重新识别 ${only.size} 个失败的文件` })
+    simulate(id, only)
     return tasks.get(id)!
   },
 
@@ -503,20 +549,23 @@ export const mockApi: Api = {
     const key = typed || kept
     if (preset?.needs_api_key && !key) throw new ApiError(422, 'VALIDATION_FAILED', '该服务需要 API Key')
     llmKey = key
-    llmConfig = { mode: 'llm', preset_id, base_url, model, api_key_set: !!key, api_key_hint: keyHint(key), vision_model: (input.vision_model ?? '').trim(), allow_vision: !!input.allow_vision, state: 'ok', updated_at: now() }
+    llmConfig = { mode: 'llm', preset_id, base_url, model, api_key_set: !!key, api_key_hint: keyHint(key), ...(input.api_key?.trim() && input.key_label?.trim() ? { key_label: input.key_label.trim().slice(0, 80) } : {}), vision_model: (input.vision_model ?? '').trim(), allow_vision: !!input.allow_vision, state: 'ok', updated_at: now() }
     audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'llm.config.update', target: preset_id, summary: `识别引擎切换为 ${model}` })
     return { ...llmConfig }
   },
   async testLlm(input) {
     await delay(600)
     const key = input.api_key?.trim() || llmKey
-    if (key === 'bad') return { ok: false, latency_ms: 600, message: '密钥无效（401）', tool_calling: null, vision_ok: null }
+    const fault = mockTestFault(key)
+    if (fault) return fault
     const vm = input.vision_model?.trim()
     return { ok: true, latency_ms: 600, message: '连接正常', tool_calling: !/reasoner/i.test(input.model), vision_ok: vm ? !/bad/i.test(vm) : null }
   },
   async listLlmModels(input) {
     await delay(400)
+    mockModelsGuard(input.api_key?.trim() || llmKey)
     const url = input.base_url.trim().replace(/\/+$/, '')
+    if (url === 'https://api.openai.com/v1') return ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1']
     return (LLM_PRESETS.find((p) => p.base_url.replace(/\/+$/, '') === url)?.models ?? []).map((m) => m.id)
   },
 

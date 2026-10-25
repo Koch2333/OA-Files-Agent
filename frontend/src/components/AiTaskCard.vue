@@ -5,6 +5,9 @@ import { useAuth } from '../stores/auth'
 import { useUi } from '../stores/ui'
 import { autoSummary, llmLabel, modeBadge, type AutoSummary } from '../utils/autoSummary'
 import { errMsg } from '../utils/errorInfo'
+import { summarizeLlmFailures, type LlmTaskFailure } from '../utils/llmError'
+import { useAi } from '../stores/ai'
+import RetryNotice from './RetryNotice.vue'
 import { ACTIVE, fmtTime, shortId } from '../utils/format'
 import StatusChip from './StatusChip.vue'
 import AgentProgress from './AgentProgress.vue'
@@ -21,6 +24,9 @@ const summary = ref<AutoSummary | null>(null)
 const confirmUndo = ref(false)
 const undoing = ref(false)
 const undoErr = ref<string | null>(null)
+const llmFail = ref<LlmTaskFailure | null>(null)
+const retrying = ref(false)
+const ai = useAi()
 
 const badge = computed(() => modeBadge(props.task))
 const isAuto = computed(() => props.task.automation === 'auto')
@@ -36,8 +42,24 @@ async function loadSummary() {
     summary.value = autoSummary(files, plan)
   } catch { /* 摘要加载失败不影响卡片；用户可进入任务页查看 */ }
 }
-onMounted(loadSummary)
-watch(() => [props.task.status, props.task.updated_at], loadSummary)
+/** 失败/待审核且有失败文件时读取文件，找出因大模型 HTTP 错误失败的文件并给出一键重试。 */
+async function loadLlmFailure() {
+  const t = props.task
+  if (!['failed', 'partial_failure', 'awaiting_review'].includes(t.status) || !t.failure_count) { llmFail.value = null; return }
+  try {
+    llmFail.value = summarizeLlmFailures(await api.listTaskFiles(t.id))
+    if (llmFail.value) ai.reportFailure({ taskId: t.id, view: llmFail.value.view, count: llmFail.value.count, since: t.updated_at })
+    else ai.clearFailure(t.id)
+  } catch { llmFail.value = null }
+}
+async function retry() {
+  if (retrying.value) return
+  retrying.value = true
+  try { await api.retryTask(props.task.id); ui.toast('已重新排队：只重新识别失败的文件', 'success'); llmFail.value = null; ai.clearFailure(props.task.id); emit('changed') }
+  catch (e) { ui.toast(errMsg(e), 'error') } finally { retrying.value = false }
+}
+onMounted(() => { void loadSummary(); void loadLlmFailure() })
+watch(() => [props.task.status, props.task.updated_at], () => { void loadSummary(); void loadLlmFailure() })
 
 async function undo() {
   if (!summary.value?.operationId) return
@@ -72,6 +94,8 @@ async function undo() {
       <span class="grow" />
       <button v-if="canUndo" class="btn danger outlined sm has-icon" data-testid="auto-undo" @click="undoErr = null; confirmUndo = true"><Icon name="undo" sm />撤销本次全自动归档</button>
     </div>
+
+    <RetryNotice v-if="llmFail" :view="llmFail.view" :busy="retrying" :readonly="!auth.canWrite" :since="task.updated_at" :title="`大模型调用失败（${llmFail.count} 个文件未识别）`" @retry="retry" />
 
     <div class="row wrap">
       <RouterLink :to="`/tasks/${task.id}`" class="btn sm has-icon"><Icon name="open_in_new" sm />任务详情</RouterLink>

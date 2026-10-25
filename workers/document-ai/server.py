@@ -9,7 +9,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORE = os.path.join(HERE, "extract_core.py")
-MAX_FILE_BYTES = 20 * 1024 * 1024
+def _env_bytes(name, default):
+    """Byte count from the environment; 0 means unlimited. Invalid values fall back to the default."""
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# Full-text extraction/OCR is skipped above this size (the file is still imported; the pipeline marks it metadata-only /
+# manual review). This protects worker memory only and is NOT an import limit. 0 = no cap.
+MAX_FILE_BYTES = _env_bytes("OA_EXTRACT_MAX_BYTES", 256 * 1024 * 1024)
 MAX_BODY_BYTES = 64 * 1024
 MAX_PAGES_FIELD = 50
 PROFILES = ("default", "enhanced", "rotate", "deskew", "high_dpi", "binarize")
@@ -175,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("INVALID_REQUEST", "pages must be up to 50 integers >= 1")
             pages = sorted(set(pages))
         real = resolve_path(req.get("path"), self.server.spool_root)  # extraction stays spool-only
-        if os.path.getsize(real) > MAX_FILE_BYTES:
+        if MAX_FILE_BYTES and os.path.getsize(real) > MAX_FILE_BYTES:
             raise ApiError("FILE_TOO_LARGE", "file too large")
         ext = os.path.splitext(filename)[1].lower() or os.path.splitext(real)[1].lower()
         if ext not in SUPPORTED_EXTS:
@@ -185,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _checked_file(self, req):
         real = resolve_path(req.get("path"), self.server.spool_root, self.server.extra_roots)
-        if os.path.getsize(real) > MAX_FILE_BYTES:
+        if MAX_FILE_BYTES and os.path.getsize(real) > MAX_FILE_BYTES:
             raise ApiError("FILE_TOO_LARGE", "file too large")
         return real, os.path.splitext(real)[1].lower()
 

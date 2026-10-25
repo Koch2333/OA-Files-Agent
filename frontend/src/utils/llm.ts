@@ -163,3 +163,13 @@ export function llmErrorText(e: unknown, scope: LlmScope): string {
   }
   return base
 }
+
+/** 全局 / 个人两种配置共用的接口集合（LlmSettings 与 LlmSimple 共用）。 */
+export interface LlmFns {
+  presets: () => Promise<LlmPreset[]>
+  get: () => Promise<LlmConfig>
+  save: (i: LlmConfigInput) => Promise<LlmConfig>
+  test: (i: import('../api/types').LlmTestInput) => Promise<import('../api/types').LlmTestResult>
+  models: (i: { base_url: string; api_key?: string }) => Promise<string[]>
+  remove?: () => Promise<void>
+}

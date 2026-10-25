@@ -125,25 +125,51 @@ func TestImportRejectsHostilePathsAndBadManifests(t *testing.T) {
 	}
 }
 
-func TestImportEnforcesFileCountAndSize(t *testing.T) {
+func TestImportHasNoDefaultCountOrSizeLimit(t *testing.T) {
 	var ps []string
 	var parts []part
-	for i := 0; i < MaxFiles+1; i++ {
-		n := "f" + strings.Repeat("a", i%30) + string(rune('0'+i%10)) + ".pdf"
-		ps = append(ps, "d/"+string(rune('a'+i/26))+string(rune('a'+i%26))+n)
+	for i := 0; i < 300; i++ {
+		ps = append(ps, "d/f"+strings.Repeat("a", i%7)+string(rune('0'+i%10))+string(rune('a'+i/26))+string(rune('a'+i%26))+".pdf")
 	}
 	parts = append(parts, paths(ps...))
-	_, _, err, _ := run(t, parts...)
+	for _, p := range ps {
+		parts = append(parts, part{"files", p[2:], "x"})
+	}
+	b, _, err, _ := run(t, parts...)
+	if err != nil || len(b.Files) != 300 {
+		t.Fatalf("300 files must be accepted: %v", err)
+	}
+	big := strings.Repeat("x", 25<<20) // the old 20 MiB cap is gone
+	b, _, err, _ = run(t, paths("big.pdf"), part{"files", "big.pdf", big})
+	if err != nil || len(b.Files) != 1 || len(b.Failures) != 0 || b.Files[0].SizeBytes != int64(len(big)) {
+		t.Fatalf("25 MiB file must be accepted: %v %+v", err, b.Failures)
+	}
+}
+
+func TestOptionalOperatorValvesStillWork(t *testing.T) {
+	root := t.TempDir()
+	svc := &Service{Store: &memStore{}, Root: root, Limits: Limits{MaxUploadBytes: 1 << 10, MaxBatchFiles: 2}}
+	b, err := svc.Import(context.Background(), body(t, paths("big.pdf", "ok.pdf"), part{"files", "big.pdf", strings.Repeat("x", 2000)}, part{"files", "ok.pdf", "fine"}), "", "")
+	if err != nil || len(b.Files) != 1 || len(b.Failures) != 1 || b.Failures[0].Code != "FILE_TOO_LARGE" || b.Failures[0].SizeBytes != 2000 {
+		t.Fatalf("over-cap file must be a per-file failure: %v %+v", err, b.Failures)
+	}
+	_, err = svc.Import(context.Background(), body(t, paths("a.pdf", "b.pdf", "c.pdf")), "", "")
 	if code(err) != "TOO_MANY_FILES" {
-		t.Fatalf("101 files → %v", err)
+		t.Fatalf("3 files with cap 2 → %v", err)
 	}
-	big := strings.Repeat("x", int(MaxFileBytes)+10)
-	b, _, err, root := run(t, paths("big.pdf", "ok.pdf"), part{"files", "big.pdf", big}, part{"files", "ok.pdf", "fine"})
-	if err != nil || len(b.Files) != 1 || len(b.Failures) != 1 || b.Failures[0].Code != "FILE_TOO_LARGE" || b.Failures[0].SizeBytes != int64(len(big)) {
-		t.Fatalf("oversize file must be a per-file failure: %v %+v", err, b.Failures)
+}
+
+func TestImportRefusesWhenDiskIsFull(t *testing.T) {
+	root := t.TempDir()
+	svc := &Service{Store: &memStore{}, Root: root, Limits: Limits{DiskReserve: 100, FreeSpace: func(string) (uint64, error) { return 150, nil }}}
+	ctx := WithExpectedBytes(context.Background(), 1000)
+	_, err := svc.Import(ctx, body(t, paths("a.pdf"), part{"files", "a.pdf", "x"}), "", "")
+	var e *Error
+	if !errors.As(err, &e) || e.Status != 507 || !strings.Contains(e.Message, "需要") || !strings.Contains(e.Message, "剩余") {
+		t.Fatalf("want 507 with need/free, got %v", err)
 	}
-	if entries, _ := os.ReadDir(root); len(entries) != 1 {
-		t.Fatal("spool dir missing")
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Fatal("nothing may be written when refusing")
 	}
 }
 

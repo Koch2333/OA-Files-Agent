@@ -74,6 +74,11 @@ services:
       OA_LLM_API_KEY: ${OA_LLM_API_KEY:-}
       OA_LLM_TIMEOUT_SECONDS: ${OA_LLM_TIMEOUT_SECONDS:-60}
       OA_LOG_LEVEL: ${OA_LOG_LEVEL:-}
+      # Import intake has NO size/count limit. These are optional operator safety valves (empty/0 = unlimited) and the disk reserve.
+      OA_MAX_UPLOAD_BYTES: ${OA_MAX_UPLOAD_BYTES:-}
+      OA_MAX_BATCH_FILES: ${OA_MAX_BATCH_FILES:-}
+      OA_DISK_RESERVE_BYTES: ${OA_DISK_RESERVE_BYTES:-}
+      OA_UPLOAD_SESSION_TTL_HOURS: ${OA_UPLOAD_SESSION_TTL_HOURS:-}
       TZ: ${OA_TZ:-UTC}
     ports:
       # The ONLY published port. In https mode OA_BIND_ADDR=127.0.0.1 so only caddy (and local tools) reach it.
@@ -101,6 +106,7 @@ services:
       OA_WORKER_PORT: "8090"
       OA_SPOOL_ROOT: /data/spool
       OA_ALLOWED_ROOTS: /data/archive
+      OA_EXTRACT_MAX_BYTES: ${OA_EXTRACT_MAX_BYTES:-}   # full-text extraction/OCR is skipped above this size (default 256 MiB, 0 = no cap); the file is still imported
       TZ: ${OA_TZ:-UTC}
     volumes:
       - ${OA_SPOOL_DIR:-./data/spool}:/data/spool

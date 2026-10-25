@@ -179,7 +179,6 @@ export function replicationSummary(c: Pick<StorageConnection, 'replication'>): s
   return parts.join(' · ')
 }
 
-export const REMOTE_IMPORT_MAX_FILES = 100
 export const REMOTE_IMPORT_EXT = /\.(docx|xlsx|pdf|png|jpe?g)$/i
 
 export function crumbs(path: string): { name: string; path: string }[] {

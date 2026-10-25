@@ -145,7 +145,7 @@ try {
   await apiCall(page, 'PATCH', '/v1/admin/ai-policy', { allow_personal_llm: true })
   await go('/settings#llm')
   check('personal card visible when allowed', await page.waitForSelector('[data-testid=personal-llm-card]', { timeout: 15000 }).then(() => true, () => false))
-  check('personal card explains the stricter address rule', await waitText(page, '地址规则比全局更严格'))
+  check('personal card explains the stricter address rule', await waitText(page, '默认不能使用内网/本机地址'))
   await page.waitForSelector('#pllm-base')
   await page.click('[data-scope=personal] [data-preset=custom]')
   await setValue(page, '#pllm-base', 'http://127.0.0.1:9/v1')

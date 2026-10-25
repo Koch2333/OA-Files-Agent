@@ -39,3 +39,13 @@ npm run icons                 # 由 build/icon.svg 重新生成 icon.png/icon.ic
 
 ## 设置界面（没有原生菜单栏）
 窗口不再显示原生的“文件/视图/窗口/帮助”菜单栏。桌面专属设置集中在一个“设置”窗口里：工作目录（更改…，可迁移）、数据目录（迁移…）、登录 Windows 时自动启动、关闭窗口时最小化到托盘、固定本机服务端口、打开日志 / 复制诊断信息。入口：应用左下角用户菜单 → “桌面版设置…”、设置页顶部的“桌面版（本机）”卡片、托盘图标 → “设置…”、快捷键 `Ctrl+,`。所有选择保存在数据目录的 `desktop-config.json`（自动启动保存在系统登录项），**下次启动不会再询问**；已保存的工作目录暂时不可用（磁盘未连接等）时，只弹出“重试 / 更改 / 退出”，不会清除设置。快捷键：`F5`/`Ctrl+R` 刷新、`Ctrl+=` `Ctrl+-` `Ctrl+0` 缩放、`F11` 全屏。网页只能通过 `window.oaDesktop`（`src/app-preload.js`）调用三个固定的、校验来源的接口。
+
+## 密钥窗口（API Key 的一切都在应用内完成）
+设置页的大模型卡片在桌面版里通过 `window.oaDesktop.openKeyHelper(providerId, { mode })` 打开一个应用自带的窗口（`src/keyhelper-ctl.js`；纯逻辑 `src/keyhelper-core.js`；面板 `keyhelper.html` / `keyhelper.js` / `keyhelper-preload.js`），不再把用户送到系统浏览器：
+
+- `create`：服务商真实的密钥页（沙箱 `WebContentsView`，无 preload，独立持久分区 `persist:oa-keyhelper-<id>`）+ 右侧指引面板；剪贴板里出现符合该服务商格式的密钥时在面板里显示尾号，用户点“使用这个密钥”后才经 `onKeyHelper` 事件交给设置表单。
+- `login`：OpenRouter 授权页（授权地址由设置页从后端取得，主进程校验主机白名单和 `callback_url` 必须是本应用回环回调）；识别到回调后窗口自动关闭，设置页轮询状态。
+- `manage`：已保存密钥的管理视图；窗口通过 `keyhelper:event` 的 `request` 事件请设置页执行 状态/测试/删除，设置页用 `keyHelperReply` 回复（回复里没有密钥）。
+- 数据来源：服务商、`key_url`、`key_hosts` 白名单、`key_pattern`、`key_guide` 全部来自本机后端的 `GET /v1/llm/presets`（`backend/internal/llm/presets.json`），网页只传预设 id。白名单、IPC 校验、权限、下载、弹窗、剪贴板、日志都有单元测试（`test/keyhelper-core.test.js`）。
+- 测试开关：`OA_KEYHELPER_TEST_HOSTS=127.0.0.1:<端口>`（只接受回环 `host:port`，只在主进程环境变量里读取，打包版忽略）。真机端到端：`node test/e2e-keyhelper.mjs`（需要 `KH_ELECTRON`、`KH_SERVER`、`KH_WORK`，说明见脚本头部；会占用并清空 Windows 剪贴板）。
+- 隐私与白名单说明见 `docs/LLM账号登录配置.md` §3.6。

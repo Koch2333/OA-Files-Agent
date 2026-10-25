@@ -133,7 +133,9 @@ func Run(ctx context.Context, e Env) []Result {
 			add(Fail, "port", "API 容器没有发布端口 "+port, "oa-agentctl restart")
 		}
 	}
-	if _, err := e.P.Run(ctx, "exec", "-T", "postgres", "psql", "-U", "oa", "-d", "oa", "-tAc", "select 1"); err != nil {
+	if e.P.Inst.ExternalDB() {
+		add(OK, "database", "数据库：外部服务器 "+e.P.Inst.Env.Value("OA_DB_PROVIDER", "?")+" "+e.P.Inst.Env.Value("OA_DB_HOST", "?")+"（连接状态由 API 健康检查覆盖；备份请用数据库自带的工具）", "")
+	} else if _, err := e.P.Run(ctx, "exec", "-T", "postgres", "psql", "-U", "oa", "-d", "oa", "-tAc", "select 1"); err != nil {
 		add(Fail, "database", "无法连接数据库", "oa-agentctl logs postgres --tail 100")
 	} else {
 		add(OK, "database", "数据库连接正常", "")

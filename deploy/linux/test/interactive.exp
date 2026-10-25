@@ -1,18 +1,23 @@
 #!/usr/bin/expect -f
-# Drives deploy/linux/install.sh through a pty like an administrator would, including wrong answers that must be
-# rejected with a reason and asked again. Used by real-e2e.sh; parameters come from the environment:
-#   INSTALLER   path of install.sh            PROJECT  compose project name   ROOTDIR  test root
-#   PORT        HTTP port                      LANG_UI  zh | en
-# The install dir is $ROOTDIR/a/opt/oa-agent, the working directory $ROOTDIR/a/srv/archive and an extra read-only
-# mount nas1=$ROOTDIR/a/srv/nas is added. Exit code 0 only when every expected prompt/rejection was seen and the
-# installer finished successfully.
-set timeout 120
+# Drives deploy/linux/install.sh through a REAL pty like an administrator would: the script is piped into bash
+# ("cat install.sh | bash -s", so stdin is the script and every answer must come from /dev/tty), including wrong answers
+# that must be rejected with a reason and asked again, the review screen with an edit, and the final summary.
+# Parameters come from the environment:
+#   INSTALLER   path of install.sh        PROJECT   compose project name   ROOTDIR   shared test root
+#   REGISTRY    host[:port][/namespace]   TAG       image tag              PORT      first (busy or invalid) port tried
+#   PORT2       the port finally used     LANG_UI   en | zh (only en has the full answer matching here)
+# The install dir is $ROOTDIR/a/opt/oa-agent, the archive $ROOTDIR/a/srv/archive and an extra read-only mount
+# nas1=$ROOTDIR/a/srv/nas is added. Exit code 0 only when every expected prompt/rejection was seen and the installer
+# finished successfully.
+set timeout 180
 log_user 1
 set installer $env(INSTALLER)
 set project $env(PROJECT)
 set root $env(ROOTDIR)
+set registry $env(REGISTRY)
+set tag $env(TAG)
 set port $env(PORT)
-set ui $env(LANG_UI)
+set port2 $env(PORT2)
 
 proc fail {why} { puts "\nINTERACTIVE-FAIL: $why"; exit 1 }
 proc want {re why} {
@@ -24,66 +29,87 @@ proc want {re why} {
 }
 proc rejected {why} { want {\[!\][^\r\n]*} "rejection of $why" }
 
-spawn bash $installer --lang $ui --project $project
+spawn bash -c "cat $installer | bash -s -- --lang en --project $project --registry $registry"
 
-# install dir: a relative path first
-want {安装目录[^\r\n]*\[/opt/oa-agent\]: } "install dir prompt with default"
+want {Detection summary} "the detection table comes first"
+want {Install directory[^\r\n]*\[/opt/oa-agent\]: } "install dir prompt with default"
 send "relative/dir\r"
 rejected "relative install dir"
-want {安装目录[^\r\n]*: } "install dir prompt again"
+want {Install directory[^\r\n]*: } "install dir prompt again"
 send "$root/a/opt/oa-agent\r"
 
-# port: out of range first
-want {HTTP 端口 \[8080\]: } "port prompt with default"
+want {HTTP port \[[0-9]+\]: } "port prompt with a default"
 send "70000\r"
 rejected "port 70000"
-want {HTTP 端口 \[8080\]: } "port prompt again"
+want {HTTP port \[[0-9]+\]: } "port prompt again"
 send "$port\r"
+rejected "busy or invalid port $port"
+want {HTTP port \[[0-9]+\]: } "port prompt again (2)"
+send "$port2\r"
 
-want {域名[^\r\n]*\[\]: } "domain prompt"
-send "\r"
-want {镜像源[^\r\n]*\[cn\]: } "mirror prompt (default cn for zh)"
+want {Domain \(empty = HTTP only, no Passkeys\) \[\]: } "domain prompt"
 send "\r"
 
-# working directory: relative, system dir, spaces, read-only, then a good one
-want {归档根目录 \[[^\r\n]*/data/archive\]: } "archive prompt with default under the install dir"
+want {Use the bundled PostgreSQL} "database menu"
+want {Choice \[1-4\] \[1\]: } "database choice"
+send "9\r"
+rejected "database choice 9"
+want {Choice \[1-4\] \[1\]: } "database choice again"
+send "\r"
+
+want {Archive root directory \[[^\r\n]*/data/archive\]: } "archive prompt with default under the install dir"
 send "archive\r"
 rejected "relative archive dir"
-want {归档根目录[^\r\n]*: } "archive prompt again (1)"
+want {Archive root directory[^\r\n]*: } "archive prompt again (1)"
 send "/etc/oa-archive\r"
 rejected "archive under /etc"
-want {归档根目录[^\r\n]*: } "archive prompt again (2)"
+want {Archive root directory[^\r\n]*: } "archive prompt again (2)"
 send "$root/a/srv/my archive\r"
 rejected "archive path with a space"
-want {归档根目录[^\r\n]*: } "archive prompt again (3)"
-send "/repo/oa-archive\r"
-want {\[!\][^\r\n]*不可写} "rejection of a read-only location"
-want {归档根目录[^\r\n]*: } "archive prompt again (4)"
+want {Archive root directory[^\r\n]*: } "archive prompt again (3)"
 send "$root/a/srv/archive\r"
 want {GiB} "free space of the working directory"
 
-want {是否自定义导入暂存[^\r\n]*\[y/N\] } "customise other dirs question"
+want {Customize the spool[^\r\n]*\[y/N\] } "customise other dirs question"
 send "\r"
 
-want {额外本地存储[^\r\n]*\[\]: } "extra mount prompt"
+want {Extra local storage[^\r\n]*\[\]: } "extra mount prompt"
 send "nas1:/mnt/x\r"
 rejected "malformed extra mount"
-want {额外本地存储[^\r\n]*\[\]: } "extra mount prompt again"
+want {Extra local storage[^\r\n]*\[\]: } "extra mount prompt again"
 send "nas1=$root/a/srv/nas:ro\r"
-want {额外本地存储[^\r\n]*\[\]: } "extra mount prompt (finish)"
+want {Extra local storage[^\r\n]*\[\]: } "extra mount prompt (finish)"
 send "\r"
 
-# from here on the installer works on its own: image build + start can take many minutes
+want {Mirror cn\(China\)/default \[default\]: } "mirror prompt"
+send "\r"
+want {Image tag \[latest\]: } "image tag prompt"
+send "$tag\r"
+
+# the review screen: edit the port (setting 2), then proceed
+want {Review your settings} "review screen"
+want {Proceed\? \[Y\]es / \[e\]dit a setting / \[c\]ancel:} "review prompt"
+send "e\r"
+want {Edit which setting\? \[1-7\]:} "edit prompt"
+send "2\r"
+want {HTTP port \[[0-9]+\]: } "port prompt from the edit"
+send "$port2\r"
+want {Review your settings} "review screen again"
+want {Proceed\? \[Y\]es} "review prompt again"
+send "y\r"
+
+# from here on the installer works on its own: pulls + start can take many minutes
 set timeout 2400
 expect {
-    -re {初始化令牌: +([A-Za-z0-9_-]{16,})} { set token $expect_out(1,string) }
+    -re {SETUP TOKEN: +([A-Za-z0-9_-]{16,})} { set token $expect_out(1,string) }
     -re {\[FAIL\]} { fail "installer reported a failure" }
     timeout { fail "timeout waiting for the final summary" }
     eof { fail "installer ended without a summary" }
 }
-want {归档目录: +[^\r\n]*/a/srv/archive} "archive dir in the summary"
-want {额外挂载: +nas1} "extra mount in the summary"
-want {管理命令: +oa-agentctl} "management command in the summary"
+want {Archive dir: +[^\r\n]*/a/srv/archive} "archive dir in the summary"
+want {Extra mount: +nas1} "extra mount in the summary"
+want {What was detected and done} "the detection/done report"
+want {State file: +/} "state file in the summary"
 expect eof
 catch wait result
 set rc [lindex $result 3]

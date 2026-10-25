@@ -94,9 +94,18 @@ func (i *Install) HTTPS() bool {
 	return strings.Contains(i.ComposeFile(), HTTPSCompose)
 }
 
+// ExternalCompose is the optional layer that points the stack at an existing database server.
+const ExternalCompose = "docker-compose.external-db.yml"
+
+// ExternalDB reports whether the stack uses an existing database server (no bundled postgres container).
+func (i *Install) ExternalDB() bool { return strings.Contains(i.ComposeFile(), ExternalCompose) }
+
 // Services are the containers a healthy stack must have.
 func (i *Install) Services() []string {
 	s := []string{"postgres", "api", "worker"}
+	if i.ExternalDB() {
+		s = []string{"api", "worker"}
+	}
 	if i.HTTPS() {
 		s = append(s, "caddy")
 	}

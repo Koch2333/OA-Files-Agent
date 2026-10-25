@@ -720,7 +720,7 @@ func (s *Service) ImportRemote(ctx context.Context, connID string, items []strin
 			} else {
 				add(&files, seen, p, ep, cloud.Join(prefix, e.Name), e.Size)
 			}
-			if len(files) > imports.MaxFiles {
+			if s.cfg.Imports.Limits.TooManyFiles(len(files)) {
 				return nil
 			}
 		}
@@ -742,8 +742,8 @@ func (s *Service) ImportRemote(ctx context.Context, connID string, items []strin
 		} else {
 			add(&files, seen, p, rel, path.Base(rel), ent.Size)
 		}
-		if len(files) > imports.MaxFiles {
-			return imports.Batch{}, &imports.Error{Status: 413, Code: "TOO_MANY_FILES", Message: "所选内容超过每批 100 个文件的上限，请分批导入"}
+		if s.cfg.Imports.Limits.TooManyFiles(len(files)) {
+			return imports.Batch{}, &imports.Error{Status: 413, Code: "TOO_MANY_FILES", Message: fmt.Sprintf("所选内容超过管理员设置的每批文件数上限（%d），请分批导入", s.cfg.Imports.Limits.MaxBatchFiles)}
 		}
 	}
 	b, err := s.cfg.Imports.ImportRemote(ctx, files, key, templateID, connID, func(e error) string { return cloud.Describe(e) })

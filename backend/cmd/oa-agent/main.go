@@ -242,9 +242,10 @@ func main() {
 		llmMgr.Audit = func(ctx context.Context, actor, action, target, summary string) {
 			st.Audit(ctx, actor, action, target, summary)
 		}
+		importSvc := &imports.Service{Store: st, Root: spool, Limits: imports.LimitsFromEnv(os.Getenv)}
 		fsm := &fsman.Manager{Root: archiveRoot}
 		if os.Getenv("OA_STORAGE") != "off" {
-			sto := storage.New(storage.Config{Store: st, Box: box, Imports: &imports.Service{Store: st, Root: spool}, Archive: fsm})
+			sto := storage.New(storage.Config{Store: st, Box: box, Imports: importSvc, Archive: fsm})
 			diag.Go("storage.run", func() { sto.Run(ctx) })
 			deps.Storage = sto
 		}
@@ -265,7 +266,11 @@ func main() {
 				deps.StrictLocal = true
 			}
 		}
-		deps.Imports = &imports.Service{Store: st, Root: spool}
+		deps.Imports = importSvc
+		diag.Go("imports.gc", func() { importSvc.StartGC(ctx) })
+		if l := importSvc.Limits; l.MaxUploadBytes > 0 || l.MaxBatchFiles > 0 {
+			log.Printf("import safety valves active: OA_MAX_UPLOAD_BYTES=%d OA_MAX_BATCH_FILES=%d (0 = unlimited)", l.MaxUploadBytes, l.MaxBatchFiles)
+		}
 		log.Printf("business API enabled (engine=%s, spool=%s, archive=%s)", llmMgr.Config().Mode, spool, archiveRoot)
 		logx.Debugf("debug build: listen=%s worker=%s storage=%v frontend=%q", addr, workerURL, deps.Storage != nil, deps.StaticDir)
 	} else {
@@ -276,7 +281,7 @@ func main() {
 	}
 
 	deps.Diag = diagInfo(started, standalone, archiveRoot, addr, spool, workerURL)
-	srv := &http.Server{Addr: addr, Handler: api.NewServer(deps), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: api.NewServer(deps), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second} // upload handlers extend their own read/write deadlines per read (api/uploads.go), so large uploads are never cut by these
 	diag.Go("api.shutdown", func() {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 10*time.Second)

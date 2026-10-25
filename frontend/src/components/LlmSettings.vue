@@ -5,22 +5,20 @@ import type { LlmConfig, LlmConfigInput, LlmPreset, LlmTestInput, LlmTestResult 
 import { useAsync } from '../utils/useAsync'
 import { useUi } from '../stores/ui'
 import { useAi } from '../stores/ai'
-import { applyPreset, buildInput, canFetchModels, engineLabel, formFromConfig, isDirty, llmErrorText, modelOptions, savedKeyUsable, validateForm, visionOptions, type LlmForm, type LlmScope } from '../utils/llm'
+import { applyPreset, buildInput, canFetchModels, engineLabel, formFromConfig, isDirty, llmErrorText, modelOptions, savedKeyUsable, validateForm, visionOptions, type LlmFns, type LlmForm, type LlmScope } from '../utils/llm'
+import { classifyError, classifyTestResult, type LlmFailure } from '../utils/llmError'
+import { connectionSummary } from '../utils/llmGuide'
+import { loadPending } from '../utils/llmOauth'
 import StateView from './StateView.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ModelCombobox from './ModelCombobox.vue'
 import Icon from './Icon.vue'
 import LlmLoginPanel from './LlmLoginPanel.vue'
+import LlmSimple from './LlmSimple.vue'
+import LlmFailureBanner from './LlmFailureBanner.vue'
 
-/** 一个组件同时实现“全局”与“个人”两种配置：区别只在接口与文案（scope），表单/测试/模型发现逻辑完全共用。 */
-export interface LlmFns {
-  presets: () => Promise<LlmPreset[]>
-  get: () => Promise<LlmConfig>
-  save: (i: LlmConfigInput) => Promise<LlmConfig>
-  test: (i: LlmTestInput) => Promise<LlmTestResult>
-  models: (i: { base_url: string; api_key?: string }) => Promise<string[]>
-  remove?: () => Promise<void>
-}
+/** 一个组件同时实现“全局”与“个人”两种配置：区别只在接口与文案（scope），表单/测试/模型发现逻辑完全共用。
+ * 默认是“简单模式”（LlmSimple：选服务商 → 登录/粘贴密钥 → 自动测试 → 保存）；“高级设置”保留全部原有字段。 */
 const props = withDefaults(defineProps<{ scope?: LlmScope; fns?: LlmFns; /** 无卡片外框与标题（向导中使用） */ embedded?: boolean }>(), { scope: 'global', fns: undefined, embedded: false })
 const emit = defineEmits<{ saved: [cfg: LlmConfig]; removed: [] }>()
 const isPersonal = computed(() => props.scope === 'personal')
@@ -48,14 +46,27 @@ const advOpen = ref(false)
 const testing = ref(false)
 const saving = ref(false)
 const testResult = ref<LlmTestResult | null>(null)
-const testError = ref<string | null>(null)
+const testFailure = ref<LlmFailure | null>(null)
+
+// 简单 / 高级：记住用户上次的选择（localStorage 不可用时静默忽略）
+const UI_KEY = 'oa.llm.ui'
+function readUi(): 'simple' | 'advanced' | null { try { const v = localStorage.getItem(UI_KEY); return v === 'simple' || v === 'advanced' ? v : null } catch { return null } }
+const uiMode = ref<'simple' | 'advanced'>(readUi() ?? 'simple')
+function setUi(m: 'simple' | 'advanced') { uiMode.value = m; try { localStorage.setItem(UI_KEY, m) } catch { /* ignore */ } }
+const allowLocal = computed(() => !isPersonal.value || !!ai.status?.allow_personal_private_hosts)
+const summary = computed(() => connectionSummary(saved.value, presets.value, props.scope))
+function toAdvanced(presetId?: string) {
+  setUi('advanced')
+  const p = presetId ? presets.value.find((x) => x.id === presetId) : undefined
+  if (p) pick(p)
+}
 const saveError = ref<string | null>(null)
 
 // 服务商返回的实时模型列表
 const live = ref<string[]>([])
 const fetchedCount = ref<number | null>(null)
 const fetching = ref(false)
-const fetchError = ref<string | null>(null)
+const fetchFailure = ref<LlmFailure | null>(null)
 let fetchSeq = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -66,6 +77,8 @@ async function init() {
   form.value = formFromConfig(saved.value, presets.value)
   if (isPersonal.value) form.value.mode = 'llm' // 个人配置没有“离线规则”：删除即回到全局
   advOpen.value = form.value.allow_vision
+  if (readUi() === null && saved.value.mode === 'llm' && saved.value.preset_id === 'custom') uiMode.value = 'advanced'
+  if (loadPending()?.scope === props.scope) form.value.mode = 'llm' // 授权回来后保存的模式可能仍是离线规则：先展开大模型区域，登录面板才能续接
   replacing.value = false
   touched.value = false
 }
@@ -85,21 +98,21 @@ const engine = computed(() => engineLabel(saved.value, presets.value))
 const showErr = (k: keyof typeof errors.value) => (touched.value ? errors.value[k] : undefined)
 
 // 参数变化后，之前的测试结果不再适用
-watch(() => [form.value.base_url, form.value.model, form.value.api_key, form.value.preset_id, form.value.vision_model], () => { testResult.value = null; testError.value = null })
+watch(() => [form.value.base_url, form.value.model, form.value.api_key, form.value.preset_id, form.value.vision_model], () => { testResult.value = null; testFailure.value = null })
 // 换服务商 / Base URL：旧列表作废
-watch(() => [form.value.base_url, form.value.preset_id], () => { live.value = []; fetchedCount.value = null; fetchError.value = null; fetchSeq++ })
+watch(() => [form.value.base_url, form.value.preset_id], () => { live.value = []; fetchedCount.value = null; fetchFailure.value = null; fetchSeq++ })
 
 /** 拉取实时模型列表；auto 为自动触发（失败只显示错误状态，不弹提示）。 */
 async function fetchModels() {
   const my = ++fetchSeq
-  fetching.value = true; fetchError.value = null
+  fetching.value = true; fetchFailure.value = null
   try {
     const list = await fns.value.models({ base_url: form.value.base_url.trim(), api_key: typedKey() })
     if (my !== fetchSeq) return
     live.value = list; fetchedCount.value = list.length
   } catch (e) {
     if (my !== fetchSeq) return
-    live.value = []; fetchedCount.value = null; fetchError.value = llmErrorText(e, props.scope)
+    live.value = []; fetchedCount.value = null; fetchFailure.value = classifyError(e)
   } finally { if (my === fetchSeq) fetching.value = false }
 }
 function refreshModels() {
@@ -128,6 +141,8 @@ async function removePersonal() {
   } catch (e) { confirmRemove.value = false; saveError.value = llmErrorText(e, props.scope) } finally { removing.value = false }
 }
 function setMode(m: 'heuristic' | 'llm') { form.value.mode = m; saveError.value = null }
+/** 简单模式保存/登录后：重新读取服务端配置并刷新全局状态 */
+function onSimpleSaved(cfg: LlmConfig) { saved.value = cfg; void init(); emit('saved', cfg) }
 function pick(p: LlmPreset) { form.value = applyPreset(form.value, p); replacing.value = false; touched.value = false }
 function startReplace() { replacing.value = true; form.value.clear_key = false }
 function clearKey() { form.value.clear_key = true; form.value.api_key = ''; replacing.value = true }
@@ -139,9 +154,11 @@ function typedKey() { return form.value.api_key.trim() || undefined }
 async function runTest() {
   touched.value = true
   if (errors.value.base_url || errors.value.model) return
-  testing.value = true; testResult.value = null; testError.value = null
-  try { testResult.value = await fns.value.test({ base_url: form.value.base_url.trim(), model: form.value.model.trim(), vision_model: form.value.vision_model.trim() || undefined, api_key: typedKey() }) }
-  catch (e) { testError.value = llmErrorText(e, props.scope) }
+  testing.value = true; testResult.value = null; testFailure.value = null
+  try {
+    const r = await fns.value.test({ base_url: form.value.base_url.trim(), model: form.value.model.trim(), vision_model: form.value.vision_model.trim() || undefined, api_key: typedKey() })
+    testResult.value = r; testFailure.value = classifyTestResult(r)
+  } catch (e) { testFailure.value = classifyError(e) }
   finally { testing.value = false }
 }
 
@@ -170,24 +187,48 @@ async function save() {
       <span v-if="saved && (!isPersonal || hasSaved)" class="chip" :class="saved.mode === 'llm' ? (saved.state === 'ok' ? 'success' : 'error') : ''" :data-testid="tid('engine')"><Icon :name="saved.mode === 'llm' ? 'cloud' : 'offline_bolt'" sm />{{ isPersonal ? '我的配置' : '当前' }}：{{ engine }}</span>
       <span v-else-if="isPersonal && saved" class="chip" :data-testid="tid('engine')">未设置个人配置</span>
     </div>
-    <p v-if="!embedded && !isPersonal" class="muted note" data-testid="global-llm-note">模型 Provider：这里配置的大模型是全员默认使用的；员工的任务都会使用它，除非员工在“我的个人大模型”中设置了自己的配置（需管理员在下方“AI 使用策略”中允许）。</p>
-    <p v-if="isPersonal" class="muted note" data-testid="personal-llm-note">只对你本人提交的任务生效，优先于全局大模型；密钥加密保存在服务器，只有尾号可见。<b>地址规则比全局更严格</b>：默认只允许公网 https 地址，不能填写内网/本机地址（管理员可放开）。文档文字会发送到你填写的服务商，请遵守公司的数据规定。</p>
+    <p v-if="!embedded && !isPersonal" class="muted note" data-testid="global-llm-note">这里设置的 AI 是全员默认使用的。员工也可以在“我的个人大模型”里换成自己的（需管理员在下方“AI 使用策略”里允许）。</p>
+    <p v-if="isPersonal" class="muted note" data-testid="personal-llm-note">只对你本人提交的任务生效，优先于全局设置。密钥加密保存在服务器上，只显示最后 4 位。出于安全，个人设置默认不能使用内网/本机地址（管理员可放开）。</p>
+    <div v-if="saved && load.data.value" class="status" :class="summary.state" role="status" :data-testid="tid('summary')" :data-state="summary.state">
+      <Icon :name="summary.state === 'connected' ? 'check_circle' : summary.state === 'problem' ? 'error' : summary.state === 'offline' ? 'offline_bolt' : 'info'" />
+      <div class="grow col sbody">
+        <b :data-testid="tid('summary-title')">{{ summary.title }}</b>
+        <span class="muted">{{ summary.detail }}</span>
+        <span v-if="summary.next" class="next" :data-testid="tid('summary-next')"><Icon name="arrow_back" sm class="rot" />{{ summary.next }}</span>
+      </div>
+    </div>
+    <details class="help" :data-testid="tid('help')">
+      <summary>什么是 API Key（密钥）？为什么需要？要花钱吗？文档会被看到吗？</summary>
+      <ul>
+        <li><b>是什么：</b>API Key 是模型服务商发给你的一串“通行证”。有了它，本应用才能替你向服务商的 AI 提问。</li>
+        <li><b>为什么需要：</b>智能识别是由服务商的 AI 完成的，服务商要知道是谁在用、该向谁计费。</li>
+        <li><b>费用：</b>由服务商按用量收取，本应用本身不收费；具体价格请以服务商页面为准。</li>
+        <li><b>隐私：</b>识别时，文档里的文字会发送给你选的服务商。涉密文件请选“本机模型”（文档不出电脑）或“离线规则”。</li>
+        <li><b>安全：</b>密钥加密保存在本应用的服务器上，不会完整显示，也不会写进日志。</li>
+      </ul>
+    </details>
     <StateView :loading="load.loading.value && !load.data.value" :error="load.error.value" :empty="false" :rows="3" @retry="init">
       <template v-if="load.data.value">
         <div v-if="!isPersonal" class="field"><span class="lbl" :id="pfx + '-mode-lbl'">识别方式</span>
           <div class="tiles" role="radiogroup" :aria-labelledby="pfx + '-mode-lbl'">
             <button class="tile" role="radio" data-mode="heuristic" :aria-checked="form.mode === 'heuristic'" @click="setMode('heuristic')">
-              <Icon name="offline_bolt" /><span class="tt">离线规则</span><span class="muted td">不联网、无需密钥</span>
+              <Icon name="offline_bolt" /><span class="tt">离线规则</span><span class="muted td">不联网、免费、不用密钥；识别能力一般</span>
             </button>
             <button class="tile" role="radio" data-mode="llm" :aria-checked="form.mode === 'llm'" @click="setMode('llm')">
-              <Icon name="smart_toy" /><span class="tt">大模型</span><span class="muted td">DeepSeek/通义千问等，文档文字会发送给服务商</span>
+              <Icon name="smart_toy" /><span class="tt">AI 大模型（推荐）</span><span class="muted td">识别更准；文档文字会发送给你选的服务商</span>
             </button>
           </div>
         </div>
 
         <p v-if="form.mode === 'heuristic'" class="muted">使用本机规则与关键词识别文档，不会联网，也不会把文档文字发送给任何模型服务商。</p>
 
+        <template v-else-if="uiMode === 'simple'">
+          <LlmSimple :scope="scope" :presets="presets" :saved="saved" :fns="fns" :allow-local="allowLocal" @saved="onSimpleSaved" @changed="init()" @advanced="toAdvanced" />
+          <div class="row wrap"><button class="btn sm has-icon" type="button" :data-testid="tid('open-advanced')" @click="setUi('advanced')"><Icon name="tune" sm />高级设置（自定义地址、模型、视觉识别）</button></div>
+        </template>
+
         <template v-else>
+          <div class="row wrap"><button class="btn sm has-icon" type="button" :data-testid="tid('open-simple')" @click="setUi('simple')"><Icon name="arrow_back" sm />返回简单模式</button><span class="muted hint">高级设置：自己填写服务地址（Base URL）、模型，适合有经验的用户。</span></div>
           <div class="field"><span class="lbl" :id="pfx + '-preset-lbl'">模型服务商</span>
             <div class="chips" role="radiogroup" :aria-labelledby="pfx + '-preset-lbl'">
               <button v-for="p in presets" :key="p.id" class="pchip" role="radio" :aria-checked="form.preset_id === p.id" :data-preset="p.id" @click="pick(p)">{{ p.name }}</button>
@@ -207,7 +248,8 @@ async function save() {
             </div>
 
             <div class="field"><label :for="pfx + '-model'">模型</label>
-              <ModelCombobox :id="pfx + '-model'" v-model="form.model" :live="live" :suggestions="suggestions" placeholder="输入或选择模型名" :invalid="!!showErr('model')" refreshable :fetching="fetching" :fetch-error="fetchError" :fetched-count="fetchedCount" @refresh="refreshModels" />
+              <ModelCombobox :id="pfx + '-model'" v-model="form.model" :live="live" :suggestions="suggestions" placeholder="输入或选择模型名" :invalid="!!showErr('model')" refreshable :fetching="fetching" :fetch-error="null" :fetched-count="fetchedCount" @refresh="refreshModels" />
+              <LlmFailureBanner v-if="fetchFailure" :failure="fetchFailure" :busy="fetching" what="获取模型列表没有成功。" :testid="tid('fetch-failure')" @retry="refreshModels" />
               <span v-if="showErr('model')" class="err-text" role="alert">{{ showErr('model') }}</span>
             </div>
 
@@ -227,7 +269,7 @@ async function save() {
             </div>
           </div>
 
-          <LlmLoginPanel :scope="scope" :preset="preset" :saved="saved" @connected="init()" @disconnected="init()" />
+          <LlmLoginPanel :scope="scope" :preset="preset" :saved="saved" :test-fn="fns.test" @connected="init()" @disconnected="init()" @key-received="(k) => { form.api_key = k }" />
 
           <div class="adv">
             <button class="adv-toggle" type="button" :aria-expanded="advOpen" :aria-controls="pfx + '-adv'" @click="advOpen = !advOpen">
@@ -248,7 +290,7 @@ async function save() {
         </template>
 
         <div v-if="saveError" class="banner error" role="alert"><Icon name="error" /><span>{{ saveError }}</span></div>
-        <div class="row wrap bar">
+        <div v-if="form.mode === 'heuristic' || uiMode === 'advanced'" class="row wrap bar">
           <button v-if="form.mode === 'llm'" class="btn outlined has-icon" :disabled="testing" @click="runTest"><Icon name="network_check" sm :class="{ spin: testing }" />{{ testing ? '测试中…' : '测试连接' }}</button>
           <button class="btn filled has-icon" :disabled="!dirty || saving || (touched && !valid)" @click="save"><Icon name="save" sm :class="{ spin: saving }" />{{ saving ? '保存中…' : '保存并生效' }}</button>
           <span v-if="dirty" class="muted hint" role="status">有未保存的更改</span>
@@ -256,16 +298,16 @@ async function save() {
           <span class="grow" />
           <button v-if="isPersonal && hasSaved" class="btn danger has-icon" :disabled="removing" data-testid="personal-llm-remove" @click="confirmRemove = true"><Icon name="delete" sm />删除个人配置，改用全局</button>
         </div>
-        <template v-if="form.mode === 'llm'">
-          <ul v-if="testResult" class="checks" role="status" :data-testid="tid('test')">
+        <template v-if="form.mode === 'llm' && uiMode === 'advanced'">
+          <LlmFailureBanner v-if="testFailure" :failure="testFailure" :busy="testing" what="测试连接没有通过。" :testid="tid('test-failure')" @retry="runTest" />
+          <ul v-if="testResult?.ok" class="checks" role="status" :data-testid="tid('test')">
             <li :class="testResult.ok ? 'okc' : 'badc'"><Icon :name="testResult.ok ? 'check_circle' : 'cancel'" sm />连接{{ testResult.ok ? '成功' : '失败' }} · {{ testResult.latency_ms }} ms</li>
             <li v-if="testResult.ok && testResult.tool_calling != null" :class="testResult.tool_calling ? 'okc' : 'warnc'"><Icon :name="testResult.tool_calling ? 'check_circle' : 'warning'" sm />工具调用：{{ testResult.tool_calling ? '支持' : '未检测到——识别效果可能受影响' }}</li>
             <li v-if="testResult.ok && testResult.vision_ok != null" :class="testResult.vision_ok ? 'okc' : 'badc'" :data-testid="tid('vision-ok')"><Icon :name="testResult.vision_ok ? 'check_circle' : 'cancel'" sm />视觉：{{ testResult.vision_ok ? '视觉模型可用' : '视觉模型不可用' }}</li>
             <li v-if="testResult.message" class="muted">{{ testResult.message }}</li>
           </ul>
-          <span v-if="testError" class="err-text" role="alert">{{ testError }}</span>
         </template>
-        <p class="muted note">密钥只保存在本机服务器（加密），不会显示或写入日志；文档文字会发送给所选模型服务商，涉密文件请使用离线规则或本地模型（如 Ollama）。</p>
+        <p class="muted note">密钥加密保存在服务器上，不会完整显示或写入日志；文档文字会发送给所选服务商，涉密文件请使用离线规则或本机模型（如 Ollama）。</p>
       </template>
     </StateView>
     <ConfirmDialog v-if="confirmRemove" title="删除个人大模型配置？" confirm-label="删除并改用全局" danger :busy="removing" @confirm="removePersonal" @close="confirmRemove = false">
@@ -275,6 +317,20 @@ async function save() {
 </template>
 
 <style scoped>
+.status { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border-radius: var(--shape-md); background: var(--md-sys-color-surface-container); }
+.status.connected { background: var(--c-success-container); color: var(--c-on-success-container); }
+.status.connected .muted { color: inherit; opacity: .85; }
+.status.problem { background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); }
+.status.problem .muted { color: inherit; opacity: .85; }
+.status.none { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.status.none .muted { color: inherit; opacity: .85; }
+.sbody { gap: 2px; min-width: 0; }
+.next { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin-top: 4px; }
+.rot { transform: rotate(-90deg); }
+.help { border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--shape-md); padding: 8px 16px; font-size: 13px; }
+.help summary { cursor: pointer; font-weight: 500; padding: 4px 0; }
+.help summary:focus-visible { outline: 3px solid var(--md-sys-color-secondary); outline-offset: 2px; }
+.help ul { margin: 8px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.6; }
 .llm { grid-column: 1 / -1; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .tile { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 2px; align-items: center; text-align: left; padding: 14px 16px; border: 1px solid var(--md-sys-color-outline); border-radius: var(--shape-md); background: transparent; color: inherit; font: inherit; cursor: pointer; }

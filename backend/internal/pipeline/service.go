@@ -315,20 +315,39 @@ func (s *Service) analyzeOne(ctx context.Context, job imports.Job, f imports.Fil
 	if ctx.Err() != nil {
 		return
 	}
+	// A file above the worker's extraction cap is not a failure: it is imported, hashed and kept, but only judged from
+	// its name/metadata and always routed to manual review ("metadata-only").
+	tooLarge := false
+	var we0 *harness.WorkerError
+	if err != nil && errors.As(err, &we0) && we0.Code == harness.CodeFileTooLarge {
+		tooLarge, err = true, nil
+		res = harness.Result{Evidence: []string{}, Warnings: []string{}, Trace: []harness.ToolCall{}}
+	}
 	if err == nil {
-		// A tool observation with a fatal worker code (encrypted, corrupt, unsupported, too large) means the file
-		// itself is unusable: report it as a file error instead of guessing from the filename alone.
+		// A tool observation with a fatal worker code (encrypted, corrupt, unsupported) means the file itself is
+		// unusable: report it as a file error instead of guessing from the filename alone. Too large is handled above.
 		for _, t := range res.Trace {
 			switch t.ErrorCode {
-			case harness.CodeEncrypted, harness.CodeUnreadableFile, harness.CodeUnsupportedFormat, harness.CodeFileTooLarge:
+			case harness.CodeEncrypted, harness.CodeUnreadableFile, harness.CodeUnsupportedFormat:
 				err = &harness.WorkerError{Code: t.ErrorCode}
+			case harness.CodeFileTooLarge:
+				tooLarge = true
 			}
 		}
+	}
+	if tooLarge && err == nil {
+		res.ReviewRequired = true
+		res.Warnings = append(res.Warnings, "metadata_only:file_too_large")
+		res.Evidence = append(res.Evidence, fmt.Sprintf("文件较大（%.1f MiB），已跳过全文识别，仅按文件名/元数据判断，需人工审核", float64(f.SizeBytes)/(1<<20)))
 	}
 	if err != nil {
 		s.reportAnalyzeFailure(job, f, err)
 		msg := userMessage(err)
-		_ = s.cfg.Store.SaveAnalysis(ctx, f.ID, store.AnalysisResult{ReviewRequired: true, Error: &msg})
+		fail := store.AnalysisResult{ReviewRequired: true, Error: &msg}
+		if pe, ok := harness.AsProviderError(err); ok {
+			fail.Analysis = map[string]any{"llm_error": pe.Info()}
+		}
+		_ = s.cfg.Store.SaveAnalysis(ctx, f.ID, fail)
 		s.event(ctx, taskID, "analyzing", "file_failed", &fid, f.SourceName+"："+msg, nil)
 		_ = s.cfg.Store.Progress(ctx, taskID)
 		return
@@ -340,6 +359,9 @@ func (s *Service) analyzeOne(ctx context.Context, job imports.Job, f imports.Fil
 		}
 	}
 	an := map[string]any{"trace": res.Trace, "warnings": res.Warnings}
+	if tooLarge {
+		an["metadata_only"] = true
+	}
 	if res.OCR != nil && res.OCR.Used {
 		an["ocr"] = res.OCR
 		ocr = true
@@ -363,6 +385,9 @@ func strOr(p *string) string {
 
 // userMessage turns analysis errors into short, non-sensitive Chinese messages.
 func userMessage(err error) string {
+	if pe, ok := harness.AsProviderError(err); ok {
+		return pe.UserMessage()
+	}
 	var tme *llm.TaskModelError
 	if errors.As(err, &tme) {
 		return tme.Msg

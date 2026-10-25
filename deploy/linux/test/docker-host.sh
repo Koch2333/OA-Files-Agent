@@ -23,6 +23,8 @@
 #                     /tmp is a small tmpfs, which fails the installer's 5 GB free-space check)
 #   OA_HOST_REPO      repository path AS THE DAEMON SEES IT (default: this checkout; on Docker Desktop for Windows
 #                     pass the Windows path, e.g. 'D:\src\oa-agent'). Mounted read-only at /repo.
+#   OA_HOST_DOCKER_ARGS  extra "docker run" options for the host container, e.g. "--network host" so that ss inside it sees the ports
+#                     published by other containers (on Docker Desktop that is the Linux VM's network namespace)
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +54,8 @@ cmd_up() {
     # create the shared tree on the daemon's host (and a TMPDIR below it: the installer's golang build container
     # bind-mounts mktemp directories, which therefore have to be shared as well)
     d run --rm -v "$(dirname "$ROOT"):/vmparent" alpine:3.21 mkdir -p "/vmparent/$(basename "$ROOT")/tmp"
-    d run -d --name "$NAME" --hostname "$PREFIX-oa-host" \
+    # shellcheck disable=SC2086  # OA_HOST_DOCKER_ARGS is a space separated list of extra "docker run" options
+    d run -d --name "$NAME" --hostname "$PREFIX-oa-host" ${OA_HOST_DOCKER_ARGS:-} \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v "$ROOT:$ROOT" \
         -v "$REPO:/repo:ro" \

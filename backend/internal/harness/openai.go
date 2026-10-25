@@ -43,8 +43,12 @@ func OpenAIConfigFromEnv() OpenAIConfig {
 // ProviderError describes a failed provider call. It never contains the API key
 // or the response body.
 type ProviderError struct {
-	Status int
-	Msg    string
+	Status        int
+	Msg           string
+	Code          string // LLM* constant
+	Retryable     bool   // worth retrying (automatically while attempts remain, or by hand afterwards)
+	RetryAfterSec int    // provider's Retry-After in seconds (0 = unknown)
+	Attempts      int    // HTTP attempts made by the provider layer
 }
 
 func (e *ProviderError) Error() string {
@@ -181,10 +185,18 @@ func (p *OpenAICompatible) Chat(ctx context.Context, messages []Message, tools [
 			return resp, nil
 		}
 		last = err
+		if pe, ok := AsProviderError(err); ok {
+			pe.Attempts = attempt + 1
+		}
 		if !retry || ctx.Err() != nil {
 			if ctx.Err() != nil {
 				return Response{}, ctx.Err()
 			}
+			return Response{}, err
+		}
+		// A Retry-After beyond the cap is not waited for: fail now so the UI can show a countdown.
+		var ra *retryAfterError
+		if errors.As(err, &ra) && ra.after > MaxRetryAfter {
 			return Response{}, err
 		}
 	}
@@ -201,8 +213,8 @@ func (e *retryAfterError) Unwrap() error { return e.ProviderError }
 func (p *OpenAICompatible) backoff(attempt int, last error) time.Duration {
 	var ra *retryAfterError
 	if errors.As(last, &ra) && ra.after > 0 {
-		if ra.after > p.cfg.MaxBackoff {
-			return p.cfg.MaxBackoff
+		if ra.after > MaxRetryAfter {
+			return MaxRetryAfter
 		}
 		return ra.after
 	}
@@ -218,7 +230,7 @@ func (p *OpenAICompatible) once(ctx context.Context, payload []byte) (Response, 
 	defer cancel()
 	req, err := http.NewRequestWithContext(actx, http.MethodPost, p.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return Response{}, false, &ProviderError{Msg: "invalid request"}
+		return Response{}, false, &ProviderError{Msg: "invalid request", Code: LLMRejected}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if p.cfg.APIKey != "" {
@@ -229,30 +241,33 @@ func (p *OpenAICompatible) once(ctx context.Context, payload []byte) (Response, 
 	}
 	res, err := p.cfg.HTTPClient.Do(req)
 	if err != nil {
-		return Response{}, true, &ProviderError{Msg: "request failed"}
+		return Response{}, true, &ProviderError{Msg: "request failed", Code: classifyTransport(err), Retryable: true}
 	}
 	defer res.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, p.cfg.MaxResponse+1))
 	if err != nil {
-		return Response{}, true, &ProviderError{Status: res.StatusCode, Msg: "reading response failed"}
+		code := classifyTransport(err)
+		if code == LLMUnreachable {
+			code = LLMBadResponse // truncated body
+		}
+		return Response{}, true, &ProviderError{Status: res.StatusCode, Msg: "reading response failed", Code: code, Retryable: true}
 	}
 	if int64(len(raw)) > p.cfg.MaxResponse {
-		return Response{}, false, &ProviderError{Status: res.StatusCode, Msg: "response too large"}
-	}
-	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500 {
-		pe := &ProviderError{Status: res.StatusCode, Msg: "retryable status"}
-		ra := &retryAfterError{ProviderError: pe}
-		if s, err := strconv.Atoi(res.Header.Get("Retry-After")); err == nil && s >= 0 {
-			ra.after = time.Duration(s) * time.Second
-		}
-		return Response{}, true, ra
+		return Response{}, false, &ProviderError{Status: res.StatusCode, Msg: "response too large", Code: LLMBadResponse}
 	}
 	if res.StatusCode != http.StatusOK {
-		return Response{}, false, &ProviderError{Status: res.StatusCode, Msg: "request rejected"}
+		code, retry := classifyStatus(res.StatusCode)
+		pe := &ProviderError{Status: res.StatusCode, Msg: "request rejected", Code: code, Retryable: retry}
+		if retry {
+			pe.Msg = "retryable status"
+			pe.RetryAfterSec = parseRetryAfter(res.Header.Get("Retry-After"), time.Now())
+			return Response{}, true, &retryAfterError{ProviderError: pe, after: time.Duration(pe.RetryAfterSec) * time.Second}
+		}
+		return Response{}, false, pe
 	}
 	var or oaiResponse
 	if err := json.Unmarshal(raw, &or); err != nil || len(or.Choices) == 0 {
-		return Response{}, false, &ProviderError{Status: res.StatusCode, Msg: "malformed response"}
+		return Response{}, false, &ProviderError{Status: res.StatusCode, Msg: "malformed response", Code: LLMBadResponse, Retryable: true}
 	}
 	msg := or.Choices[0].Message
 	out := Response{Usage: Usage{PromptTokens: or.Usage.PromptTokens, CompletionTokens: or.Usage.CompletionTokens}}

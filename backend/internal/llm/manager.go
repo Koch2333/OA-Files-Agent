@@ -40,6 +40,9 @@ type Input struct {
 	Model       string `json:"model"`
 	APIKey      string `json:"api_key"`
 	ClearAPIKey bool   `json:"clear_api_key"`
+	// KeyLabel is an optional name the user gave the key at the provider (status line only; kept inside the sealed blob
+	// next to the key, and only together with a new APIKey).
+	KeyLabel string `json:"key_label"`
 	// Optional vision fallback for poor OCR (opt-in: page images are sent to the provider).
 	VisionModel string `json:"vision_model"`
 	AllowVision bool   `json:"allow_vision"`
@@ -60,8 +63,10 @@ type ConfigView struct {
 	APIKeySet  bool   `json:"api_key_set"`
 	APIKeyHint string `json:"api_key_hint"`
 	// KeySource is "manual" (pasted) or "oauth" (obtained by signing in with the platform); KeyProvider names the platform.
-	KeySource   string     `json:"key_source,omitempty"`
-	KeyProvider string     `json:"key_provider,omitempty"`
+	KeySource   string `json:"key_source,omitempty"`
+	KeyProvider string `json:"key_provider,omitempty"`
+	// KeyLabel is the key's name at the provider (login-obtained keys only, when the provider reports it).
+	KeyLabel    string     `json:"key_label,omitempty"`
 	VisionModel string     `json:"vision_model"`
 	AllowVision bool       `json:"allow_vision"`
 	State       string     `json:"state"`
@@ -74,6 +79,10 @@ type TestResult struct {
 	Message     string `json:"message"`
 	ToolCalling *bool  `json:"tool_calling"`
 	VisionOK    *bool  `json:"vision_ok"`
+	// Failure details (zero when OK): HTTP status from the provider, whether trying again can help, Retry-After seconds.
+	Status            int  `json:"status,omitempty"`
+	Retryable         bool `json:"retryable,omitempty"`
+	RetryAfterSeconds int  `json:"retry_after_seconds,omitempty"`
 }
 
 // UpstreamError is a failure talking to the model provider (HTTP 502), already worded for users.
@@ -92,13 +101,14 @@ type Manager struct {
 	http  *http.Client
 	ai    AIStore // nil: no personal configurations, default policy
 	// Audit records connect events (optional; never receives secrets).
-	Audit   func(ctx context.Context, actor, action, target, summary string)
-	oaOnce  sync.Once
-	oauth   *oauthState
-	keySrc  string // manual | oauth (global key provenance)
-	keyProv string
-	pers    personalState
-	pmu     sync.Mutex // serialises personal saves
+	Audit    func(ctx context.Context, actor, action, target, summary string)
+	oaOnce   sync.Once
+	oauth    *oauthState
+	keySrc   string // manual | oauth (global key provenance)
+	keyProv  string
+	keyLabel string
+	pers     personalState
+	pmu      sync.Mutex // serialises personal saves
 	// allowPrivate mirrors policy.allow_personal_private_hosts for the dial-time check of the personal client.
 	allowPrivate atomic.Bool
 	// Timeout per model call (OA_LLM_TIMEOUT_SECONDS); tests use a shorter fixed value.
@@ -167,10 +177,10 @@ func presetForURL(base string) string {
 // apply decrypts the key, builds the provider and swaps it in. Caller holds no lock requirement at init.
 func (m *Manager) apply(s Settings) {
 	m.set, m.key, m.state = s, "", "ok"
-	m.keySrc, m.keyProv = "", ""
+	m.keySrc, m.keyProv, m.keyLabel = "", "", ""
 	if len(s.APIKeyEnc) > 0 {
 		if k, err := m.box.Unseal(s.APIKeyEnc); err == nil {
-			m.key, m.keySrc, m.keyProv = splitKey(string(k))
+			m.key, m.keySrc, m.keyProv, m.keyLabel = splitKeyLabel(string(k))
 		} else {
 			m.state = "unavailable"
 			log.Printf("saved API key cannot be decrypted (secret key changed?): re-enter it in Settings")
@@ -217,7 +227,7 @@ func (m *Manager) viewLocked() ConfigView {
 	v := ConfigView{Mode: m.set.Mode, PresetID: m.set.PresetID, BaseURL: m.set.BaseURL, Model: m.set.Model, VisionModel: m.set.VisionModel, AllowVision: m.set.AllowVision, APIKeySet: len(m.set.APIKeyEnc) > 0, State: m.state}
 	if m.key != "" {
 		v.APIKeyHint = KeyHint(m.key)
-		v.KeySource, v.KeyProvider = m.keySrc, m.keyProv
+		v.KeySource, v.KeyProvider, v.KeyLabel = m.keySrc, m.keyProv, m.keyLabel
 	} else if v.APIKeySet {
 		v.APIKeyHint = "••••"
 	}
@@ -296,6 +306,9 @@ func (m *Manager) buildSettings(in Input, cur Settings, curKey string, norm func
 	case ModeHeuristic:
 		// keep the last LLM fields so the form is pre-filled when the user switches back
 		next.PresetID, next.BaseURL, next.Model, next.APIKeyEnc = cur.PresetID, cur.BaseURL, cur.Model, cur.APIKeyEnc
+		if in.ClearAPIKey {
+			next.APIKeyEnc = nil // "remove key": switch to offline rules and forget the saved key
+		}
 		next.VisionModel, next.AllowVision = cur.VisionModel, cur.AllowVision
 		if next.PresetID == "" {
 			next.PresetID = "deepseek"
@@ -347,7 +360,7 @@ func (m *Manager) buildSettings(in Input, cur Settings, curKey string, norm func
 		if kept {
 			next.APIKeyEnc = cur.APIKeyEnc // unchanged key: keep the sealed blob (and its provenance tag)
 		} else if key != "" {
-			enc, err := m.box.Seal([]byte(key))
+			enc, err := m.box.Seal([]byte(tagManualLabel(in.KeyLabel, key)))
 			if err != nil {
 				return Settings{}, err
 			}
@@ -379,6 +392,9 @@ func (m *Manager) resolveCall(baseRaw, explicitKey string) (base, key string, er
 func describe(err error) string {
 	var pe *harness.ProviderError
 	if errors.As(err, &pe) {
+		if pe.Attempts > 1 && pe.Retryable {
+			return pe.UserMessage()
+		}
 		switch {
 		case pe.Status == 401 || pe.Status == 403:
 			return "密钥无效或没有权限（HTTP " + fmt.Sprint(pe.Status) + "）"
@@ -435,6 +451,11 @@ func (m *Manager) runTest(ctx context.Context, client *http.Client, base, key st
 	res := TestResult{LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		res.Message = describe(err)
+		if pe, ok := harness.AsProviderError(err); ok {
+			res.Status, res.Retryable, res.RetryAfterSeconds = pe.Status, pe.Retryable, pe.RetryAfterSec
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			res.Retryable = true
+		}
 		return res, nil
 	}
 	res.OK = true

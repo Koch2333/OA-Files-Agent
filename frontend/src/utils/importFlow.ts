@@ -1,6 +1,6 @@
 import type { PickedFile } from '../api/types'
 import { fmtBytes } from './format'
-import { MAX_FILES, SUPPORTED_RE, summarize, type PickSummary } from './importLimits'
+import { SUPPORTED_RE, summarize, type PickSummary } from './importLimits'
 import { fromInput } from './paths'
 
 /** 工作台拖入区与批量导入页共用的纯逻辑（限制与规则在 importLimits.ts）。 */
@@ -18,7 +18,7 @@ export interface PickBrief { text: string; formats: string; rejected: number; bl
 export function pickBrief(picked: PickedFile[], sum: PickSummary = summarize(picked)): PickBrief {
   const formats = recognisedFormats(picked)
   const fmt = formats.length ? `将识别 ${formats.join(' / ')}` : '没有可识别的格式'
-  const blockReason = sum.overCount ? `一次最多 ${MAX_FILES} 个文件，当前 ${sum.count} 个，请移除多余文件或分批提交` : sum.overBatch ? '整批大小超过 128 MiB，请分批提交' : ''
+  const blockReason = ''
   return { text: `${sum.count} 个文件 · ${fmtBytes(sum.totalBytes)} · ${fmt}`, formats: fmt, rejected: sum.rejected, blocking: sum.blocking, blockReason }
 }
 

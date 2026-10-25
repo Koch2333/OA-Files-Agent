@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ func (s *Server) business() {
 	s.handle("/v1/archive-rules", map[string]http.HandlerFunc{"GET": s.listRules, "POST": s.createRule})
 	s.handle("/v1/audit-logs", map[string]http.HandlerFunc{"GET": s.auditLogs})
 	s.handle("/v1/providers", map[string]http.HandlerFunc{"GET": s.providers})
+	s.uploadRoutes()
 }
 
 // ---- imports & tasks ----
@@ -47,9 +49,6 @@ func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, 400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key 过长", nil)
 		return
 	}
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(10 * time.Minute))
-	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
 	templateID := r.URL.Query().Get("template_id")
 	if templateID != "" {
 		t, err := s.d.Store.Template(r.Context(), templateID)
@@ -62,7 +61,8 @@ func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, imports.MaxRequestBytes)
+	// No body-size cap: the multipart body is streamed to disk part by part. Only a stalled connection times out.
+	r.Body = s.idleBody(w, r.Body)
 	reader, err := r.MultipartReader()
 	if err != nil {
 		s.fail(w, r, 400, "INVALID_MULTIPART", "请使用 multipart/form-data 上传", nil)
@@ -73,26 +73,24 @@ func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, oerr.status, oerr.code, oerr.msg, nil)
 		return
 	}
+	if r.ContentLength > 0 {
+		ictx = imports.WithExpectedBytes(ictx, r.ContentLength)
+	}
 	batch, err := s.d.Imports.Import(ictx, reader, key, templateID)
 	if err != nil {
-		var ie *imports.Error
-		var mbe *http.MaxBytesError
-		switch {
-		case errors.As(err, &ie):
-			s.fail(w, r, ie.Status, ie.Code, ie.Message, nil)
-		case errors.As(err, &mbe):
-			s.fail(w, r, 413, "REQUEST_TOO_LARGE", "请求体超过上限", nil)
-		case errors.Is(err, store.ErrConflict):
-			s.fail(w, r, 409, "IDEMPOTENCY_CONFLICT", "相同 Idempotency-Key 对应了不同的上传内容", nil)
-		default:
-			s.internal(w, r, "导入失败", err)
-		}
+		s.importErr(w, r, err)
 		return
 	}
-	s.d.Store.Audit(r.Context(), actorOf(r), "import.create", batch.Job.ID, fmt.Sprintf("导入 %d 个文件，其中 %d 个在接收时被拒绝", batch.Job.TotalFiles, batch.Job.FailureCount))
-	s.auditAutoAccepted(r.Context(), r, batch.Job, batch.Replay)
-	_ = s.d.Store.AppendEvent(r.Context(), batch.Job.ID, "queued", "task_created", nil, createdSummary(batch.Job), createdDetails(batch.Job))
+	s.afterImport(r.Context(), r, batch, "import.create")
+	s.extendWrite(w)
 	s.ok(w, 202, batch.Job)
+}
+
+// afterImport audits a created task and appends its first trace event.
+func (s *Server) afterImport(ctx context.Context, r *http.Request, batch imports.Batch, action string) {
+	s.d.Store.Audit(ctx, actorOf(r), action, batch.Job.ID, fmt.Sprintf("导入 %d 个文件，其中 %d 个在接收时被拒绝", batch.Job.TotalFiles, batch.Job.FailureCount))
+	s.auditAutoAccepted(ctx, r, batch.Job, batch.Replay)
+	_ = s.d.Store.AppendEvent(ctx, batch.Job.ID, "queued", "task_created", nil, createdSummary(batch.Job), createdDetails(batch.Job))
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +132,11 @@ func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 	j, err := s.d.Store.RetryJob(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrState) && (j.Status == "queued" || j.Status == "scanning" || j.Status == "extracting" || j.Status == "analyzing" || j.Status == "planning") {
+		// Double click / second tab: the retry is already running; answer with the current state, not an error.
+		s.ok(w, 200, j)
+		return
+	}
 	if err != nil {
 		s.storeErr(w, r, err, "任务")
 		return

@@ -1,0 +1,129 @@
+#!/usr/bin/expect -f
+# Drives the "use an existing database server" path of install.sh through a REAL pty (script piped into bash, answers from
+# /dev/tty): localhost is refused, a wrong password is reported with the server's reason, a database that is not dedicated
+# (it holds a foreign table) is refused with the table named, the settings are changed, then the right database is checked,
+# the DDL preview can be viewed, and only the second confirmation creates the tables. Used by real-e2e.sh.
+#   INSTALLER PROJECT REGISTRY TAG   as in interactive.exp          INSTDIR   install directory     PORTX   HTTP port
+#   DBIP  database host (reachable from containers)   DBPW_WRONG / DBPW   wrong and right password   ARCHIVEDIR  archive root
+set timeout 180
+log_user 1
+set installer $env(INSTALLER)
+set project $env(PROJECT)
+set registry $env(REGISTRY)
+set tag $env(TAG)
+set instdir $env(INSTDIR)
+set portx $env(PORTX)
+set dbip $env(DBIP)
+set pw_wrong $env(DBPW_WRONG)
+set pw $env(DBPW)
+set archive $env(ARCHIVEDIR)
+set dbport $env(DBPORT)
+
+proc fail {why} { puts "\nINTERACTIVE-FAIL: $why"; exit 1 }
+proc want {re why} {
+    expect {
+        -re $re {}
+        timeout { fail "timeout waiting for: $why" }
+        eof { fail "installer ended while waiting for: $why" }
+    }
+}
+proc rejected {why} { want {\[!\][^\r\n]*} "rejection of $why" }
+
+spawn bash -c "cat $installer | bash -s -- --lang en --project $project --dir $instdir --registry $registry"
+
+want {Install directory[^\r\n]*: } "install dir prompt"
+send "$instdir\r"
+want {HTTP port \[[0-9]+\]: } "port prompt"
+send "$portx\r"
+want {Domain \(empty = HTTP only, no Passkeys\) \[\]: } "domain prompt"
+send "\r"
+want {Use an existing PostgreSQL 14\+ server} "database menu"
+want {Choice \[1-4\] \[1\]: } "database choice"
+send "2\r"
+want {host[^\r\n]*: } "database host prompt"
+send "localhost\r"
+rejected "localhost as database host"
+want {host[^\r\n]*: } "database host prompt again"
+send "$dbip\r"
+want {Port \[5432\]: } "database port prompt with the provider default"
+send "$dbport\r"
+want {Database name[^\r\n]*: } "database name prompt"
+send "dirty\r"
+want {User \[oa\]: } "database user prompt"
+send "\r"
+want {TLS mode[^\r\n]*: } "TLS prompt"
+send "disable\r"
+want {Database password[^\r\n]*: } "hidden password prompt"
+send "$pw_wrong\r"
+
+want {Archive root directory[^\r\n]*: } "archive prompt"
+send "$archive\r"
+want {Customize the spool[^\r\n]*\[y/N\] } "customise question"
+send "\r"
+want {Extra local storage[^\r\n]*\[\]: } "extra mount prompt"
+send "\r"
+want {Mirror cn\(China\)/default \[default\]: } "mirror prompt"
+send "\r"
+want {Image tag \[latest\]: } "image tag prompt"
+send "$tag\r"
+want {Review your settings} "review screen"
+want {password \*+, TLS disable} "the password is masked in the review"
+want {Proceed\? \[Y\]es} "review prompt"
+send "y\r"
+
+# 1st check: wrong password, with the server's own reason
+want {password authentication failed for user "oa"} "the reason of the wrong password"
+want {Choice \[r/c/a\] \[r\]: } "retry/change/abort menu"
+send "c\r"
+# change the settings: right password, still the non-dedicated database
+want {host[^\r\n]*: } "host again"
+send "\r"
+want {Port \[[0-9]+\]: } "port again"
+send "\r"
+want {Database name[^\r\n]*: } "name again"
+send "dirty\r"
+want {User \[oa\]: } "user again"
+send "\r"
+want {TLS mode[^\r\n]*: } "tls again"
+send "\r"
+want {Database password[^\r\n]*: } "password again"
+send "$pw\r"
+# 2nd check: not isolated, the foreign table is named
+want {\[FAIL\][^\r\n]*Isolation[^\r\n]*orders} "the isolation failure naming the foreign table"
+want {Choice \[r/c/a\] \[r\]: } "menu again"
+send "c\r"
+want {host[^\r\n]*: } "host (3)"
+send "\r"
+want {Port \[[0-9]+\]: } "port (3)"
+send "\r"
+want {Database name[^\r\n]*: } "name (3)"
+send "oa\r"
+want {User \[oa\]: } "user (3)"
+send "\r"
+want {TLS mode[^\r\n]*: } "tls (3)"
+send "\r"
+want {Database password[^\r\n]*: } "password (3)"
+send "$pw\r"
+# 3rd check passes; the DDL preview needs the SECOND confirmation
+want {The database passed the checks} "the check passes"
+want {would create its schema in [^\r\n]*: [0-9]+ migration} "the DDL preview summary"
+want {Create these tables now\?[^\r\n]*: } "second confirmation"
+send "v\r"
+want {CREATE TABLE} "the full DDL is shown on request"
+want {Create these tables now\?[^\r\n]*: } "second confirmation again"
+send "y\r"
+want {The OA Agent schema was created} "the schema is created"
+
+set timeout 2400
+expect {
+    -re {SETUP TOKEN: +([A-Za-z0-9_-]{16,})} { set token $expect_out(1,string) }
+    -re {\[FAIL\][^\r\n]*(Installation aborted|failed)} { fail "installer reported a failure" }
+    timeout { fail "timeout waiting for the final summary" }
+    eof { fail "installer ended without a summary" }
+}
+want {Database: +existing PostgreSQL} "database line in the summary"
+expect eof
+catch wait result
+set rc [lindex $result 3]
+if {$rc != 0} { fail "installer exit code $rc" }
+puts "\nINTERACTIVE-DB-OK token-length=[string length $token]"

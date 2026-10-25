@@ -65,8 +65,10 @@ export interface paths {
         /**
          * 批量上传文件/文件夹并创建任务
          * @description multipart/form-data。**`paths` 字段必须最先出现且仅一次**，值为 JSON 数组，按顺序给出每个文件的相对路径（保留子目录，如 `财务/a.docx`）；
-         *     随后按相同顺序重复 `files` 字段。每批最多 100 个文件、单文件 20 MiB、整批 128 MiB。
-         *     格式不支持/空文件/过大文件作为失败项计入任务，不会让整批失败。可选 `Idempotency-Key`：相同键+相同内容返回同一任务，内容不同返回 409。
+         *     随后按相同顺序重复 `files` 字段。**没有单文件、整批或请求体大小上限**：服务端把每个文件流式写入磁盘（恒定内存，边写边算 SHA-256）。
+         *     仅有的保护：磁盘剩余空间不足时 507 `INSUFFICIENT_STORAGE`（“需要 X，剩余 Y”），以及管理员可选的安全阀 `OA_MAX_UPLOAD_BYTES` / `OA_MAX_BATCH_FILES`（默认 0 = 不限制，见 `GET /v1/imports/config`）。
+         *     超大文件或大批量请改用可续传的分片上传（`/v1/imports/uploads`），本机桌面端可用 `POST /v1/imports/from-paths`。
+         *     格式不支持/空文件作为失败项计入任务，不会让整批失败。可选 `Idempotency-Key`：相同键+相同内容返回同一任务，内容不同返回 409。
          *     可选查询参数 `template_id` 指定 OA 模板，否则按优先级自动匹配。
          */
         post: operations["createImport"];
@@ -154,7 +156,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 重试失败/已取消的任务（已归档文件保持不变） */
+        /**
+         * 重试失败/已取消的任务（已归档文件保持不变）
+         * @description 只重新识别失败的文件（含因大模型 HTTP 错误失败的文件），已成功的识别结果保持不变。任务处于 awaiting_review 且存在失败文件时也可重试（计划会重新生成）。重复点击幂等：任务已在重新排队/运行时返回 200 与当前状态；无可重试内容时 409。
+         */
         post: operations["retryTask"];
         delete?: never;
         options?: never;
@@ -861,10 +866,168 @@ export interface paths {
         put?: never;
         /**
          * 从远端存储导入文件/文件夹并创建任务
-         * @description `items` 的每一项是远端相对路径（文件或文件夹，文件夹递归）。限制与本机上传一致：每批最多 100 个文件、单文件 20 MiB；格式不支持/过大/空文件作为失败项计入，不让整批失败。
+         * @description `items` 的每一项是远端相对路径（文件或文件夹，文件夹递归；最多 5000 项，展开后的文件总数不设上限）。与本机上传规则一致：没有单文件/整批大小上限（仅磁盘空间检查与管理员可选的 `OA_MAX_UPLOAD_BYTES`/`OA_MAX_BATCH_FILES`）；格式不支持/空文件作为失败项计入，不让整批失败。
          *     文件按相对路径保留目录层级（相对于所选项目的上级）。支持 `Idempotency-Key`。
          */
         post: operations["createRemoteImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 导入能力与（可选的）运维安全阀
+         * @description 返回推荐分片大小、管理员可选上限（`null` = 不限制，这是默认值）、磁盘剩余空间和本机路径导入是否可用。它描述的是“运维安全阀”，不是产品限制。
+         */
+        get: operations["getImportConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 创建可续传的分片上传会话
+         * @description 每个文件一个会话。`batch_id`（小写 UUID）把同一批文件归在一起，省略则由服务端生成并在响应里返回。
+         *     `size` 必填（字节，可为 0）；`sha256` 可选，给出时在 complete 阶段校验，不一致返回 422 `CHECKSUM_MISMATCH` 并丢弃该文件。
+         *     没有单文件/整批大小上限；仅在磁盘剩余空间不足时返回 507 `INSUFFICIENT_STORAGE`（“需要 X，剩余 Y”），管理员配置了 `OA_MAX_UPLOAD_BYTES`/`OA_MAX_BATCH_FILES` 时超限返回 413。
+         *     会话 24 小时（`session_ttl_seconds`）无活动后过期并被清理。
+         */
+        post: operations["createUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/uploads/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * 查询已接收的位置（断点续传；HEAD 同样可用，只返回响应头）
+         * @description 响应头 `Upload-Offset`（已接收字节数）与 `Upload-Length`（声明大小）。页面刷新或网络中断后，从该 offset 继续 PUT。
+         */
+        get: operations["getUpload"];
+        /**
+         * 追加一个分片（幂等；任意大小，推荐 8 MiB）
+         * @description 请求体是原始字节（`Content-Type: application/octet-stream`），`offset` 必须等于服务端已接收的长度。
+         *     重试安全：offset 小于已接收长度时，已收到的部分会被跳过，只追加新增的尾部（整块重复则无变化，返回 200）。
+         *     offset 大于已接收长度时返回 409 `OFFSET_MISMATCH`，`details.offset` 与 `Upload-Offset` 头给出应当继续的位置。
+         *     连接中途断开时已写入的前缀保留，客户端查询 offset 后继续即可。超过声明大小的内容返回 422 `CHUNK_EXCEEDS_SIZE`。
+         *     同一会话的并发写入返回 409 `UPLOAD_BUSY`。
+         */
+        put: operations["putUploadChunk"];
+        post?: never;
+        /** 取消上传并删除已接收的数据 */
+        delete: operations["abortUpload"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/uploads/{id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 完成上传：校验大小与 SHA-256，并把文件放入批次
+         * @description 服务端重新计算 SHA-256（以服务端值为准）。大小不足返回 409 `OFFSET_MISMATCH`；声明了 sha256 且不一致返回 422 `CHECKSUM_MISMATCH`（文件被丢弃，需重新上传）。幂等。
+         */
+        post: operations["completeUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/batches/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** 暂存批次的文件与本机路径导入进度 */
+        get: operations["getImportBatch"];
+        put?: never;
+        post?: never;
+        /** 丢弃暂存批次（未提交的所有文件） */
+        delete: operations["discardImportBatch"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/batches/{id}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把批次中已完成的文件提交为一个任务
+         * @description 与 multipart 导入规则相同：格式不支持/空文件作为失败项计入任务。仍有未完成的上传时返回 409 `UPLOADS_INCOMPLETE`（不会静默丢文件）。
+         *     支持 `Idempotency-Key`：相同键重试返回同一任务。请求体可省略。
+         */
+        post: operations["commitImportBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/imports/from-paths": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 本机路径导入（仅本机 local 模式，且请求来自本机）
+         * @description 桌面端把用户选择的绝对路径（文件或文件夹）交给后端，后端递归遍历并**流式复制**到暂存区（不移动、不修改源文件；无大小上限）。
+         *     符号链接/联接点不会被跟随，目录循环被检测；设备路径（`\\.\`）与应用自身数据目录被拒绝；UNC 共享路径允许并按只读源处理。单个文件失败不会中断整批。
+         *     企业（enterprise）模式或非本机请求返回 403 `LOCAL_ONLY`。立即返回 202 与批次进度，轮询 `GET /v1/imports/batches/{id}` 的 `path_import` 字段获取进度；
+         *     `commit` 缺省为 true：复制完成后自动提交为任务（`path_import.task_id`），可带 `Idempotency-Key`。
+         */
+        post: operations["importFromPaths"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2101,6 +2264,21 @@ export interface components {
             archive_status: "pending" | "archived" | "failed";
             /** @description 失败原因，形如 “[UNSUPPORTED_FORMAT] …” 或中文说明 */
             error: string | null;
+            /** @description 因大模型服务商调用失败而失败时的结构化原因（其它失败为 null/缺省）。不含密钥、请求或文档内容。 */
+            llm_error?: null | {
+                /** @enum {string} */
+                code: "llm_auth" | "llm_not_found" | "llm_rejected" | "llm_rate_limited" | "llm_server" | "llm_timeout" | "llm_unreachable" | "llm_bad_response";
+                /** @description 服务商返回的 HTTP 状态码；网络层失败为 0 */
+                status: number;
+                /** @description 重试可能有效（401/403/404 为 false） */
+                retryable: boolean;
+                /** @description 服务商给出的 Retry-After（秒），未知为 0 */
+                retry_after_seconds: number;
+                /** @description 已自动尝试的 HTTP 次数 */
+                attempts: number;
+                /** @description 面向用户的简短中文原因 */
+                message: string;
+            };
             /** @description OCR 摘要（未使用 OCR 为 null）。quality 为 OCR 质量判定。 */
             ocr: null | {
                 used: boolean;
@@ -2379,6 +2557,28 @@ export interface components {
             }[];
             /** @description 手动创建 API Key 的服务商页面（“打开密钥页面”链接）；可缺省 */
             key_url?: string;
+            /** @description 桌面版“密钥向导窗口”允许打开的主机白名单：完整主机名，或以 . 开头的后缀（匹配该域名及其子域）；key_url 必须在其中 */
+            key_hosts?: string[];
+            /** @description 该服务商密钥的常见格式（RE2/JS 通用正则）；只用于识别剪贴板与格式提示 */
+            key_pattern?: string;
+            /** @description 密钥向导的分步说明（中文，只描述“去哪里找”，不声称按钮的确切位置） */
+            key_guide?: {
+                /** @description 建议用户给密钥起的名字 */
+                suggested_name: string;
+                login_note?: string;
+                cost_note?: string;
+                /** @description 登录授权窗口打开时显示的简短步骤（仅 OpenRouter） */
+                login_steps?: {
+                    title: string;
+                    hint: string;
+                    warn?: string;
+                }[];
+                steps: {
+                    title: string;
+                    hint: string;
+                    warn?: string;
+                }[];
+            };
             /** @description 是否已实现“用该平台账号登录授权” */
             oauth_login: boolean;
             docs_url: string;
@@ -2401,6 +2601,8 @@ export interface components {
             key_source?: "manual" | "oauth";
             /** @description 登录授权所用的平台 id；手动密钥缺省 */
             key_provider?: string;
+            /** @description 登录授权所得密钥在服务商处的名称（服务商返回时才有，如 OpenRouter 的 key label）；永远不含密钥本身 */
+            key_label?: string;
             /** @description 已保存密钥的尾号提示，如 ••••ab12；未保存为空 */
             api_key_hint: string;
             /** @description 视觉识别所用模型（空 = 未配置） */
@@ -2419,7 +2621,10 @@ export interface components {
             base_url?: string;
             model?: string;
             api_key?: string;
+            /** @description 清除已保存的密钥；与 mode=heuristic 一起提交 = “删除密钥”并改用离线规则 */
             clear_api_key?: boolean;
+            /** @description 可选：用户给这把密钥起的名字（仅用于状态行显示，随新 api_key 一起保存；控制字符会被去掉，最长 80 字） */
+            key_label?: string;
             vision_model?: string;
             allow_vision?: boolean;
         };
@@ -2439,6 +2644,12 @@ export interface components {
             tool_calling: boolean | null;
             /** @description 未测试视觉模型为 null */
             vision_ok: boolean | null;
+            /** @description 失败时服务商返回的 HTTP 状态码（可缺省） */
+            status?: number;
+            /** @description 失败时重试可能有效（可缺省） */
+            retryable?: boolean;
+            /** @description 失败时服务商给出的 Retry-After 秒数（可缺省） */
+            retry_after_seconds?: number;
         };
         Preview: {
             /** @enum {string} */
@@ -2916,6 +3127,109 @@ export interface components {
             allow_personal_private_hosts?: boolean;
             allow_auto_archive?: boolean;
         };
+        ImportConfig: {
+            /**
+             * Format: int64
+             * @description 推荐分片大小（字节，默认 8 MiB）；服务端接受任意大小
+             */
+            chunk_size: number;
+            /**
+             * Format: int64
+             * @description 管理员可选的单文件上限（OA_MAX_UPLOAD_BYTES）；null = 不限制（默认）。运维安全阀，不是产品限制
+             */
+            max_upload_bytes: number | null;
+            /** @description 管理员可选的每批文件数上限（OA_MAX_BATCH_FILES）；null = 不限制（默认） */
+            max_batch_files: number | null;
+            /** @description 分片上传会话无活动后过期的秒数（默认 86400） */
+            session_ttl_seconds: number;
+            /**
+             * Format: int64
+             * @description 始终为系统保留的磁盘空间（OA_DISK_RESERVE_BYTES）
+             */
+            disk_reserve_bytes: number;
+            /**
+             * Format: int64
+             * @description 暂存卷当前剩余空间；未知时 null
+             */
+            disk_free_bytes: number | null;
+            /** @description 当前调用方能否使用 POST /v1/imports/from-paths（local 模式且来自本机） */
+            local_path_import: boolean;
+            supported_extensions: string[];
+        };
+        UploadSession: {
+            /** @description 上传 id（"<batch>_<file>"） */
+            id: string;
+            /** Format: uuid */
+            batch_id: string;
+            name: string;
+            path: string;
+            /** Format: int64 */
+            size: number;
+            /**
+             * Format: int64
+             * @description 服务端已接收的字节数（续传位置）
+             */
+            offset: number;
+            /** @description 声明的摘要；complete 之后为服务端计算的摘要 */
+            sha256?: string;
+            complete: boolean;
+            /** @enum {string} */
+            source: "upload" | "path";
+            /** @description 接收阶段被拒绝时的错误码（如 UNSUPPORTED_FORMAT、EMPTY_FILE、READ_FAILED） */
+            code?: string;
+            message?: string;
+            /** Format: int64 */
+            chunk_size?: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        PathImportResult: {
+            path: string;
+            /** @enum {string} */
+            status: "copied" | "failed" | "skipped";
+            code?: string;
+            message?: string;
+            /** Format: int64 */
+            size: number;
+        };
+        PathImportStatus: {
+            /** Format: uuid */
+            batch_id: string;
+            /** @enum {string} */
+            state: "scanning" | "running" | "committing" | "done" | "failed" | "cancelled";
+            discovered: number;
+            copied: number;
+            failed: number;
+            skipped: number;
+            /** Format: int64 */
+            bytes_total: number;
+            /** Format: int64 */
+            bytes_copied: number;
+            current?: string;
+            results: components["schemas"]["PathImportResult"][];
+            results_truncated?: boolean;
+            /**
+             * Format: uuid
+             * @description 自动提交后创建的任务
+             */
+            task_id?: string;
+            error?: string;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ImportBatchStatus: {
+            /** Format: uuid */
+            batch_id: string;
+            files: components["schemas"]["UploadSession"][];
+            committed: boolean;
+            path_import?: components["schemas"]["PathImportStatus"];
+        };
         ImportOptions: {
             /** @description 给 AI 的任务说明（如“只处理采购类文件，按项目名归档”）。只作为分类/命名的指导，不能授予工具权限、不能改变路径安全规则；文档内容仍是数据而非指令。需要已配置大模型，否则 422 LLM_REQUIRED。 */
             instruction?: string;
@@ -3256,6 +3570,7 @@ export interface operations {
             413: components["responses"]["Error"];
             422: components["responses"]["Error"];
             500: components["responses"]["Error"];
+            507: components["responses"]["Error"];
         };
     };
     listTasks: {
@@ -4683,6 +4998,306 @@ export interface operations {
             413: components["responses"]["Error"];
             422: components["responses"]["Error"];
             502: components["responses"]["Error"];
+        };
+    };
+    getImportConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Import configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ImportConfig"];
+                    };
+                };
+            };
+        };
+    };
+    createUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    batch_id?: string;
+                    /** @description 文件名（不含目录） */
+                    name: string;
+                    /** @description 相对路径（含文件名，保留子目录，如 财务/a.docx）；默认等于 name */
+                    path?: string;
+                    /** Format: int64 */
+                    size: number;
+                    sha256?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Upload session (Location 与 Upload-Offset 响应头同时给出) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UploadSession"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            507: components["responses"]["Error"];
+        };
+    };
+    getUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upload session */
+            200: {
+                headers: {
+                    "Upload-Offset"?: number;
+                    "Upload-Length"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UploadSession"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    putUploadChunk: {
+        parameters: {
+            query: {
+                offset: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Chunk stored */
+            200: {
+                headers: {
+                    "Upload-Offset"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UploadSession"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            507: components["responses"]["Error"];
+        };
+    };
+    abortUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Aborted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    completeUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upload session (complete=true, sha256=服务端摘要) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UploadSession"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getImportBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Staged batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ImportBatchStatus"];
+                    };
+                };
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    discardImportBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discarded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    commitImportBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    template_id?: string;
+                    options?: components["schemas"]["ImportOptions"];
+                };
+            };
+        };
+        responses: {
+            202: components["responses"]["Job"];
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    importFromPaths: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    batch_id?: string;
+                    /** @description 绝对路径 */
+                    paths: string[];
+                    /** @default false */
+                    include_hidden?: boolean;
+                    /** @default true */
+                    commit?: boolean;
+                    /** Format: uuid */
+                    template_id?: string;
+                    options?: components["schemas"]["ImportOptions"];
+                };
+            };
+        };
+        responses: {
+            /** @description Copy started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PathImportStatus"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     getSetupStatus: {

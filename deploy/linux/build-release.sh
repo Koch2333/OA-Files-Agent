@@ -68,7 +68,7 @@ for a in $ARCHS; do
     b="$STAGE/bundle/$name"
     mkdir -p "$b/bin"
     for f in install.sh oa-agentctl.sh; do install -m 0755 "$HERE/$f" "$b/$f"; done
-    for f in docker-compose.yml docker-compose.https.yml docker-compose.build.yml docker-compose.mounts.example.yml Caddyfile.template .env.example oa-agent.service; do
+    for f in docker-compose.yml docker-compose.https.yml docker-compose.build.yml docker-compose.external-db.yml docker-compose.mounts.example.yml Caddyfile.template .env.example oa-agent.service; do
         install -m 0644 "$HERE/$f" "$b/$f"
     done
     install -m 0755 "$STAGE/oa-agent/bin/oa-agentctl-linux-$a" "$b/bin/"

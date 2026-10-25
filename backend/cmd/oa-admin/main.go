@@ -2,7 +2,7 @@
 // OA_DATABASE_URL and secret key as the server) and audits every action as "oa-admin(cli)".
 //
 //	oa-admin setup-token | status | list-users | create-admin <user> | reset-password <user> | reset-mfa <user> |
-//	         unlock <user> | disable-user <user> | enable-user <user>
+//	         unlock <user> | disable-user <user> | enable-user <user> | db-check | db-init
 package main
 
 import (
@@ -34,6 +34,11 @@ func usage() {
   unlock <user>          clear the lockout
   disable-user <user>    disable the account (the last active administrator cannot be disabled)
   enable-user <user>     enable the account again
+  db-check [--password-stdin]
+                         validate an existing database server from OA_DB_* (connectivity, version, permissions,
+                         isolation, empty-or-OA-only schema); changes nothing
+  db-init [--password-stdin] [--show-ddl] [--apply --plan <fingerprint>]
+                         preview the DDL (default), or apply exactly the previewed plan after approval
 
 environment: OA_DB_PROVIDER + OA_DB_* or OA_DATABASE_URL (required unless OA_SPOOL_ROOT points at a data directory with database.json), OA_SECRET_KEY, OA_SPOOL_ROOT (locates data/secret.key like the server)`)
 	os.Exit(2)
@@ -42,6 +47,9 @@ environment: OA_DB_PROVIDER + OA_DB_* or OA_DATABASE_URL (required unless OA_SPO
 func main() {
 	if len(os.Args) < 2 {
 		usage()
+	}
+	if isDBCommand(os.Args[1]) { // pre-install checks: no database is configured or initialised yet
+		dbMain(os.Args[1], os.Args[2:])
 	}
 	box := openBox()
 	spool := os.Getenv("OA_SPOOL_ROOT")

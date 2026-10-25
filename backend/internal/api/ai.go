@@ -308,11 +308,15 @@ func (s *Server) withImportAI(ctx context.Context, r *http.Request) (context.Con
 
 // auditAutoAccepted records the acknowledgement of the fully automatic risk text (once per created task).
 func (s *Server) auditAutoAccepted(ctx context.Context, r *http.Request, job imports.Job, replay bool) {
+	s.auditAutoAcceptedBy(ctx, actorOf(r), job, replay)
+}
+
+func (s *Server) auditAutoAcceptedBy(ctx context.Context, actor string, job imports.Job, replay bool) {
 	if job.Automation != imports.AutomationAuto || replay {
 		return
 	}
-	s.d.Store.Audit(ctx, actorOf(r), "ai.auto_archive.accepted", job.ID,
-		fmt.Sprintf("用户 %s 确认全自动归档风险提示（版本 %s），任务 %s，模型 %s", actorOf(r), job.AckVersion, job.ID, job.LLMModel))
+	s.d.Store.Audit(ctx, actor, "ai.auto_archive.accepted", job.ID,
+		fmt.Sprintf("用户 %s 确认全自动归档风险提示（版本 %s），任务 %s，模型 %s", actor, job.AckVersion, job.ID, job.LLMModel))
 }
 
 // createdSummary / createdDetails make the SSE trace say how the task was configured (automatic mode, model).

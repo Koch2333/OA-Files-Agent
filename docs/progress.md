@@ -25,7 +25,7 @@
 
 ### 已实现并实测
 - **契约**：`contracts/openapi.yaml` 1.0.0 覆盖全部业务路由；前端类型由它生成。`scripts/check_contracts.py --recorded` 用 e2e 记录的 145+ 条真实响应校验契约。
-- **导入**：multipart `paths` 清单 + `files`，保留子目录、100 个/批、20 MiB/文件，单文件失败不拖垮整批；Idempotency-Key 重放；路径穿越/保留名拒绝。
+- **导入**：multipart `paths` 清单 + `files`，保留子目录，无大小/数量上限（流式落盘 + 可续传分片上传 + 桌面本机路径导入，见 docs/大文件与批量导入.md），单文件失败不拖垮整批；Idempotency-Key 重放；路径穿越/保留名拒绝。
 - **解析/OCR**（Python Worker，子进程隔离、超时、路径限定在 spool）：docx、xlsx、原生 PDF、扫描 PDF、png/jpg；加密/损坏/旧版 `.doc/.xls` 给出可读错误。
 - **Agent Harness**：Tool Registry（inspect_file、extract_text、run_ocr、detect_template、extract_metadata、check_duplicates、validate_plan）、回合/失败/预算上限、OpenAI 兼容 Provider、离线规则 Provider、提示词注入防护、事件脱敏。
 - **识别规则**：文件名约定 `部门_标题_日期` 的部门为字面量并最优先；落款/抬头；标签字段；关键词同义词仅作兜底且要求人工确认。

@@ -50,6 +50,7 @@ type fakeLLM struct {
 	supportsTc atomic.Bool
 	calls      atomic.Int32
 	lastModel  atomic.Value
+	keyInfo    atomic.Int32 // 0: label "OA Agent"; 1: HTTP 500; 2: control chars in label
 }
 
 func newFake(t *testing.T, key string) *fakeLLM {
@@ -61,6 +62,15 @@ func newFake(t *testing.T, key string) *fakeLLM {
 			return
 		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/key"):
+			switch f.keyInfo.Load() {
+			case 1:
+				http.Error(w, "boom", 500)
+			case 2:
+				w.Write([]byte(`{"data":{"label":"  OA\u0000 Agent\n"}}`))
+			default:
+				w.Write([]byte(`{"data":{"label":"OA Agent","usage":1.5,"limit":null}}`))
+			}
 		case strings.HasSuffix(r.URL.Path, "/models"):
 			w.Write([]byte(`{"data":[{"id":"qwen-plus"},{"id":"deepseek-chat"},{"id":"bad id with spaces"},{"id":"deepseek-chat"}]}`))
 		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
@@ -301,9 +311,15 @@ func TestConnectionTestReportsReadableOutcomes(t *testing.T) {
 	if res.OK || !strings.Contains(res.Message, "密钥无效") || strings.Contains(res.Message, "sk-wrong") {
 		t.Fatalf("401: %+v", res)
 	}
+	if res.Status != 401 || res.Retryable {
+		t.Fatalf("401 must carry status and not be retryable: %+v", res)
+	}
 	res, _ = m.Test(ctx, TestInput{BaseURL: f.srv.URL + "/v1", Model: "missing-model", APIKey: "sk-good-1234567"})
 	if res.OK || !strings.Contains(res.Message, "不存在") {
 		t.Fatalf("404: %+v", res)
+	}
+	if res.Status != 404 || res.Retryable {
+		t.Fatalf("404 status: %+v", res)
 	}
 	f.srv.Close()
 	res, _ = m.Test(ctx, TestInput{BaseURL: f.srv.URL + "/v1", Model: "qwen-plus", APIKey: "sk-good-1234567"})
@@ -471,5 +487,22 @@ func TestAdministratorCanOverrideTheCatalogWithoutARebuild(t *testing.T) {
 	}
 	if err := LoadOverride(filepath.Join(dir, "missing.json")); err == nil {
 		t.Error("missing file must be an error")
+	}
+}
+
+func TestRemoveKeyFromOfflineSave(t *testing.T) {
+	f := newFake(t, "sk-test-12345678")
+	m, st := newMgr(t, Seed{})
+	ctx := context.Background()
+	if _, err := m.Save(ctx, Input{Mode: ModeLLM, PresetID: "custom", BaseURL: f.srv.URL + "/v1", Model: "my-model", APIKey: "sk-test-12345678", KeyLabel: "OA Agent"}); err != nil {
+		t.Fatal(err)
+	}
+	v := m.Config()
+	if v.KeyLabel != "OA Agent" || v.KeySource != "manual" {
+		t.Fatalf("typed key name must show on the status line: %+v", v)
+	}
+	cfg, err := m.Save(ctx, Input{Mode: ModeHeuristic, ClearAPIKey: true})
+	if err != nil || cfg.Mode != ModeHeuristic || cfg.APIKeySet || len(st.s.APIKeyEnc) != 0 || cfg.KeyLabel != "" {
+		t.Fatalf("remove key: %v %+v", err, cfg)
 	}
 }

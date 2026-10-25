@@ -41,6 +41,8 @@ export async function launch({ downloadDir } = {}) {
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
+  // LLM settings default to the guided simple mode; these scripts drive the advanced form (ids llm-base, data-preset, ...)
+  await page.evaluateOnNewDocument(() => { try { localStorage.setItem('oa.llm.ui', 'advanced') } catch { /* ignore */ } })
   if (env.dev) await page.evaluateOnNewDocument(() => { try { localStorage.setItem('oa.useMock', '0') } catch { /* ignore */ } })
   if (downloadDir) {
     const cdp = await page.createCDPSession()

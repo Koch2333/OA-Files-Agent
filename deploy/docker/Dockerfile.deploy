@@ -4,7 +4,7 @@
 # Build context = repository root:  docker build -f deploy/docker/Dockerfile.deploy -t oa-agent-deploy .
 #   docker run --rm <registry>/oa-agent-deploy:<tag>                       -> prints install.sh (pipe it into  sudo bash -s -- ...)
 #   docker create / docker cp <cid>:/deploy/. <dir>                        -> the whole bundle
-# /deploy: install.sh oa-agentctl.sh docker-compose{,.https,.build,.mounts.example}.yml Caddyfile.template .env.example
+# /deploy: install.sh oa-agentctl.sh docker-compose{,.https,.build,.external-db,.mounts.example}.yml Caddyfile.template .env.example
 #          oa-agent.service bin/oa-agentctl-linux-{amd64,arm64} bin/SHA256SUMS ("hash  filename") VERSION
 ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.21
@@ -36,7 +36,7 @@ LABEL org.opencontainers.image.title="oa-agent-deploy" org.opencontainers.image.
 WORKDIR /deploy
 COPY --chmod=0755 deploy/linux/install.sh deploy/linux/oa-agentctl.sh ./
 COPY --chmod=0644 deploy/linux/docker-compose.yml deploy/linux/docker-compose.https.yml deploy/linux/docker-compose.build.yml \
-     deploy/linux/docker-compose.mounts.example.yml deploy/linux/Caddyfile.template deploy/linux/.env.example deploy/linux/oa-agent.service ./
+     deploy/linux/docker-compose.mounts.example.yml deploy/linux/docker-compose.external-db.yml deploy/linux/Caddyfile.template deploy/linux/.env.example deploy/linux/oa-agent.service ./
 COPY --from=ctl --chmod=0755 /out/bin/ ./bin/
 RUN chmod 0644 bin/SHA256SUMS \
  && printf 'version=%s\ncommit=%s\nregistry=%s\n' "${OA_VERSION}" "${OA_COMMIT}" "${OA_REGISTRY_HINT}" > VERSION \

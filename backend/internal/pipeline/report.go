@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"oa-agent/backend/internal/diag"
 	"oa-agent/backend/internal/harness"
@@ -67,6 +68,8 @@ func (s *Service) reportAnalyzeFailure(job imports.Job, f imports.File, err erro
 		code := "PROVIDER_ERROR"
 		if pe.Status != 0 {
 			code = "PROVIDER_HTTP_" + strconv.Itoa(pe.Status)
+		} else if pe.Code != "" {
+			code = "PROVIDER_" + strings.ToUpper(strings.TrimPrefix(pe.Code, "llm_"))
 		}
 		reportTask("llm", code, "大模型调用失败", pe, job.ID, f.ID, meta)
 	case errors.As(err, &tme):

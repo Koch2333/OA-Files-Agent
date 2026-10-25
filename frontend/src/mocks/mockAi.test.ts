@@ -8,7 +8,7 @@ function make(role: Role = 'operator', initial: 'none' | 'global' | 'personal' =
     ? { mode: 'heuristic', preset_id: '', base_url: '', model: '', api_key_set: false, api_key_hint: '', vision_model: '', allow_vision: false, state: 'ok', updated_at: null }
     : { mode: 'llm', preset_id: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', api_key_set: true, api_key_hint: '••••', vision_model: '', allow_vision: false, state: 'ok', updated_at: null }
   const presets = [{ id: 'deepseek', name: 'DeepSeek', needs_api_key: true }, { id: 'custom', name: '自定义', needs_api_key: false }] as LlmPreset[]
-  const m = createMockAi({ role: () => r, globalCfg: () => cfg, presets, models: () => ['m1'], audit: () => undefined }, initial)
+  const m = createMockAi({ role: () => r, globalCfg: () => cfg, presets, models: () => ['m1'], audit: () => undefined, setGlobalLlm: () => undefined }, initial)
   return { ...m, setRole: (x: Role | null) => { r = x } }
 }
 const ack = { version: MOCK_ACK_VERSION, accepted: true }
@@ -62,5 +62,32 @@ describe('mock AI rules follow the contract', () => {
     expect((await api.getLlmStatus()).source).toBe('personal')
     await api.deletePersonalLlm()
     expect((await api.getLlmStatus()).source).toBe('global')
+  })
+})
+
+describe('mock provider faults and sign-in demo', () => {
+  it('flaky keys fail once per action (so Retry succeeds), bad keys keep failing, limits carry Retry-After', async () => {
+    const { api } = make('admin', 'global')
+    const input = { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'm', api_key: 'sk-flaky00000000000000000' }
+    expect(await api.testPersonalLlm(input)).toMatchObject({ ok: false, message: expect.stringContaining('HTTP 503') })
+    expect(await api.testPersonalLlm(input)).toMatchObject({ ok: true })
+    expect(await api.testPersonalLlm({ ...input, api_key: 'sk-bad0000000000000000000' })).toMatchObject({ ok: false, message: expect.stringContaining('HTTP 401') })
+    expect(await api.testPersonalLlm({ ...input, api_key: 'sk-bad0000000000000000000' })).toMatchObject({ ok: false })
+    const lim = { ...input, api_key: 'sk-limit000000000000000000' }
+    await expect(api.listPersonalLlmModels(lim)).rejects.toMatchObject({ status: 429, retryAfter: 5 })
+    await expect(api.listPersonalLlmModels(lim)).resolves.toBeTruthy()
+    await expect(api.listPersonalLlmModels({ ...input, api_key: 'sk-down0000000000000000000' })).rejects.toMatchObject({ status: 502 })
+  })
+  it('personal sign-in returns a labelled key, never the key itself, and disconnect clears it', async () => {
+    const { api } = make('operator', 'none')
+    const st = await api.startLlmOauth({ provider: 'openrouter', scope: 'personal' })
+    const done = await api.getLlmOauthStatus(st.state)
+    expect(done).toMatchObject({ status: 'connected', config: { key_label: 'OA Agent', key_source: 'oauth', api_key_hint: '••••c0de' }, test: { ok: true } })
+    expect(JSON.stringify(done)).not.toMatch(/sk-or-v1/)
+    expect(await api.getPersonalLlm()).toMatchObject({ preset_id: 'openrouter', key_label: 'OA Agent' })
+    expect(await api.disconnectLlmOauth('personal')).toMatchObject({ api_key_set: false })
+    await expect(api.disconnectLlmOauth('personal')).rejects.toMatchObject({ code: 'NOT_OAUTH_KEY' })
+    await expect(api.startLlmOauth({ provider: 'deepseek', scope: 'personal' })).rejects.toMatchObject({ code: 'OAUTH_UNSUPPORTED' })
+    await expect(api.getLlmOauthStatus('nope')).rejects.toMatchObject({ code: 'OAUTH_UNKNOWN_STATE' })
   })
 })
