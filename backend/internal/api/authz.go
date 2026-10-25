@@ -102,7 +102,7 @@ var routeAccess = normalizeAccess(map[string]access{
 	"GET /v1/imports/config": opr, "POST /v1/imports/uploads": opr,
 	"GET /v1/imports/uploads/{id}": opr, "PUT /v1/imports/uploads/{id}": opr, "DELETE /v1/imports/uploads/{id}": opr,
 	"POST /v1/imports/uploads/{id}/complete": opr,
-	"GET /v1/imports/batches/{id}": opr, "DELETE /v1/imports/batches/{id}": opr, "POST /v1/imports/batches/{id}/commit": opr,
+	"GET /v1/imports/batches/{id}":           opr, "DELETE /v1/imports/batches/{id}": opr, "POST /v1/imports/batches/{id}/commit": opr,
 	"POST /v1/imports/from-paths": opr,
 })
 
