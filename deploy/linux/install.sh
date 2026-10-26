@@ -1135,7 +1135,7 @@ pull_stack_images() {
             local mh u got=''
             [ -n "${probed:-}" ] || probed="$(for u in ${DOCKER_MIRRORS[@]+"${DOCKER_MIRRORS[@]}"}; do printf "%s\n" "$u"; done; auto_registry_mirrors)"
             say "探测到可访问的镜像加速地址: $(printf "%s " $probed)" "Reachable accelerators (probed on /v2/): $(printf "%s " $probed)"
-            for mh in $(printf "%s\n" "$probed" | sed "s#^https\?://##; s#/$##" | awk "NF && !s[\$0]++"); do
+            for mh in $(printf '%s\n' "$probed" | sed 's#^https\?://##; s#/$##' | awk 'NF && !s[$0]++'); do
                 if docker pull "$mh/library/${img##*/}" >/dev/null 2>&1 && docker tag "$mh/library/${img##*/}" "$img" >/dev/null 2>&1; then
                     say "已从加速地址拉取: $mh" "Pulled through the accelerator: $mh"; got=1; break
                 fi

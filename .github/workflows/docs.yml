@@ -1,14 +1,8 @@
 name: Docs
+# Disabled for now: runs only when started by hand (Actions -> Docs -> Run workflow). It failed on push because GitHub
+# Pages is not enabled for the repository (Settings -> Pages -> Source: GitHub Actions). To re-enable automatic runs,
+# restore the push / pull_request triggers (docs/** and this file) after enabling Pages.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'docs/**'
-      - '.github/workflows/docs.yml'
-  pull_request:
-    paths:
-      - 'docs/**'
-      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:

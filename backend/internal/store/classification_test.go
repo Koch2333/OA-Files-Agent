@@ -83,10 +83,10 @@ func TestLedgerOtherFilterAndDisplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	// older rows: blank department, placeholder type, explicit 其他 department on the other row
-	if _, err := s.Pool.Exec(ctx, `UPDATE ledger_entries SET department='', document_type='待审核' WHERE file_id=$1`, b.Files[0].ID); err != nil {
+	if _, err := s.Pool.Exec(ctx, `UPDATE ledger_entries SET department=$2, document_type=$3 WHERE file_id=$1`, b.Files[0].ID, "", "待审核"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Pool.Exec(ctx, `UPDATE ledger_entries SET department='其他' WHERE file_id=$1`, b.Files[1].ID); err != nil {
+	if _, err := s.Pool.Exec(ctx, `UPDATE ledger_entries SET department=$2 WHERE file_id=$1`, b.Files[1].ID, "其他"); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
