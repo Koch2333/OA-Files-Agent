@@ -1,8 +1,9 @@
 /** 演示用运行诊断：错误报告（含聚合、已解决、上次异常结束样例）、系统信息、客户端错误上报、诊断包下载。 */
+import { uuid } from '../utils/uuid'
 import { ApiError, type Api, type ClientErrorInput, type ErrorReport, type ErrorReportDetail, type ErrorSeverity, type ErrorSource, type Page, type SystemInfo } from '../api/types'
 
 const delay = (ms = 200) => new Promise((r) => setTimeout(r, ms))
-const uid = () => crypto.randomUUID()
+const uid = () => uuid()
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 const GIB = 1024 ** 3
 

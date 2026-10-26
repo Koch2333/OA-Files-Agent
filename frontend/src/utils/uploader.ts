@@ -1,3 +1,4 @@
+import { uuid as uuidV4 } from './uuid'
 import type { CreateUploadInput, PickedFile, UploadSession } from '../api/types'
 import { ApiError } from '../api/types'
 
@@ -91,7 +92,7 @@ const defaultSleep = (ms: number, signal?: AbortSignal) => new Promise<void>((re
   signal?.addEventListener('abort', () => { clearTimeout(t); resolve() }, { once: true })
 })
 
-const uuid = () => (globalThis.crypto?.randomUUID?.() ?? '00000000-0000-4000-8000-000000000000'.replace(/0/g, () => ((Math.random() * 16) | 0).toString(16))).toLowerCase()
+const uuid = () => uuidV4().toLowerCase()
 
 /** 可重试：网络错误、超时、限速、5xx（507 磁盘不足除外，那是需要人处理的状况）。 */
 export function retryable(e: unknown): boolean {

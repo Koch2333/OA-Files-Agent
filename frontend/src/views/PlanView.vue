@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { uuid } from '../utils/uuid'
 import { useAuth } from '../stores/auth'
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -46,7 +47,7 @@ const coach = ref(false)
 const pulse = ref(false)
 const confirmRollback = ref(false)
 // 同一页面内多次点击“执行”使用同一把幂等键；刷新页面后重新生成，后端据计划状态保证不重复执行
-const idemKey = crypto.randomUUID()
+const idemKey = uuid()
 // 未进入计划的文件里，因大模型 HTTP 错误失败的：在计划页给出原因与一键重试（只重新识别这些文件）
 const llmFail = ref<LlmTaskFailure | null>(null)
 const taskUpdated = ref<string | undefined>()

@@ -5,6 +5,7 @@
  * WebAuthn 在演示模式下不调用浏览器：begin 返回占位选项，finish 接受任意凭据。
  * 地址加 ?mock_setup=1 可演示初始化向导（完成后即视为已初始化）。
  */
+import { uuid } from '../utils/uuid'
 import {
   ApiError, type AdminUser, type Api, type LoginResult, type SetupStatus, type Me, type Page, type Passkey, type Policy, type Role,
   type SecuritySettings, type SessionInfo,
@@ -13,7 +14,7 @@ import { fireUnauthenticated, setCsrfToken } from '../api/http'
 import { REQUIRED_API_LEVEL } from '../utils/apiLevel'
 
 const delay = (ms = 200) => new Promise((r) => setTimeout(r, ms))
-const uid = () => crypto.randomUUID()
+const uid = () => uuid()
 const iso = (offsetMs = 0) => new Date(Date.now() + offsetMs).toISOString()
 const DEMO_PASSWORD = 'demo-password'
 const DEMO_TOTP = '123456'

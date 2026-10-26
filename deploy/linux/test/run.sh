@@ -217,7 +217,7 @@ SH
 run_install() { # run_install args... ; output in $SB/out.txt, status in RC
     OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
         OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_RETRY_BASE=0 OA_INSTALL_LOCK="$SB/lock" OA_DAEMON_JSON="$SB/daemon.json" OA_TEST_DOCKER_SHIM="$SB/shim/docker" \
-        OA_BUILD_FROM_SOURCE="${OA_BUILD_FROM_SOURCE:-1}" PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" --lang en "$@" >"$SB/out.txt" 2>&1
+        OA_SUMMARY="${OA_SUMMARY:-full}" OA_BUILD_FROM_SOURCE="${OA_BUILD_FROM_SOURCE:-1}" PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" --lang en "$@" >"$SB/out.txt" 2>&1
     RC=$?
 }
 run_ctl() { # run_ctl args... (bash fallback ctl against $SB/oa)
@@ -1497,6 +1497,15 @@ t_summary_report() {
     assert_has "$SB/out.txt" 'What was detected and done'; assert_has "$SB/out.txt" 'installed: Installed Docker Engine and Compose v2'; assert_has "$SB/out.txt" 'State file: +'"$SB"'/etc/install.json'
     assert_has "$SB/out.txt" 'Running this script again'; assert_has "$SB/out.txt" 'Database: +bundled PostgreSQL'
     new_sandbox sr2; run_install --yes --dir "$SB/oa"; assert_has "$SB/out.txt" 'already present, skipped: Docker Engine 26.1.0'; assert_has "$SB/out.txt" 'already present, skipped: Compose plugin 2.29.0'; assert_not "$SB/out.txt" 'installed: Installed Docker'
+    # the default closing screen is SHORT; the long form goes to INSTALL-INFO.txt (without the setup token)
+    new_sandbox sr3; OA_SUMMARY=compact run_install --yes --dir "$SB/oa" --port 18080; assert_rc 0
+    assert_has "$SB/out.txt" 'Installation complete'; assert_has "$SB/out.txt" 'Next:'; assert_has "$SB/out.txt" 'OA_SECRET_KEY'; assert_has "$SB/out.txt" 'INSTALL-INFO.txt'
+    assert_not "$SB/out.txt" 'SAVE THESE'; assert_not "$SB/out.txt" 'What was detected and done'
+    assert_file "$SB/oa/INSTALL-INFO.txt"; assert_has "$SB/oa/INSTALL-INFO.txt" 'What was detected and done'; assert_not "$SB/oa/INSTALL-INFO.txt" 'SETUP TOKEN'
+    # --public-url sets OA_PUBLIC_URL (and rejects paths); a private default address gets the "how to change it" hint
+    new_sandbox sr4; OA_SUMMARY=compact run_install --yes --dir "$SB/oa" --port 18080 --public-url http://203.0.113.5:18080/; assert_rc 0
+    assert_has "$SB/oa/.env" '^OA_PUBLIC_URL=http://203.0.113.5:18080$'; assert_has "$SB/out.txt" 'URL: +http://203.0.113.5:18080'
+    new_sandbox sr5; run_install --yes --dir "$SB/oa" --port 18080 --public-url http://x.example.com/path; assert_rc 2
 }
 
 

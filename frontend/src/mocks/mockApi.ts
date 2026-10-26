@@ -2,6 +2,7 @@
  * 演示数据实现。仅在 VITE_USE_MOCK=true 或设置页开启“演示数据”时启用，
  * 界面会常驻“演示数据”标识。状态机语义与契约一致：审批与执行分离，未批准不可执行。
  */
+import { uuid } from '../utils/uuid'
 import {
   ApiError, type AgentEvent, type Api, type ArchivePlan, type ArchivePlanItem, type ArchiveRule, type AuditLog,
   type CorrectionProposal, type FileQuery, type FileRecord, type ImportJob, type LedgerEntry, type LedgerQuery,
@@ -21,7 +22,7 @@ import { createMockUploads } from './mockUploads'
 import { faultKindFor, faultPersists, llmErrorFor } from './mockLlmFault'
 
 const delay = (ms = 250) => new Promise((r) => setTimeout(r, ms))
-const uid = () => crypto.randomUUID()
+const uid = () => uuid()
 const now = () => new Date().toISOString()
 const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 864e5).toISOString()
 

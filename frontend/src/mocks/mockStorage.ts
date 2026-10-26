@@ -2,6 +2,7 @@
  * 存储连接的演示实现（仅演示数据）：内存连接、虚拟远端目录树、测试结果、同步进度模拟，
  * 校验规则与服务端一致（必填 → 422、重名 → 409）。凭据永不回显。
  */
+import { uuid } from '../utils/uuid'
 import {
   ApiError, type ImportJob, type ImportOptions, type Page, type PickedFile, type Replication, type ReplicationQuery, type ReplicationStatus, type StorageConnection,
   type StorageConnectionInput, type StorageConnectionPatch, type StorageField, type StorageKind, type StorageListing, type StorageTestInput,
@@ -193,7 +194,7 @@ export class MockStorage {
   }
   private seed() {
     const mk = (name: string, kind: string, settings: Record<string, string>, secrets: Record<string, string>, extra: Partial<StorageConnection>, daysAgo: number) => {
-      const id = crypto.randomUUID()
+      const id = uuid()
       const at = new Date(Date.now() - daysAgo * 864e5).toISOString()
       this.conns.set(id, {
         id, name, kind, enabled: true, base_path: '', use_for_import: true, replicate: 'off', settings, secrets_set: Object.fromEntries(Object.keys(secrets).map((k) => [k, true])),
@@ -210,7 +211,7 @@ export class MockStorage {
     mk('OpenList 网关', 'webdav', { url: 'http://openlist.corp.local:5244/dav', auth: 'basic', username: 'oa' }, { password: 'demo' },
       { base_path: '', use_for_import: true, last_test: null }, 2)
     const mkRep = (cid: string, name: string, status: ReplicationStatus, error: string | null, mins: number): Replication => ({
-      id: crypto.randomUUID(), connection_id: cid, connection_name: name, local_path: `归档/财务部/2026/报表/${mins}-一季度报表.xlsx`, remote_path: `归档备份/财务部/2026/报表/${mins}-一季度报表.xlsx`,
+      id: uuid(), connection_id: cid, connection_name: name, local_path: `归档/财务部/2026/报表/${mins}-一季度报表.xlsx`, remote_path: `归档备份/财务部/2026/报表/${mins}-一季度报表.xlsx`,
       status, attempts: status === 'failed' ? 3 : 1, error, size_bytes: 98_400 + mins * 100, updated_at: new Date(Date.now() - mins * 6e4).toISOString(),
     })
     this.reps.push(mkRep(s3, '阿里云 OSS 归档桶', 'done', null, 40), mkRep(s3, '阿里云 OSS 归档桶', 'skipped', null, 35), mkRep(s3, '阿里云 OSS 归档桶', 'failed', '远端拒绝写入：权限不足（AccessDenied）', 20))
@@ -248,7 +249,7 @@ export class MockStorage {
     const secrets = Object.fromEntries(Object.entries(input.secrets ?? {}).filter(([, v]) => v !== ''))
     for (const k of Object.keys(secrets)) if (!kind.fields.some((f) => f.key === k && f.secret)) throw bad(422, 'INVALID_ARGUMENT', `未知的凭据项：${k}`)
     this.validate(kind, input.name, input.base_path ?? '', settings, (k) => k in secrets)
-    const id = crypto.randomUUID()
+    const id = uuid()
     const at = new Date().toISOString()
     this.conns.set(id, {
       id, name: input.name.trim(), kind: kind.id, enabled: input.enabled ?? true, base_path: input.base_path ?? '', use_for_import: input.use_for_import ?? true, replicate: input.replicate ?? 'off',
@@ -370,7 +371,7 @@ export class MockStorage {
     const fresh = pool.filter((p) => !have.has(p))
     const paths = fresh.length ? fresh : Array.from({ length: 3 }, (_, i) => `${prefix || '归档/演示'}/补同步-${Date.now() % 10000}-${i + 1}.pdf`)
     paths.forEach((p, i) => {
-      const r: Replication = { id: crypto.randomUUID(), connection_id: id, connection_name: c.name, local_path: p, remote_path: [c.base_path, p.replace(/^归档\//, '')].filter(Boolean).join('/'), status: 'queued', attempts: 0, error: null, size_bytes: 40_000 + i * 7_000, updated_at: new Date().toISOString() }
+      const r: Replication = { id: uuid(), connection_id: id, connection_name: c.name, local_path: p, remote_path: [c.base_path, p.replace(/^归档\//, '')].filter(Boolean).join('/'), status: 'queued', attempts: 0, error: null, size_bytes: 40_000 + i * 7_000, updated_at: new Date().toISOString() }
       this.reps.unshift(r)
       this.advance(r, i % 3 === 2)
     })

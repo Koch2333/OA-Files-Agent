@@ -1,3 +1,4 @@
+import { uuid as uuidV4 } from './uuid'
 import { ref } from 'vue'
 import { api as defaultApi, ApiError, type Api, type ImportJob, type ImportOptions, type PathImportStatus, type PickedFile } from '../api'
 import { desktop as defaultDesktop, type DesktopBridge } from './desktop'
@@ -25,7 +26,7 @@ export interface ImportProgress {
 export interface ImportOpts { templateId?: string | null; options?: ImportOptions; idempotencyKey?: string }
 export interface ImportDeps { api?: Api; desktop?: () => DesktopBridge | null; resume?: ResumeStore | null; uploader?: UploaderOptions; pollMs?: number; sleep?: (ms: number) => Promise<void> }
 
-const uuid = () => (globalThis.crypto?.randomUUID?.() ?? '').toLowerCase()
+const uuid = () => uuidV4().toLowerCase()
 
 export interface ImportRun { promise: Promise<ImportJob>; cancel(): Promise<void> }
 

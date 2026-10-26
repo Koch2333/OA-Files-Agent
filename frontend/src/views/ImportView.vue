@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { uuid } from '../utils/uuid'
 import { useAuth } from '../stores/auth'
 import { useAi } from '../stores/ai'
 import { computed, onMounted, ref, watch } from 'vue'
@@ -38,7 +39,7 @@ onMounted(() => { void tpls.run(); void ai.refresh(); if (auth.isAdmin) api.list
 async function importRemote(p: { connectionId: string; paths: string[] }) {
   remoteBusy.value = true; remoteErr.value = null
   try {
-    const job = await api.createRemoteImport(p.connectionId, p.paths, { templateId: templateId.value || null, idempotencyKey: crypto.randomUUID(), options: flow.currentOptions() })
+    const job = await api.createRemoteImport(p.connectionId, p.paths, { templateId: templateId.value || null, idempotencyKey: uuid(), options: flow.currentOptions() })
     remoteOpen.value = false
     ui.toast('已创建归档任务', 'success')
     await router.push(`/tasks/${job.id}`)

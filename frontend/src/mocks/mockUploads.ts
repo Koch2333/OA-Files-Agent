@@ -1,3 +1,4 @@
+import { uuid } from '../utils/uuid'
 import { ApiError, type CreateUploadInput, type FromPathsInput, type ImportBatchStatus, type ImportConfig, type ImportJob, type ImportOptions, type PathImportStatus, type PickedFile, type UploadSession } from '../api/types'
 
 /** 演示用的分片上传/暂存批次：语义与后端一致（offset 校验、重复分片幂等、complete 校验大小），没有任何大小/数量限制。 */
@@ -7,7 +8,6 @@ export function createMockUploads(commit: (picked: PickedFile[], opts: { templat
   const sessions = new Map<string, Staged>()
   const batches = new Map<string, { ids: string[]; committed?: ImportJob; paths?: PathImportStatus }>()
   const jobsByKey = new Map<string, ImportJob>()
-  const uuid = () => crypto.randomUUID()
   const nowIso = () => new Date().toISOString()
   const view = (st: Staged): UploadSession => ({ ...st.s, offset: st.s.complete ? st.s.size : st.received })
   const get = (id: string) => { const s = sessions.get(id); if (!s) throw new ApiError(404, 'NOT_FOUND', '上传会话不存在或已过期'); return s }

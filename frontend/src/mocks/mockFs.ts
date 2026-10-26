@@ -4,6 +4,7 @@
  * 以及基于 SHA-256 的冲突判定（同名同哈希 = 重复、同名不同内容 = 冲突、其他名称同哈希 = 重复内容警告）、
  * 批量移动/删除的逐项结果、哈希校验与“系统外被修改”标记。
  */
+import { uuid } from '../utils/uuid'
 import {
   ApiError, type ConflictOptions, type ConflictPolicy, type FolderListing, type FsBatchResult, type FsConflict, type FsEntry,
   type FsFileInfo, type FsItemResult, type FsItemStatus, type FsVerifyReport, type LedgerEntry, type MoveResult, type RestoreResult, type TrashItem,
@@ -271,7 +272,7 @@ export class MockFs {
     }
     keys.forEach((k) => this.nodes.delete(k))
     const size = nodes.reduce((a, [, nd]) => a + nd.size, 0)
-    const item: TrashItem = { id: crypto.randomUUID(), original_path: p, name: basename(p), is_dir: n.is_dir, size_bytes: size, deleted_at: new Date().toISOString() }
+    const item: TrashItem = { id: uuid(), original_path: p, name: basename(p), is_dir: n.is_dir, size_bytes: size, deleted_at: new Date().toISOString() }
     this.trash.unshift({ item, nodes, ledger })
     return item
   }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { uuid } from '../utils/uuid'
 import { computed, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
 import { api, ApiError, type PickedFile, type StorageConnection } from '../api'
 import { useAuth } from '../stores/auth'
@@ -77,7 +78,7 @@ async function submit() {
   if (!canSubmit.value) return
   submitting.value = true; err.value = null
   try {
-    submitKey ??= crypto.randomUUID()
+    submitKey ??= uuid()
     const job = await uploader.start(picked.value, { templateId: templateId.value || null, idempotencyKey: submitKey, options: auto.options(instruction.value) })
     submitKey = null
     done(job.id)
@@ -86,7 +87,7 @@ async function submit() {
 async function importRemote(p: { connectionId: string; paths: string[] }) {
   remoteBusy.value = true; remoteErr.value = null
   try {
-    const job = await api.createRemoteImport(p.connectionId, p.paths, { templateId: templateId.value || null, idempotencyKey: crypto.randomUUID(), options: auto.options(instruction.value) })
+    const job = await api.createRemoteImport(p.connectionId, p.paths, { templateId: templateId.value || null, idempotencyKey: uuid(), options: auto.options(instruction.value) })
     remoteOpen.value = false; done(job.id)
   } catch (e) { remoteErr.value = errMsg(e); await afterError(e) } finally { remoteBusy.value = false }
 }
