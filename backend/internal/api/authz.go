@@ -74,13 +74,15 @@ var routeAccess = normalizeAccess(map[string]access{
 	"GET /v1/archive-plans/{id}":                 viw, "PATCH /v1/archive-plans/{id}": opr,
 	"POST /v1/archive-plans/{id}/approve": opr, "POST /v1/archive-plans/{id}/execute": opr,
 	"POST /v1/archive-operations/{id}/rollback": opr,
-	"GET /v1/ledger": viw, "GET /v1/ledger/export": viw,
+	"GET /v1/ledger": viw, "GET /v1/ledger/export": viw, "GET /v1/classification/options": viw,
 	"GET /v1/oa-templates": viw, "POST /v1/oa-templates": opr,
 	"GET /v1/oa-templates/{id}": viw, "PATCH /v1/oa-templates/{id}": opr, "DELETE /v1/oa-templates/{id}": opr, "POST /v1/oa-templates/{id}/test": opr,
 	"GET /v1/archive-rules": viw, "POST /v1/archive-rules": opr,
 	"GET /v1/audit-logs": adm, "GET /v1/providers": viw,
 	// file manager and preview
 	"GET /v1/fs": viw, "GET /v1/fs/content": viw, "POST /v1/fs/folders": opr, "POST /v1/fs/move": opr,
+	"GET /v1/fs/download": viw, "POST /v1/fs/download": viw, "POST /v1/fs/verify": viw,
+	"POST /v1/fs/bulk/move": opr, "POST /v1/fs/bulk/trash": opr,
 	"GET /v1/fs/trash": viw, "POST /v1/fs/trash": opr, "POST /v1/fs/trash/{id}/restore": opr, "POST /v1/fs/reveal": adm,
 	"GET /v1/files/{id}/preview": viw, "GET /v1/files/{id}/preview/page": viw, "GET /v1/fs/preview": viw, "GET /v1/fs/preview/page": viw,
 	// recognition engine: reading presets/config = viewer, everything else = admin

@@ -101,7 +101,7 @@ func TestArchivedPreviewKindsAndWorkerContract(t *testing.T) {
 		t.Fatalf("pdf: %v %+v", err, p)
 	}
 	u, err := s.Archived(ctx, "财务部/2026/old.doc")
-	if err != nil || u.Kind != "unsupported" || !strings.Contains(u.Message, "另存为") || u.Warnings == nil {
+	if err != nil || u.Kind != "unsupported" || !strings.Contains(u.Message, "暂不支持预览") || u.Warnings == nil {
 		t.Fatalf("legacy formats are an answer, not an error: %v %+v", err, u)
 	}
 	raw, _ := json.Marshal(d)

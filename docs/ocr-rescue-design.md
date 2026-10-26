@@ -21,7 +21,7 @@
 ```
 `low_confidence_lines` 最多 10 条；`mean_confidence` 无法计算时为 null；`rotation` 为实际采用的旋转角度（未旋转为 0）。
 
-新增 `POST /v1/render`（供视觉模型读取页面图）：请求 `{"path","page":1,"max_side":1400}`（max_side 256–2000）；响应 `{"data":{"image_base64","mime_type":"image/png","width","height","page","pages"}}`；图片编码后 ≤2.5 MB（超出则自动缩小）。路径限制、大小限制、错误码与 /v1/extract 相同；`page` 越界 → 400 INVALID_REQUEST。不能渲染（docx/xlsx）→ 422 UNSUPPORTED_FORMAT。
+新增 `POST /v1/render`（供视觉模型读取页面图）：请求 `{"path","page":1,"max_side":1400}`（max_side 256–2000）；响应 `{"data":{"image_base64","mime_type":"image/png","width","height","page","pages"}}`；图片编码后 ≤2.5 MB（超出则自动缩小）。路径限制、大小限制、错误码与 /v1/extract 相同；`page` 越界 → 400 INVALID_REQUEST。不能渲染（Office 文档、文本等非 PDF/图片）→ 422 UNSUPPORTED_FORMAT。图片格式含 png/jpg/jfif/bmp/webp/gif/tif(f)；多页 TIFF 的 `page` 为帧序号（最多 500 页），GIF/WebP 只有第 1 页。
 
 ## 3. Go 侧约定
 - `ExtractRequest{OCRProfile string; Pages []int}`；`ExtractResult.Quality *OCRQuality`（字段同上，Go 命名驼峰、JSON 同上）。
@@ -43,11 +43,11 @@
 请求 `{"path":"…绝对路径…","max_rows":200,"max_blocks":600}`，路径必须位于**允许的根目录**内（`OA_SPOOL_ROOT` 以及可选的 `OA_ALLOWED_ROOTS`，多个以系统路径分隔符分隔——归档根目录需加入其中才能预览已归档文件）。响应 `data`：
 - docx：`{"kind":"document","blocks":[…],"truncated":bool,"warnings":[]}`。`blocks[]` 元素：`{"type":"heading","level":1-6,"text":"…"}`｜`{"type":"paragraph","runs":[{"text":"…","bold":true,"italic":false}],"align":"left|center|right"}`｜`{"type":"list_item","level":0,"runs":[…]}`｜`{"type":"table","rows":[["单元格文本",…],…]}`。含页眉/页脚文字放在 `warnings` 之外的 `header`/`footer` 字符串字段（可空）。图片不输出，只在 `warnings` 记“含 N 张图片未显示”。
 - xlsx：`{"kind":"spreadsheet","sheets":[{"name":"Sheet1","rows":[["A1","B1"],…],"rows_total":1234,"cols_total":8,"truncated":true}],"truncated":bool,"warnings":[]}`（每表最多 `max_rows` 行、50 列，单元格文本 ≤200 字符，公式显示计算值缓存，缺失则显示公式文本；隐藏表不输出）。
-- pdf：`{"kind":"pdf","pages":N}`；图片 png/jpg：`{"kind":"image","pages":1}`；其它扩展名 → 422 UNSUPPORTED_FORMAT；加密 → 422 ENCRYPTED；损坏 → 422 UNREADABLE_FILE。
+- pdf：`{"kind":"pdf","pages":N}`；图片（含 bmp/webp/gif/tif）：`{"kind":"image","pages":N}`（多页 TIFF 为页数）；Word/PPT/文本/网页/邮件（含 97-2003、ODF、RTF）→ `document`，Excel/CSV/ODS（含 .xls）→ `spreadsheet`，与 docx/xlsx 同一套结构化渲染（行/列/块数有上限）；格式按**内容**识别，不信任扩展名，扩展名与内容不符时 `warnings` 带说明；无法识别的二进制 → 422 UNSUPPORTED_FORMAT；加密 → 422 ENCRYPTED；损坏 → 422 UNREADABLE_FILE。
 页面图片由 `POST /v1/render`（与 OCR 抢救共用）提供。
 
 ## API（Go）
 - `GET /v1/files/{id}/preview` — 导入时保存的原件副本；`GET /v1/files/{id}/preview/page?page=1&max_side=1400` → `image/png`。
 - `GET /v1/fs/preview?path=` — 归档目录中的文件；`GET /v1/fs/preview/page?path=&page=&max_side=` → `image/png`。
-- 预览 JSON：`{"kind","name","mime_type","size_bytes","pages":int|null,"blocks"?,"header"?,"footer"?,"sheets"?,"truncated","warnings":[],"page_url":string|null}`；`page_url` 为带 `{page}` 占位符的相对 URL。`kind=unsupported` 时 `message` 说明原因（如 .doc/.xls 旧格式）。
+- 预览 JSON：`{"kind","name","mime_type","size_bytes","pages":int|null,"blocks"?,"header"?,"footer"?,"sheets"?,"truncated","warnings":[],"page_url":string|null}`；`page_url` 为带 `{page}` 占位符的相对 URL。`kind=unsupported` 时 `message` 说明原因（格式不识别，可下载查看；文件仍可按文件名归档）。
 - 安全：只读；路径经 fsman/记录 ID 解析，永不接受绝对路径；页面图片 `Cache-Control: no-store`、`nosniff`。

@@ -1,27 +1,29 @@
 import type { PickedFile } from '../api/types'
+import { READABLE_RE, isReadable } from './formats'
 
 /**
  * 选择/校验规则。导入没有单文件、整批或数量上限：大文件走可续传分片上传（utils/uploader.ts），
- * 桌面版还可按本机路径直接复制。只有格式（docx/xlsx/pdf/png/jpg）与空文件会在接收时作为失败项标出。
+ * 桌面版还可按本机路径直接复制。任何格式、任何大小（含空文件）都会被接收：
+ * 能读取内容的格式（见 formats.ts / contracts/formats.json）按内容识别；其余文件“内容无法读取”，
+ * 只依据文件名判断，必定进入人工审核，原件不会被修改。
  */
-export const SUPPORTED_RE = /\.(docx|xlsx|pdf|png|jpe?g)$/i
-export const LEGACY_RE = /\.(doc|xls)$/i
+export const SUPPORTED_RE = READABLE_RE
 
-export type FileVerdict = 'ok' | 'legacy' | 'unsupported' | 'empty'
+export type FileVerdict = 'ok' | 'name_only' | 'empty'
 export function verdict(f: { name: string; size: number }): FileVerdict {
-  if (!SUPPORTED_RE.test(f.name)) return LEGACY_RE.test(f.name) ? 'legacy' : 'unsupported'
   if (f.size === 0) return 'empty'
-  return 'ok'
+  return isReadable(f.name) ? 'ok' : 'name_only'
 }
-export const VERDICT_LABEL: Record<FileVerdict, string> = { ok: '可处理', legacy: '旧版 Office，需转换', unsupported: '不支持', empty: '空文件' }
+export const VERDICT_LABEL: Record<FileVerdict, string> = { ok: '可识别内容', name_only: '仅按文件名处理', empty: '空文件，仅按文件名处理' }
 
 export interface PickSummary {
   count: number
   totalBytes: number
+  /** 可识别内容的文件数 */
   ok: number
-  /** 会作为失败项计入任务（不让整批失败）的文件数：不支持 / 旧版 / 空文件 */
-  rejected: number
-  rejectedList: { path: string; verdict: FileVerdict }[]
+  /** 内容无法读取、只能按文件名处理的文件数（格式不识别 / 空文件）。它们仍会提交并进入人工审核。 */
+  nameOnly: number
+  nameOnlyList: { path: string; verdict: FileVerdict }[]
   /** 保留字段：已没有数量/大小上限，恒为 false */
   overCount: false
   overBatch: false
@@ -30,15 +32,15 @@ export interface PickSummary {
 }
 
 export function summarize(picked: PickedFile[]): PickSummary {
-  const rejectedList: PickSummary['rejectedList'] = []
+  const nameOnlyList: PickSummary['nameOnlyList'] = []
   let ok = 0, totalBytes = 0
   for (const p of picked) {
     totalBytes += p.file.size
     const v = verdict(p.file)
     if (v === 'ok') ok++
-    else rejectedList.push({ path: p.relativePath, verdict: v })
+    else nameOnlyList.push({ path: p.relativePath, verdict: v })
   }
-  return { count: picked.length, totalBytes, ok, rejected: rejectedList.length, rejectedList, overCount: false, overBatch: false, blocking: false }
+  return { count: picked.length, totalBytes, ok, nameOnly: nameOnlyList.length, nameOnlyList, overCount: false, overBatch: false, blocking: false }
 }
 
 /** 合并新选择的文件：按相对路径去重。 */

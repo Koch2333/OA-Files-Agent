@@ -1,4 +1,5 @@
 /** 存储连接的纯函数：表单可见性、载荷构造、校验与展示标签。界面由后端 kinds 目录驱动，这里不写死任何字段表。 */
+import { isJunk } from './formats'
 import type {
   ReplicatePolicy, ReplicationStatus, StorageConnection, StorageConnectionInput, StorageConnectionPatch, StorageField, StorageKind, StorageTestInput,
 } from '../api/types'
@@ -179,7 +180,8 @@ export function replicationSummary(c: Pick<StorageConnection, 'replication'>): s
   return parts.join(' · ')
 }
 
-export const REMOTE_IMPORT_EXT = /\.(docx|xlsx|pdf|png|jpe?g)$/i
+/** 远端文件是否可勾选导入：任何格式都接收（内容无法读取的按文件名处理），只排除系统/临时文件。 */
+export const remoteImportable = (name: string) => !isJunk(name)
 
 export function crumbs(path: string): { name: string; path: string }[] {
   const segs = path.split('/').filter(Boolean)

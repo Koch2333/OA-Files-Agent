@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"oa-agent/backend/internal/archive"
 	"oa-agent/backend/internal/imports"
 	"oa-agent/backend/internal/store"
 )
@@ -30,6 +31,7 @@ func (s *Server) business() {
 	s.handle("/v1/archive-plans/{id}/approve", map[string]http.HandlerFunc{"POST": s.approvePlan})
 	s.handle("/v1/archive-plans/{id}/execute", map[string]http.HandlerFunc{"POST": s.executePlan})
 	s.handle("/v1/archive-operations/{id}/rollback", map[string]http.HandlerFunc{"POST": s.rollback})
+	s.handle("/v1/classification/options", map[string]http.HandlerFunc{"GET": s.classificationOptions})
 	s.handle("/v1/ledger", map[string]http.HandlerFunc{"GET": s.ledger})
 	s.handle("/v1/ledger/export", map[string]http.HandlerFunc{"GET": s.exportLedger})
 	s.handle("/v1/oa-templates", map[string]http.HandlerFunc{"GET": s.listTemplates, "POST": s.createTemplate})
@@ -291,9 +293,11 @@ func (s *Server) patchPlan(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, v := range []*string{it.Department, it.DocumentType} {
-			if v != nil && len([]rune(*v)) > 60 {
-				s.fail(w, r, 422, "INVALID_ARGUMENT", "部门/类型过长", nil)
-				return
+			if v != nil {
+				if err := archive.ValidateCategory(*v); err != nil {
+					s.fail(w, r, 422, "INVALID_ARGUMENT", err.Error(), nil)
+					return
+				}
 			}
 		}
 		if it.SuggestedName != nil {

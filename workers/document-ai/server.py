@@ -7,6 +7,8 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import formats_data  # generated from contracts/formats.json (scripts/sync_formats.py)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORE = os.path.join(HERE, "extract_core.py")
 def _env_bytes(name, default):
@@ -18,16 +20,16 @@ def _env_bytes(name, default):
     return value if value >= 0 else default
 
 
-# Full-text extraction/OCR is skipped above this size (the file is still imported; the pipeline marks it metadata-only /
-# manual review). This protects worker memory only and is NOT an import limit. 0 = no cap.
+# Full-text extraction/OCR is skipped above this size (the file is still imported; the pipeline marks it unreadable-content /
+# manual review, judged by file name only). This protects worker memory only and is NOT an import limit. 0 = no cap.
 MAX_FILE_BYTES = _env_bytes("OA_EXTRACT_MAX_BYTES", 256 * 1024 * 1024)
 MAX_BODY_BYTES = 64 * 1024
 MAX_PAGES_FIELD = 50
 PROFILES = ("default", "enhanced", "rotate", "deskew", "high_dpi", "binarize")
-RENDER_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+_FORMATS = formats_data.TABLE["formats"]
+SUPPORTED_EXTS = {f["ext"] for f in _FORMATS}
+RENDER_EXTS = {f["ext"] for f in _FORMATS if f["group"] in ("image", "pdf")}
 DEFAULT_TIMEOUT = 60.0
-SUPPORTED_EXTS = {".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg"}
-LEGACY_EXTS = {".doc", ".xls", ".ppt", ".pptx"}
 STATUS = {
     "INVALID_REQUEST": 400, "PATH_NOT_ALLOWED": 403, "FILE_NOT_FOUND": 404, "FILE_TOO_LARGE": 413,
     "UNREADABLE_FILE": 422, "ENCRYPTED": 422, "UNSUPPORTED_FORMAT": 422,
@@ -188,9 +190,9 @@ class Handler(BaseHTTPRequestHandler):
         real = resolve_path(req.get("path"), self.server.spool_root)  # extraction stays spool-only
         if MAX_FILE_BYTES and os.path.getsize(real) > MAX_FILE_BYTES:
             raise ApiError("FILE_TOO_LARGE", "file too large")
+        # The extension is only a claim: the extractor sniffs the content (unknown extensions are still looked at, but
+        # only recognised binary formats are accepted there).
         ext = os.path.splitext(filename)[1].lower() or os.path.splitext(real)[1].lower()
-        if ext not in SUPPORTED_EXTS:
-            raise ApiError("UNSUPPORTED_FORMAT", "unsupported format")
         args = [real, ext, "1" if ocr else "0", profile, ",".join(str(p) for p in pages or [])]
         return self.run("extract", args)
 
@@ -221,8 +223,6 @@ class Handler(BaseHTTPRequestHandler):
         max_rows = self._int_field(req, "max_rows", 200, 1, 2000)
         max_blocks = self._int_field(req, "max_blocks", 600, 1, 5000)
         real, ext = self._checked_file(req)
-        if ext not in SUPPORTED_EXTS:
-            raise ApiError("UNSUPPORTED_FORMAT", "unsupported format")
         return self.run("preview", [real, ext, str(max_rows), str(max_blocks)])
 
     def reply(self, status, body):

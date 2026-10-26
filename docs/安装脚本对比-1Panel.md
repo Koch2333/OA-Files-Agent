@@ -125,6 +125,19 @@
 | 23 | 无已有数据库概念 | **新增** | 检测本机数据库服务作为候选；外部库先验证（连接/权限/隔离性）再征求建表批准 |
 | 24 | 无状态文件 | **新增** | `/etc/oa-agent/install.json`（目录、项目、标签、仓库、数据库模式、端口，无密钥），先读它再扫描；`.env` 仍是版本/端口的权威来源 |
 
+## C2. 语言与 Docker 安装源/镜像加速（2026-10-26 补充）
+
+**1Panel 实际做的（`install.sh` v2）。** 语言：`--lang` / `PANEL_LANG`，否则交互时列出 5 种语言让用户按数字选，选择写入 `.selected_language`；无人值守按 edition（`cn` → `zh`，否则 `en`），**不看系统区域设置**。Docker 安装源：只在**没有 docker 命令**且用户同意安装时发生；有内置离线包就先问用哪个；在线时用 `curl ipinfo.io/country` 判断，`CN` 则对 4 个 docker-ce 镜像（阿里云、腾讯云、网易、教育网）各测 2 次延迟取最快的作为 `DOWNLOAD_URL`，再从 6 个 get-docker 脚本地址（含 jsdelivr 上的第三方副本）依次下载并运行；非 CN 直接用 `get.docker.com` + `download.docker.com`。镜像加速（`daemon.json` 的 `registry-mirrors`）：国家为 CN 时询问（Docker 已存在也问），写入固定的第三方地址（默认 docker.1panel.live / hub.1panel.dev / docker.1ms.run，腾讯云内网可 ping 通时改用其内网镜像），已有 `daemon.json` 时询问后**整体替换**，随后立即重启 Docker。
+
+| 方面 | 1Panel | 我们 | 决定 |
+|---|---|---|---|
+| 语言选择 | 交互按数字选 5 种；无人值守按 edition；不看区域设置 | 交互运行的**第一个问题**（中文/English，默认取自 `LC_ALL`/`LANGUAGE`/`LANG`、`/etc/default/locale`、`/etc/locale.conf`，读自 `/dev/tty`）；无人值守按区域设置并打印一行说明；`--lang`/`OA_LANG`/配置 `lang` 覆盖；写入新装的 `.env`（`OA_LANG`） | 采纳并加强（只做中/英） |
+| 国家判断 | `ipinfo.io/country`，被屏蔽时就当作非 CN | 同样用 `ipinfo.io/country`（3 秒超时），**另有本地信号兜底**（阿里云 ECS 地域、时区、`download.docker.com` 是否可达），并可用 `--no-geo-lookup`/`OA_INSTALL_GEO=off` 关闭第三方查询 | 采纳并加强；文档明示这是第三方请求 |
+| 选源 | CN：测速选最快的 1 个，再换脚本地址；非 CN：官方 | CN：对 5 个镜像各做一次真实探测，只保留有响应的，按速度排序，**最后加官方**，失败自动换下一个，全部失败再用发行版软件包；非 CN：官方（不探测镜像） | 采纳（自动、无提问） |
+| 是否可见 | 只打印选中的源 | 始终打印一行「检测到什么 → 将用什么」与将执行的完整命令；复核页第 8 项可编辑；`--docker-source` 覆盖 | 采纳并加强 |
+| 脚本来源 | 6 个地址，含 jsdelivr/GitHub 上的第三方副本 | 只用 `get.docker.com`；镜像通过脚本自己的 `--mirror`/`DOWNLOAD_URL` 机制 | 放弃第三方副本（供应链） |
+| 镜像加速 | CN 时询问并写固定第三方地址，整体替换，立即重启 | 本脚本**新装** Docker 且在大陆：只写**当场探测 `/v2/` 有响应**的内置地址，`daemon.json` 为空才直接写并重启；已有 Docker 或已有内容：备份、安全合并、写前确认、重启再确认；`--docker-mirror` 显式覆盖 | 改造（自动但可验证、不碰别人的配置） |
+
 ---
 
 # D. 此前一轮的对比（命令行参数、退出码、重试等）

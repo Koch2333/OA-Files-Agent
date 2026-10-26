@@ -6,3 +6,5 @@ onnxruntime==1.31.0
 numpy==2.5.4
 opencv-python==5.0.0.93
 Pillow==13.0.0
+olefile==0.47
+xlrd==2.0.2

@@ -220,20 +220,29 @@ func (s *Store) ApplyCorrection(ctx context.Context, c Correction, derive func(P
 				switch ch.Field {
 				case "department":
 					it.Department = ch.After
+					if ch.After != nil {
+						it.FallbackFields = dropField(it.FallbackFields, FallbackDepartment)
+					}
 				case "document_type":
 					it.DocumentType = ch.After
+					if ch.After != nil {
+						it.FallbackFields = dropField(it.FallbackFields, FallbackType)
+					}
 				case "document_date":
 					it.DocumentDate = ch.After
 				}
 			}
+			ApplyFallbackPlaceholder(it)
 			name, dest, warns, derr := derive(*it)
 			if derr != nil {
 				return c, derr
 			}
-			it.ReviewRequired = it.Department == nil || it.DocumentType == nil || it.DocumentDate == nil
-			w, _ := json.Marshal(nonNil(warns))
-			if _, err = tx.Exec(ctx, `UPDATE archive_plan_items SET department=$3, document_type=$4, document_date=$5::date, suggested_name=$6, destination_path=$7, warnings=$8, review_required=$9 WHERE plan_id=$1 AND file_id=$2`,
-				planID, c.FileID, it.Department, it.DocumentType, it.DocumentDate, name, dest, sqldb.JSON(w), it.ReviewRequired); err != nil {
+			it.Warnings = stripFallbackWarnings(warns)
+			it.ReviewRequired = it.Department == nil || it.DocumentType == nil || it.DocumentDate == nil || len(it.FallbackFields) > 0
+			ApplyFallbackPlaceholder(it)
+			w, _ := json.Marshal(nonNil(it.Warnings))
+			if _, err = tx.Exec(ctx, `UPDATE archive_plan_items SET department=$3, document_type=$4, document_date=$5::date, suggested_name=$6, destination_path=$7, warnings=$8, review_required=$9, fallback_fields=$10 WHERE plan_id=$1 AND file_id=$2`,
+				planID, c.FileID, it.Department, it.DocumentType, it.DocumentDate, name, dest, sqldb.JSON(w), it.ReviewRequired, joinFallback(it.FallbackFields)); err != nil {
 				return c, err
 			}
 		}

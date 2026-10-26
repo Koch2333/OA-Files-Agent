@@ -40,7 +40,7 @@ describe('MockFs', () => {
     expect(ledger[0].archive_path).toBe('归档/财务部/夹/b.docx')
     expect(ledger[0].canonical_name).toBe('b.docx')
     fs.mkdir('归档/x')
-    expect(code(() => fs.move('归档/x', '归档/财务部'))).toBe(409)
+    expect(code(() => fs.move('归档/x', '归档/财务部'))).toBe(0) // folder onto folder merges per item now; file-vs-folder is a type conflict
     expect(code(() => fs.move('归档/x', '归档/.y'))).toBe(400)
   })
   it('refuses moving a folder into itself; folder move updates descendants', () => {

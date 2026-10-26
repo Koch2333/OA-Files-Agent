@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"oa-agent/backend/internal/archive"
 	"oa-agent/backend/internal/sqldb"
 
 	"oa-agent/backend/internal/imports"
@@ -32,8 +33,8 @@ func (s *Store) CreatePlan(ctx context.Context, taskID string, ruleID *string, i
 	}
 	for i, it := range items {
 		w, _ := json.Marshal(nonNil(it.Warnings))
-		if _, err = tx.Exec(ctx, `INSERT INTO archive_plan_items(plan_id,file_id,position,original_name,suggested_name,source_path,destination_path,department,document_type,document_date,warnings,review_required) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12)`,
-			id, it.FileID, i, it.OriginalName, it.SuggestedName, it.SourcePath, it.DestinationPath, it.Department, it.DocumentType, it.DocumentDate, sqldb.JSON(w), it.ReviewRequired); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO archive_plan_items(plan_id,file_id,position,original_name,suggested_name,source_path,destination_path,department,document_type,document_date,warnings,review_required,fallback_fields) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13)`,
+			id, it.FileID, i, it.OriginalName, it.SuggestedName, it.SourcePath, it.DestinationPath, it.Department, it.DocumentType, it.DocumentDate, sqldb.JSON(w), it.ReviewRequired, joinFallback(it.FallbackFields)); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -77,7 +78,7 @@ func getPlan(ctx context.Context, q rowQuerier, id string, lock bool) (Plan, err
 		// the leftover plan of an automatic task points at the automatic operation that archived the rest
 		_ = q.QueryRow(ctx, `SELECT o.id::text FROM archive_operations o JOIN archive_plans sp ON sp.id=o.plan_id WHERE sp.task_id=$1 AND o.status='completed' AND o.decision='ai_auto' ORDER BY o.created_at DESC LIMIT 1`, p.TaskID).Scan(&p.OperationID)
 	}
-	rows, err := q.Query(ctx, `SELECT file_id::text, original_name, suggested_name, source_path, destination_path, department, document_type, to_char(document_date,'YYYY-MM-DD'), warnings, review_required FROM archive_plan_items WHERE plan_id=$1 ORDER BY position`, id)
+	rows, err := q.Query(ctx, `SELECT file_id::text, original_name, suggested_name, source_path, destination_path, department, document_type, to_char(document_date,'YYYY-MM-DD'), warnings, review_required, fallback_fields FROM archive_plan_items WHERE plan_id=$1 ORDER BY position`, id)
 	if err != nil {
 		return p, err
 	}
@@ -86,15 +87,52 @@ func getPlan(ctx context.Context, q rowQuerier, id string, lock bool) (Plan, err
 	for rows.Next() {
 		var it PlanItem
 		var w []byte
-		if err := rows.Scan(&it.FileID, &it.OriginalName, &it.SuggestedName, &it.SourcePath, &it.DestinationPath, &it.Department, &it.DocumentType, &it.DocumentDate, &w, &it.ReviewRequired); err != nil {
+		var fb string
+		if err := rows.Scan(&it.FileID, &it.OriginalName, &it.SuggestedName, &it.SourcePath, &it.DestinationPath, &it.Department, &it.DocumentType, &it.DocumentDate, &w, &it.ReviewRequired, &fb); err != nil {
 			return p, err
 		}
+		it.FallbackFields = splitFallback(fb)
 		if json.Unmarshal(w, &it.Warnings) != nil || it.Warnings == nil {
 			it.Warnings = []string{}
 		}
 		p.Items = append(p.Items, it)
 	}
-	return p, rows.Err()
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	rows.Close()
+	markBasis(ctx, q, &p)
+	return p, nil
+}
+
+// markBasis sets Basis/BasisNote on every item from its file's first evidence line (cheap: evidence is a short array).
+func markBasis(ctx context.Context, q rowQuerier, p *Plan) {
+	for i := range p.Items {
+		p.Items[i].Basis = "content"
+	}
+	rs, err := q.Query(ctx, `SELECT id::text, evidence FROM file_records WHERE task_id=$1`, p.TaskID)
+	if err != nil {
+		return
+	}
+	defer rs.Close()
+	note := map[string]string{}
+	for rs.Next() {
+		var id string
+		var ev []byte
+		var lines []string
+		if rs.Scan(&id, &ev) != nil || json.Unmarshal(ev, &lines) != nil || len(lines) == 0 {
+			continue
+		}
+		if strings.HasPrefix(lines[0], FilenameOnlyMarker) {
+			note[id] = lines[0]
+		}
+	}
+	for i := range p.Items {
+		if n, ok := note[p.Items[i].FileID]; ok {
+			p.Items[i].Basis = "filename_only"
+			p.Items[i].BasisNote = &n
+		}
+	}
 }
 
 // PatchPlan applies manual edits under an optimistic lock. Derived name/path are computed by the
@@ -138,6 +176,15 @@ func (s *Store) PatchPlan(ctx context.Context, id string, version int, patches [
 		set(&it.Department, pt.Department)
 		set(&it.DocumentType, pt.DocumentType)
 		set(&it.DocumentDate, pt.DocumentDate)
+		// a field the person touched is confirmed: it is no longer a system placeholder (clearing it re-applies 其他)
+		if pt.Department != nil {
+			it.FallbackFields = dropField(it.FallbackFields, FallbackDepartment)
+		}
+		if pt.DocumentType != nil {
+			it.FallbackFields = dropField(it.FallbackFields, FallbackType)
+		}
+		it.Warnings = stripFallbackWarnings(it.Warnings)
+		ApplyFallbackPlaceholder(it)
 		if pt.SuggestedName == nil || pt.DestinationPath == nil {
 			name, dest, warns, derr := derive(*it)
 			if derr != nil {
@@ -157,13 +204,15 @@ func (s *Store) PatchPlan(ctx context.Context, id string, version int, patches [
 		if pt.DestinationPath != nil {
 			it.DestinationPath = *pt.DestinationPath
 		}
-		it.ReviewRequired = it.Department == nil || it.DocumentType == nil || it.DocumentDate == nil
-		if it.ReviewRequired {
+		it.ReviewRequired = it.Department == nil || it.DocumentType == nil || it.DocumentDate == nil || len(it.FallbackFields) > 0
+		if it.DocumentDate == nil {
 			it.Warnings = append(it.Warnings, "字段仍不完整，需人工确认")
 		}
+		it.Warnings = stripFallbackWarnings(it.Warnings)
+		ApplyFallbackPlaceholder(it)
 		w, _ := json.Marshal(nonNil(it.Warnings))
-		if _, err = tx.Exec(ctx, `UPDATE archive_plan_items SET department=$3, document_type=$4, document_date=$5::date, suggested_name=$6, destination_path=$7, warnings=$8, review_required=$9 WHERE plan_id=$1 AND file_id=$2`,
-			id, it.FileID, it.Department, it.DocumentType, it.DocumentDate, it.SuggestedName, it.DestinationPath, sqldb.JSON(w), it.ReviewRequired); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE archive_plan_items SET department=$3, document_type=$4, document_date=$5::date, suggested_name=$6, destination_path=$7, warnings=$8, review_required=$9, fallback_fields=$10 WHERE plan_id=$1 AND file_id=$2`,
+			id, it.FileID, it.Department, it.DocumentType, it.DocumentDate, it.SuggestedName, it.DestinationPath, sqldb.JSON(w), it.ReviewRequired, joinFallback(it.FallbackFields)); err != nil {
 			return p, err
 		}
 	}
@@ -434,10 +483,10 @@ func ledgerWhere(f LedgerFilter) (string, []any) {
 		add(`(original_name ILIKE $$ OR canonical_name ILIKE $$ OR department ILIKE $$ OR document_type ILIKE $$ OR archive_path ILIKE $$ OR document_date ILIKE $$)`, likeEscape(f.Q))
 	}
 	if f.Department != "" {
-		add(`department=$$`, f.Department)
+		categoryCond("department", f.Department, &conds, &args)
 	}
 	if f.Type != "" {
-		add(`document_type=$$`, f.Type)
+		categoryCond("document_type", f.Type, &conds, &args)
 	}
 	if f.DateFrom != "" {
 		add(`document_date>=$$`, f.DateFrom)
@@ -449,6 +498,23 @@ func ledgerWhere(f LedgerFilter) (string, []any) {
 		add(`decision=$$`, f.Decision)
 	}
 	return "WHERE " + strings.Join(conds, " AND "), args
+}
+
+// categoryCond filters a department/type column. The reserved value 其他 matches the explicit value as well
+// as empty and placeholder (待审核) values, because readers see those as 其他 too.
+func categoryCond(col, v string, conds *[]string, args *[]any) {
+	if archive.CategoryKey(v) != archive.CategoryKey(archive.CategoryOther) {
+		*args = append(*args, v)
+		*conds = append(*conds, fmt.Sprintf("%s=$%d", col, len(*args)))
+		return
+	}
+	vals := append([]string{archive.CategoryOther}, archive.UnknownCategoryValues()...)
+	ph := make([]string, len(vals))
+	for i, x := range vals {
+		*args = append(*args, x)
+		ph[i] = fmt.Sprintf("$%d", len(*args))
+	}
+	*conds = append(*conds, fmt.Sprintf("%s IN (%s)", col, strings.Join(ph, ",")))
 }
 
 func ledgerOrder(f LedgerFilter) string {
@@ -473,6 +539,7 @@ func scanLedger(rows sqldb.Rows) ([]LedgerEntry, error) {
 		if err := rows.Scan(&e.ID, &e.OriginalName, &e.CanonicalName, &e.Department, &e.DocumentType, &e.DocumentDate, &e.ArchivePath, &e.SHA256, &e.TaskID, &e.Status, &e.Decision, &e.DecisionModel, &e.ExecutedAt); err != nil {
 			return nil, err
 		}
+		e.Department, e.DocumentType = archive.DisplayCategory(e.Department), archive.DisplayCategory(e.DocumentType)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -527,4 +594,89 @@ func (s *Store) RunningOperation(ctx context.Context, planID string) (Operation,
 	}
 	_ = json.Unmarshal(res, &op.Results)
 	return op, err
+}
+
+// ---- fallback placeholder ----
+
+const (
+	// FallbackDepartment and FallbackType name the plan-item fields that may hold the placeholder 其他.
+	FallbackDepartment = "department"
+	FallbackType       = "document_type"
+)
+
+func joinFallback(f []string) string { return strings.Join(f, ",") }
+
+func splitFallback(s string) []string {
+	out := []string{}
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func hasField(f []string, name string) bool {
+	for _, x := range f {
+		if x == name {
+			return true
+		}
+	}
+	return false
+}
+
+func dropField(f []string, name string) []string {
+	out := []string{}
+	for _, x := range f {
+		if x != name {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// ApplyFallbackPlaceholder is the plan layer's deterministic rule: a department/type that is not determined
+// (nil) becomes the reserved value 其他 and is flagged as a system-assigned placeholder (FallbackFields), the
+// item stays review_required and a warning explains it. The model's own output is never changed. It returns
+// true when it changed the item. Idempotent. It removes flags of fields that now hold a real value.
+func ApplyFallbackPlaceholder(it *PlanItem) bool {
+	changed := false
+	apply := func(field string, p **string, label string) {
+		if *p == nil {
+			other := archive.CategoryOther
+			*p = &other
+			if !hasField(it.FallbackFields, field) {
+				it.FallbackFields = append(it.FallbackFields, field)
+			}
+			changed = true
+		}
+		if hasField(it.FallbackFields, field) {
+			it.ReviewRequired = true
+			w := "未能识别" + label + "，已暂填「" + archive.CategoryOther + "」，请确认或修改"
+			for _, e := range it.Warnings {
+				if e == w {
+					return
+				}
+			}
+			it.Warnings = append(it.Warnings, w)
+		}
+	}
+	apply(FallbackDepartment, &it.Department, "部门")
+	apply(FallbackType, &it.DocumentType, "文件类型")
+	if it.FallbackFields == nil {
+		it.FallbackFields = []string{}
+	}
+	return changed
+}
+
+// stripFallbackWarnings removes earlier placeholder explanations so they can be recomputed from FallbackFields.
+func stripFallbackWarnings(w []string) []string {
+	out := make([]string, 0, len(w))
+	for _, e := range w {
+		if strings.HasPrefix(e, "未能识别") && strings.Contains(e, "已暂填") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

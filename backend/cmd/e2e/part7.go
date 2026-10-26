@@ -278,7 +278,7 @@ func part7() {
 	var job job
 	_ = json.Unmarshal(d, &job)
 	check("storage: remote import accepted (202)", st == 202 && job.ID != "", st, string(d))
-	check("storage: folder expanded recursively; unsupported file counted as a failure", job.TotalFiles == 4 && job.FailureCount == 1, job.TotalFiles, job.FailureCount)
+	check("storage: folder expanded recursively; a file of an unknown format is accepted (judged by name only), not rejected", job.TotalFiles == 4 && job.FailureCount == 0, job.TotalFiles, job.FailureCount)
 	st2, d2 := imp([]string{"收件箱"}, "e2e-remote-1")
 	var again struct{ ID string }
 	_ = json.Unmarshal(d2, &again)

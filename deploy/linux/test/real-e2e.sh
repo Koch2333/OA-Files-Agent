@@ -12,7 +12,8 @@
 #   3 port conflict detection: --check names the container that owns the port, exit 3
 #   4 upgrade decisions: newer tag without --upgrade stays; --upgrade moves; a downgrade is refused
 #   5 existing PostgreSQL (a postgres:16-alpine container): wrong password loop, isolation, DDL preview + approval, install
-#   6 uninstall keeping data (containers removed, data and .env kept, state entry marked removed)
+#   6 uninstall keeping data
+#   7 language question (real pty, LANG=C, no --lang), Chinese wizard, registry-mirror entry and the daemon.json consent path (containers removed, data and .env kept, state entry marked removed)
 # Environment: OA_TEST_ROOT (shared tree), OA_TEST_PREFIX (default inst), TAG1 (default 1.0.0), TAG2 (default 1.1.0)
 set -u
 PREFIX="${OA_TEST_PREFIX:-inst}"; ROOT="${OA_TEST_ROOT:-/var/lib/oa-inst-test}"
@@ -122,6 +123,18 @@ checkgrep "state entries marked removed" /etc/oa-agent/install.json "\"dir\":\"$
 inst --yes --dir "$A" >"$ROOT/e2e-6c.txt" 2>&1; check "re-running on the removed install repairs it (data and key intact, rc $?)" test -f "$A/.env"
 check "the old data was reused: api healthy again" bash -c "sleep 5; [ \"\$(docker inspect -f '{{.State.Health.Status}}' $P1-api-1 2>/dev/null)\" = healthy ]"
 
+fi; if sel 7; then
+step "7 language question (real pty, LANG=C) and the registry-mirror consent path"
+export INSTALLER="$ROOT/install.sh" PROJECT="$PREFIX-lang" ROOTDIR="$ROOT" REGISTRY="$REG" TAG="$TAG1" PORT=18095 MIRRORURL=https://mirror.example.com
+rm -f /etc/docker/daemon.json
+expect -f "$HERE/language-mirror.exp" >"$ROOT/e2e-7.txt" 2>&1; rc=$?
+tail -n 30 "$ROOT/e2e-7.txt" | tee -a "$LOG" >/dev/null
+check "expect-driven Chinese wizard finished (rc $rc)" test "$rc" = 0
+checkgrep "the language question appeared first" "$ROOT/e2e-7.txt" "请选择语言 / Select language:"
+checkgrep "daemon.json was written after consent" /etc/docker/daemon.json "https://mirror.example.com"
+check "Docker was not restarted (no restart consent)" bash -c "! grep -q '已重启' $ROOT/e2e-7.txt"
+checkgrep ".env keeps the chosen language" "$ROOT/l/opt/oa-agent/.env" "^OA_LANG=zh$"
+check "the daemon.json backup logic left the file valid JSON" bash -c "head -c1 /etc/docker/daemon.json | grep -q '{'"
 fi
 
 printf '\nreal-e2e: %d failure(s); log %s\n' "$FAILS" "$LOG"

@@ -72,7 +72,9 @@ sudo bash install.sh --yes --domain oa.example.com --email admin@example.com \
 | `--archive-dir` `--spool-dir` `--data-dir` `--pg-dir` `--extra-mount name=/路径[:ro\|:rw]` | 存储位置；归档目录可以是任意本机路径或 NAS 挂载点 |
 | `--db bundled\|postgres\|mysql\|mssql` | 数据库；外部库另加 `--db-host` `--db-port` `--db-name` `--db-user` `--db-tls` `--db-ca-file` `--db-schema`，密码绝不接受命令行 |
 | `--behind-proxy --domain <域名>` | 放在已有反向代理（nginx / Caddy / 1Panel）之后 |
-| `--mirror cn` | 使用国内镜像源 |
+| `--lang zh\|en` | 界面语言；不指定时交互运行先问一次（默认取自系统区域设置），无人值守按区域设置并打印一行说明 |
+| `--docker-source auto\|official\|aliyun\|azure\|tencent\|tuna\|ustc\|<https 地址>` | 缺少 Docker 时的安装源，默认 `auto`：查 ipinfo.io 国家（第三方；`--no-geo-lookup` 关闭）+ 本地信号，大陆则按速度试可达镜像，最后官方；始终打印检测结果 |
+| `--mirror cn` | 构建镜像源（goproxy.cn 等），并视为在中国大陆（跳过国家查询） |
 | `--install-docker` | `--yes` 下允许自动安装 Docker |
 | `--upgrade` / `--reinstall` / `--uninstall [--purge]` | 升级 / 重建容器（保留数据）/ 卸载（`--purge` 才删数据） |
 | `--help` | 完整列表 |

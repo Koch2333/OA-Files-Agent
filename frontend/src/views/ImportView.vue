@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import { api, type StorageConnection } from '../api'
 import { errMsg, useAsync } from '../utils/useAsync'
 import { useImportFlow } from '../utils/useImportFlow'
+import { FORMAT_EXTS, GROUP_LABELS, extsOfGroups } from '../utils/formats'
 import { useUi } from '../stores/ui'
 import PageHeader from '../components/PageHeader.vue'
 import Icon from '../components/Icon.vue'
@@ -44,6 +45,8 @@ async function importRemote(p: { connectionId: string; paths: string[] }) {
   } catch (e) { remoteErr.value = errMsg(e); await flow.afterError(e) } finally { remoteBusy.value = false }
 }
 const submit = () => flow.submit()
+const groups = GROUP_LABELS.map((g) => ({ label: g.label, icon: g.icon, exts: extsOfGroups(g.group) }))
+const allExts = FORMAT_EXTS.join(' ')
 </script>
 
 <template>
@@ -88,11 +91,12 @@ const submit = () => flow.submit()
         <button class="btn filled has-icon" :disabled="!picked.length || submitting" data-testid="import-submit" @click="submit">
           <Icon :name="submitting ? 'progress_activity' : 'auto_awesome'" :class="{ spin: submitting }" sm />{{ submitting ? '正在提交…' : `开始智能归档（${picked.length}）` }}
         </button>
-        <p v-if="summary.rejected" class="muted">格式不支持的文件仍会提交，并在任务中显示“格式错误”，不会导致整批失败。</p>
+        <p v-if="summary.nameOnly" class="muted">内容无法读取的文件仍会提交：只依据文件名判断，并标记为“仅依据文件名”进入人工审核，不会导致整批失败。</p>
       </section>
       <section class="card outlined col">
         <h2 class="t-title-m">支持的格式</h2>
-        <div class="row wrap"><span class="chip">Word .docx</span><span class="chip">Excel .xlsx</span><span class="chip">PDF（含扫描件）</span><span class="chip">PNG / JPG</span></div>
+        <div class="row wrap" data-testid="format-chips"><span v-for="g in groups" :key="g.label" class="chip" :title="g.exts.join(' ')"><Icon :name="g.icon" sm />{{ g.label }}</span></div>
+        <p class="muted">识别内容：{{ allExts }}。旧版 Office（.doc / .xls / .ppt）可直接导入，无需转换；加密、损坏、超大或其他格式的文件也会接收，只依据文件名判断并进入人工审核（原件不会被修改）。</p>
         <p class="muted">图片与扫描 PDF 通过 OCR 识别，并与文件名联合判断部门、类型和日期。无法确认的字段会标为“待审核”，不会被虚构。</p>
         <div class="banner info"><Icon name="info" sm /><div>文件大小和数量不受限制：大文件自动分块上传，网络中断后可从断点继续。Windows 桌面版还可以直接选择本机文件/文件夹，免上传。超大文件只做元数据判断（不做全文识别），并标记为待人工审核。</div></div>
       </section>

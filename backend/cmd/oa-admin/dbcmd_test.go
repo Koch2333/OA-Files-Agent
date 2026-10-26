@@ -153,3 +153,29 @@ func TestDBCheckAndInitAgainstARealServer(t *testing.T) {
 		t.Fatalf("wrong password: rc=%d\n%s", rc, out)
 	}
 }
+
+func TestLocalizeKnownPhrases(t *testing.T) {
+	title, detail := localize(true, "isolation", "隔离性：专用库/schema", "schema public 中存在非 OA Agent 的表（orders, customers 等）。请使用专用数据库或专用 schema（空的或仅包含 OA Agent 表）；用表名前缀不算隔离。")
+	if title != "Isolation (dedicated database/schema)" || !strings.Contains(detail, "schema public contains tables that do not belong to OA Agent (orders, customers and more)") {
+		t.Fatalf("%q / %q", title, detail)
+	}
+	if _, d := localize(true, "connect", "连接数据库", "延迟 3 ms"); d != "latency 3 ms" {
+		t.Fatal(d)
+	}
+	if _, d := localize(true, "connect", "连接数据库", `password authentication failed for user "oa"`); !strings.Contains(d, "password authentication failed") {
+		t.Fatal("server texts must pass through unchanged")
+	}
+	if ti, d := localize(false, "connect", "连接数据库", "延迟 3 ms"); ti != "连接数据库" || d != "延迟 3 ms" {
+		t.Fatal("Chinese output must be untouched")
+	}
+}
+
+func TestEveryDbadminCheckTextHasATranslation(t *testing.T) {
+	// the fixed Chinese sentences of dbadmin/inspect.go that this CLI prints must all be covered (the dynamic parts vary)
+	for _, s := range []string{"延迟 5 ms", "目标库为空，需要管理员批准后初始化", "UTF8；比较区分大小写（搜索使用不区分大小写的 ILIKE）", "账号不是超级用户，也没有 CREATEROLE / CREATEDB",
+		"账号在数据库 oa 上拥有运行与迁移所需的权限", "时间一律以 UTC 存储（DATETIME2 + SYSUTCDATETIME）", "账号不是 db_owner / sysadmin", "授权仅覆盖数据库 oa"} {
+		if _, d := localize(true, "x", "t", s); d == s {
+			t.Errorf("no English text for %q", s)
+		}
+	}
+}

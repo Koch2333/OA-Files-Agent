@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oa-agent/backend/internal/fileops"
 	"oa-agent/backend/internal/fsman"
@@ -17,6 +19,7 @@ import (
 type fakeFiles struct {
 	revealCalls []string
 	canReveal   bool
+	conflicts   []fileops.Conflict
 	root        string
 	err         error
 }
@@ -211,5 +214,108 @@ func TestFileManagerErrorMapping(t *testing.T) {
 	}
 	if w := do(h, "PUT", "/v1/fs/move", ``, nil, "127.0.0.1:1"); w.Code != 405 {
 		t.Errorf("method: %d", w.Code)
+	}
+}
+
+func (f *fakeFiles) Entry(context.Context, string) (fileops.ListedEntry, error) {
+	return fileops.ListedEntry{}, f.err
+}
+func (f *fakeFiles) MoveBatch(_ context.Context, req fileops.MoveRequest, _ string) (fileops.BatchResult, error) {
+	if f.err != nil {
+		return fileops.BatchResult{}, f.err
+	}
+	if f.conflicts != nil {
+		return fileops.BatchResult{Conflicts: f.conflicts}, nil
+	}
+	out := fileops.BatchResult{Items: []fileops.ItemResult{}, Conflicts: []fileops.Conflict{}}
+	for _, it := range req.Items {
+		out.Items = append(out.Items, fileops.ItemResult{Path: it.From, Status: fileops.StMoved, FinalPath: it.To, HashStatus: fileops.HashNotTask})
+	}
+	return out, nil
+}
+func (f *fakeFiles) BulkTrash(_ context.Context, paths []string, _ string) (fileops.BatchResult, error) {
+	out := fileops.BatchResult{Items: []fileops.ItemResult{}, Conflicts: []fileops.Conflict{}}
+	for _, p := range paths {
+		out.Items = append(out.Items, fileops.ItemResult{Path: p, Status: fileops.StMoved})
+	}
+	return out, f.err
+}
+func (f *fakeFiles) RestoreWith(context.Context, string, fileops.Policy, string) (fileops.RestoreResult, error) {
+	return fileops.RestoreResult{Status: "restored", Conflicts: []fileops.Conflict{}}, f.err
+}
+func (f *fakeFiles) Verify(context.Context, []string, string) (fileops.VerifyReport, error) {
+	return fileops.VerifyReport{Items: []fileops.FileCheck{}}, f.err
+}
+func (f *fakeFiles) PlanDownload(paths []string, now time.Time) (fileops.DownloadPlan, error) {
+	return (&fileops.Service{FS: &fsman.Manager{Root: f.root}}).PlanDownload(paths, now)
+}
+func (f *fakeFiles) WriteZip(ctx context.Context, w io.Writer, plan fileops.DownloadPlan, actor string) (fileops.ZipReport, error) {
+	return fileops.ZipReport{}, f.err
+}
+
+func TestMoveConflictsAnswer409WithStructuredList(t *testing.T) {
+	f := &fakeFiles{root: t.TempDir(), conflicts: []fileops.Conflict{{Item: "a.pdf", Kind: fileops.KindNameExists, Name: "a.pdf", Choices: []string{"skip"}}}}
+	h := newFSServer(t, f, false)
+	for _, tc := range []struct{ url, body, code string }{
+		{"/v1/fs/move", `{"from":"a.pdf","to":"d/a.pdf"}`, "ALREADY_EXISTS"},
+		{"/v1/fs/bulk/move", `{"paths":["a.pdf"],"target_dir":"d"}`, "NAME_CONFLICT"},
+	} {
+		w := do(h, "POST", tc.url, tc.body, nil, "127.0.0.1:1")
+		var env struct {
+			Error struct {
+				Code    string `json:"code"`
+				Details struct {
+					Conflicts []fileops.Conflict `json:"conflicts"`
+				} `json:"details"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &env)
+		if w.Code != 409 || env.Error.Code != tc.code || len(env.Error.Details.Conflicts) != 1 || env.Error.Details.Conflicts[0].Item != "a.pdf" {
+			t.Fatalf("%s: %d %s", tc.url, w.Code, w.Body)
+		}
+	}
+	if w := do(h, "POST", "/v1/fs/move", `{"from":"a","to":"b","on_conflict":"overwrite"}`, nil, "127.0.0.1:1"); w.Code != 400 {
+		t.Errorf("unknown policy: %d", w.Code)
+	}
+	if w := do(h, "POST", "/v1/fs/bulk/move", `{"paths":[],"target_dir":""}`, nil, "127.0.0.1:1"); w.Code != 400 {
+		t.Errorf("empty selection: %d", w.Code)
+	}
+	if w := do(h, "POST", "/v1/fs/bulk/move", `{"paths":["a"],"target_dir":"../x"}`, nil, "127.0.0.1:1"); w.Code != 400 {
+		t.Errorf("bad target: %d", w.Code)
+	}
+}
+
+func TestDownloadFolderIsAZipWithUTF8Name(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "财务"), 0o755)
+	os.WriteFile(filepath.Join(root, "财务", "a.txt"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(root, "b.txt"), []byte("y"), 0o644)
+	h := newFSServer(t, &fakeFiles{root: root}, false)
+	w := do(h, "GET", "/v1/fs/download?path=%E8%B4%A2%E5%8A%A1", "", nil, "127.0.0.1:1")
+	if w.Code != 200 || w.Header().Get("Content-Type") != "application/zip" || !strings.Contains(w.Header().Get("Content-Disposition"), "filename*=UTF-8''%E8%B4%A2%E5%8A%A1.zip") {
+		t.Fatalf("folder download: %d %v", w.Code, w.Header())
+	}
+	w = do(h, "POST", "/v1/fs/download", `{"paths":["b.txt","财务"]}`, nil, "127.0.0.1:1")
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Disposition"), "oa-files-") {
+		t.Fatalf("multi download: %d %v", w.Code, w.Header())
+	}
+	w = do(h, "GET", "/v1/fs/download?path=b.txt", "", nil, "127.0.0.1:1")
+	if w.Code != 200 || w.Body.String() != "y" || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("single file stays a plain download: %d %v", w.Code, w.Header())
+	}
+	for _, bad := range []string{"../x", "nope", ".trash"} {
+		if w = do(h, "GET", "/v1/fs/download?path="+bad, "", nil, "127.0.0.1:1"); w.Code != 400 && w.Code != 404 {
+			t.Errorf("%s → %d", bad, w.Code)
+		}
+	}
+	if w = do(h, "POST", "/v1/fs/download", `{"paths":[]}`, nil, "127.0.0.1:1"); w.Code != 400 {
+		t.Errorf("empty: %d", w.Code)
+	}
+}
+
+func TestContentDispositionEscapesPerRFC5987(t *testing.T) {
+	got := contentDisposition(`报告 "a" (1)'.zip`)
+	if !strings.Contains(got, `filename="__ _a_ (1)'.zip"`) || !strings.Contains(got, "filename*=UTF-8''%E6%8A%A5%E5%91%8A%20%22a%22%20%281%29%27.zip") {
+		t.Fatal(got)
 	}
 }

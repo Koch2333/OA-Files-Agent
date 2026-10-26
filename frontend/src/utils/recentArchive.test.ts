@@ -27,10 +27,11 @@ describe('archiveRow', () => {
     expect(r.title).toContain('…')
     expect(r.fullTitle).toBe(long)
   })
-  it('marks missing fields as pending review and keeps the decision', () => {
+  it('shows empty or unknown department/type as 其他 and marks the missing date; keeps the decision', () => {
     const r = archiveRow(entry({ department: '', document_type: ' ', document_date: '', decision: 'ai_auto', decision_model: 'm1' }), NOW)
-    expect(r.department).toEqual({ text: '待审核', missing: true })
-    expect(r.type.missing).toBe(true)
+    expect(r.department).toEqual({ text: '其他', missing: false })
+    expect(r.type).toEqual({ text: '其他', missing: false })
+    expect(archiveRow(entry({ department: '待审核' })).department.text).toBe('其他')
     expect(r.date).toEqual({ text: '日期未知', missing: true })
     expect(r.decision).toBe('ai_auto')
     expect(r.decisionModel).toBe('m1')

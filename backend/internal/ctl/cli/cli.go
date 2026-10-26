@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"oa-agent/backend/internal/ctl/compose"
+	"oa-agent/backend/internal/ctl/i18n"
 	"oa-agent/backend/internal/ctl/install"
 	"oa-agent/backend/internal/ctl/mounts"
 	"oa-agent/backend/internal/ctl/ops"
@@ -187,23 +188,23 @@ func (a *App) fail(err error) int {
 	var ee *compose.ExitError
 	switch {
 	case errors.As(err, &ue):
-		fmt.Fprintln(a.Err, "用法错误：", err)
+		fmt.Fprintln(a.Err, i18n.T("用法错误：", "Usage error:"), err)
 		fmt.Fprintln(a.Err, "运行 oa-agentctl help 查看帮助。")
 		return ExitUsage
 	case errors.As(err, &re):
 		fmt.Fprintln(a.Err, "已拒绝：", err)
 		return ExitRefused
 	case errors.Is(err, install.ErrNotInstalled):
-		fmt.Fprintln(a.Err, "错误：", err, "—— 用 --dir 指定安装目录。")
+		fmt.Fprintln(a.Err, i18n.T("错误：", "Error:"), err, i18n.T("—— 用 --dir 指定安装目录。", "- use --dir to give the install directory."))
 		return ExitNoInst
 	case errors.Is(err, compose.ErrDockerMissing):
-		fmt.Fprintln(a.Err, "错误：未找到 docker。")
+		fmt.Fprintln(a.Err, i18n.T("错误：未找到 docker。", "Error: docker not found."))
 		return ExitDocker
 	case errors.As(err, &ee):
-		fmt.Fprintln(a.Err, "错误：", err)
+		fmt.Fprintln(a.Err, i18n.T("错误：", "Error:"), err)
 		return ExitDocker
 	}
-	fmt.Fprintln(a.Err, "错误：", err)
+	fmt.Fprintln(a.Err, i18n.T("错误：", "Error:"), err)
 	return ExitFail
 }
 

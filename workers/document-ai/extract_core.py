@@ -3,6 +3,14 @@ import json
 import os
 import sys
 
+# `python -I` (the isolated child) does not put the script directory on sys.path: the sibling modules need it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import formats_data  # noqa: E402
+import fmt_common  # noqa: E402
+import sniff  # noqa: E402
+from fmt_common import ExtractError  # noqa: E402,F401  (re-exported: server/tests use extract_core.ExtractError)
+
 TEXT_CAP = 200000
 MAX_XLSX_ROWS = 5000
 MAX_PDF_PAGES = 300
@@ -13,19 +21,15 @@ HIGH_DPI = 300
 MAX_PIXELS = 25_000_000
 LOW_CONFIDENCE = 0.6
 PROFILES = ("default", "enhanced", "rotate", "deskew", "high_dpi", "binarize")
-RENDER_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+_FORMATS = formats_data.TABLE["formats"]
+IMAGE_EXTS = {f["ext"] for f in _FORMATS if f["group"] == "image"}
+RENDER_EXTS = {".pdf"} | IMAGE_EXTS
+MAX_TIFF_PAGES = 500
 MAX_RENDER_B64 = int(2.5 * 1024 * 1024)
 PREVIEW_COLS = 50
 PREVIEW_CELL = 200
 OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
-SUPPORTED_EXTS = {".docx", ".xlsx", ".pdf"} | IMAGE_EXTS
-
-
-class ExtractError(Exception):
-    def __init__(self, code, message=""):
-        super().__init__(message or code)
-        self.code = code
+SUPPORTED_EXTS = {f["ext"] for f in _FORMATS}
 
 
 _ocr_engine = None
@@ -38,6 +42,11 @@ def probe():
         import docx, openpyxl, pymupdf  # noqa: F401
     except Exception:
         result["extraction_available"] = False
+    for name in ("olefile", "xlrd"):   # legacy Office readers: absence only disables those formats
+        try:
+            __import__(name)
+        except Exception:
+            result["legacy_office_available"] = False
     try:
         import rapidocr_onnxruntime  # noqa: F401
     except Exception:
@@ -63,6 +72,34 @@ def _decode(data):
     if array is None:
         raise ExtractError("UNREADABLE_FILE", "image cannot be decoded")
     return array
+
+
+def _png_frames(path, max_frames):
+    """Pillow route for formats OpenCV cannot (reliably) read: BMP/TIFF/WebP/GIF -> ([PNG bytes], total frames).
+    GIF/WebP use the first frame only; TIFF yields up to max_frames pages. Oversized images are refused."""
+    import io
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 60_000_000
+    frames = []
+    try:
+        with Image.open(path) as img:
+            total = getattr(img, "n_frames", 1) if img.format == "TIFF" else 1
+            for i in range(min(total, max_frames)):
+                img.seek(i)
+                frame = img.convert("RGB")
+                if frame.width * frame.height > MAX_PIXELS:
+                    scale = (MAX_PIXELS / float(frame.width * frame.height)) ** 0.5
+                    frame = frame.resize((max(1, int(frame.width * scale)), max(1, int(frame.height * scale))))
+                buf = io.BytesIO()
+                frame.save(buf, format="PNG")
+                frames.append(buf.getvalue())
+    except ExtractError:
+        raise
+    except Exception as exc:   # includes DecompressionBombError / truncated data
+        raise ExtractError("UNREADABLE_FILE", "image cannot be decoded") from exc
+    if not frames:
+        raise ExtractError("UNREADABLE_FILE", "image has no frames")
+    return frames, total
 
 
 def _engine_lines(array):
@@ -458,33 +495,138 @@ def extract_pdf(path, ocr, profile="default", pages_filter=None):
         doc.close()
 
 
-def extract_image(path, ocr, profile="default", pages_filter=None):
-    _check_pages(pages_filter, 1)
-    if not ocr:
-        return {"pages": [{"page": 1, "text": "", "source": "native", "confidence": 1.0}], "ocr_used": False,
-                "warnings": ["OCR_DISABLED_IMAGE"], "metadata": _meta()}
+def _is_png_or_jpeg(path):
     with open(path, "rb") as f:
-        data = f.read()
-    res = ocr_page(data, profile)
-    warnings = [] if res["text"].strip() else ["OCR_NO_TEXT"]
-    return {"pages": [{"page": 1, "text": res["text"], "source": "ocr", "confidence": res["confidence"]}],
-            "ocr_used": True, "warnings": warnings, "metadata": _meta(),
-            "_ocr": [{"page": 1, "lines": res["lines"], "rotation": res["rotation"]}]}
+        head = f.read(8)
+    return head.startswith(b"\x89PNG") or head[:3] == b"\xff\xd8\xff"
+
+
+def extract_image(path, ocr, profile="default", pages_filter=None):
+    if _is_png_or_jpeg(path):
+        _check_pages(pages_filter, 1)
+        if not ocr:
+            return {"pages": [{"page": 1, "text": "", "source": "native", "confidence": 1.0}], "ocr_used": False,
+                    "warnings": ["OCR_DISABLED_IMAGE"], "metadata": _meta()}
+        with open(path, "rb") as f:
+            data = f.read()
+        res = ocr_page(data, profile)
+        warnings = [] if res["text"].strip() else ["OCR_NO_TEXT"]
+        return {"pages": [{"page": 1, "text": res["text"], "source": "ocr", "confidence": res["confidence"]}],
+                "ocr_used": True, "warnings": warnings, "metadata": _meta(),
+                "_ocr": [{"page": 1, "lines": res["lines"], "rotation": res["rotation"]}]}
+    frames, total = _png_frames(path, MAX_OCR_PAGES if ocr else 1)
+    _check_pages(pages_filter, min(total, MAX_TIFF_PAGES))
+    warnings = []
+    if total > len(frames) and ocr:
+        warnings.append("OCR_PAGE_CAP_REACHED")
+    if not ocr:
+        return {"pages": [{"page": i + 1, "text": "", "source": "native", "confidence": 1.0} for i in range(max(1, min(total, MAX_TIFF_PAGES)))],
+                "ocr_used": False, "warnings": ["OCR_DISABLED_IMAGE"], "metadata": _meta()}
+    pages, records, any_text = [], [], False
+    for number, data in enumerate(frames, 1):
+        if pages_filter and number not in pages_filter:
+            pages.append({"page": number, "text": "", "source": "native", "confidence": 1.0})
+            continue
+        res = ocr_page(data, profile)
+        any_text = any_text or bool(res["text"].strip())
+        pages.append({"page": number, "text": res["text"], "source": "ocr", "confidence": res["confidence"]})
+        records.append({"page": number, "lines": res["lines"], "rotation": res["rotation"]})
+    if not any_text:
+        warnings.append("OCR_NO_TEXT")
+    return {"pages": pages, "ocr_used": True, "warnings": warnings, "metadata": _meta(), "_ocr": records}
+
+
+LEGACY_PARTIAL_CODES = ("LEGACY_PARTIAL", "DOC_STRUCTURE_DAMAGED", "DOC_STREAM_TRUNCATED", "PPT_STRUCTURE_FALLBACK",
+                        "XLS_SHEET_UNREADABLE")
+CAP_CODES = ("TEXT_TRUNCATED", "PAGE_CAP_REACHED", "OCR_PAGE_CAP_REACHED", "ROW_CAP_REACHED", "SLIDE_CAP_REACHED")
+SPREADSHEET_CLAIMS = {"xls", "xlsx", "csv", "ods", "ole"}
+
+
+def _parsers():
+    import ole_formats as of
+    import text_formats as tf
+    import zip_formats as zf
+    return {
+        "doc": of.parse_doc, "xls": of.parse_xls, "ppt": of.parse_ppt, "msg": of.parse_msg,
+        "odt": zf.parse_odf, "ods": zf.parse_odf, "odp": zf.parse_odf, "pptx": zf.parse_pptx,
+        "rtf": tf.parse_rtf, "html": tf.parse_html, "eml": tf.parse_eml,
+        "text": None, "csv": None,
+    }
+
+
+def parse_route(route, path, ext, lim, claimed=None):
+    """Run the reader for a detected route -> parsed (fmt_common form)."""
+    import text_formats as tf
+    if route == "text":
+        return tf.parse_text(path, lim, markdown=(ext == ".md"))
+    if route == "csv":
+        return tf.parse_csv(path, lim, delimiter="\t" if ext == ".tsv" else None)
+    parser = _parsers().get(route)
+    if parser is None:
+        raise ExtractError("UNSUPPORTED_FORMAT", "unsupported format")
+    try:
+        parsed = parser(path, lim)
+    except ExtractError:
+        raise
+    except ImportError as exc:
+        raise ExtractError("UNSUPPORTED_FORMAT", "reader library missing") from exc
+    except MemoryError:
+        raise
+    except Exception as exc:   # a reader bug on hostile input must never crash the worker
+        raise ExtractError("UNREADABLE_FILE", "document cannot be parsed") from exc
+    if route == "html" and claimed in SPREADSHEET_CLAIMS:
+        parsed = _html_tables_as_sheets(parsed)
+    return parsed
+
+
+def _html_tables_as_sheets(parsed):
+    """A web export saved as .xls: its <table>s are the sheets (kept as a document when there is no table)."""
+    tables = [b for b in parsed["blocks"] if b["type"] == "table"]
+    if not tables:
+        return parsed
+    out = fmt_common.new_parsed("spreadsheet")
+    out.update(metadata=parsed["metadata"], warnings=parsed["warnings"], partial=parsed["partial"],
+               low_confidence=parsed["low_confidence"])
+    for i, t in enumerate(tables[:200], 1):
+        rows = t["rows"][:MAX_XLSX_ROWS]
+        out["sheets"].append({"name": "表%d" % i, "rows": rows, "hidden": False, "rows_total": len(t["rows"]),
+                              "cols_total": max((len(r) for r in rows), default=0)})
+    return out
+
+
+def _content_status(result):
+    """-> (status, reason): ok | partial | unreadable (OCR found nothing)."""
+    text = "".join(p["text"] for p in result["pages"]).strip()
+    if result["ocr_used"] and not text:
+        return "unreadable", "ocr_empty"
+    codes = [w.split(":", 1)[0] for w in result["warnings"]]
+    if any(c in LEGACY_PARTIAL_CODES for c in codes):
+        return "partial", "damaged"
+    if "LOW_CONFIDENCE_TEXT" in codes:
+        return "partial", "encoding"
+    if any(c in CAP_CODES for c in codes):
+        return "partial", "capped"
+    return "ok", None
 
 
 def extract(path, ext, ocr, profile="default", pages_filter=None):
     if profile not in PROFILES:
         raise ExtractError("INVALID_REQUEST", "unknown ocr_profile")
-    if ext == ".docx":
+    det = sniff.detect(path, ext)
+    if det["error"]:
+        raise ExtractError(*det["error"])
+    route = det["route"]
+    if route == "docx":
         result = extract_docx(path, ocr)
-    elif ext == ".xlsx":
+    elif route == "xlsx":
         result = extract_xlsx(path, ocr)
-    elif ext == ".pdf":
+    elif route == "pdf":
         result = extract_pdf(path, ocr, profile, pages_filter)
-    elif ext in IMAGE_EXTS:
+    elif route == "image":
         result = extract_image(path, ocr, profile, pages_filter)
     else:
-        raise ExtractError("UNSUPPORTED_FORMAT", "unsupported format")
+        lim = {"max_rows": MAX_XLSX_ROWS, "max_blocks": fmt_common.MAX_BLOCKS}
+        result = fmt_common.to_extract(parse_route(route, path, ext, lim, det["claimed"]))
     _check_pages(pages_filter, len(result["pages"]))
     records = result.pop("_ocr", None)
     result["quality"] = build_quality(records, profile) if result["ocr_used"] and records else None
@@ -495,6 +637,11 @@ def extract(path, ext, ocr, profile="default", pages_filter=None):
         for p in result["pages"]:
             p["text"] = p["text"][:TEXT_CAP]
         result["warnings"].append("TEXT_TRUNCATED")
+    if det["mismatch"]:
+        result["warnings"].append("FORMAT_MISMATCH:" + det["detected"])
+    result["detected_format"] = det["detected"]
+    result["extension_mismatch"] = bool(det["mismatch"])
+    result["content_status"], result["content_reason"] = _content_status(result)
     return result
 
 
@@ -549,13 +696,15 @@ def render(path, ext, page, max_side):
         finally:
             doc.close()
     else:
-        pages = 1
-        if page != 1:
-            raise ExtractError("INVALID_REQUEST", "page out of range")
         try:
             img = Image.open(path)
             if img.width * img.height > 60_000_000:
                 raise ExtractError("UNREADABLE_FILE", "image too large")
+            pages = min(getattr(img, "n_frames", 1), MAX_TIFF_PAGES) if img.format == "TIFF" else 1
+            if page < 1 or page > pages:
+                raise ExtractError("INVALID_REQUEST", "page out of range")
+            if pages > 1:
+                img.seek(page - 1)
             img.load()
             img = ImageOps.exif_transpose(img)
         except ExtractError:
@@ -712,28 +861,59 @@ def preview_xlsx(path, max_rows):
             "warnings": []}
 
 
+def _preview_pdf(path):
+    import pymupdf as fitz
+    try:
+        doc = fitz.open(path)
+    except Exception as exc:
+        raise ExtractError("UNREADABLE_FILE", "pdf cannot be opened") from exc
+    try:
+        if doc.needs_pass or doc.is_encrypted:
+            raise ExtractError("ENCRYPTED", "pdf is encrypted")
+        if doc.page_count == 0:
+            raise ExtractError("UNREADABLE_FILE", "pdf has no pages")
+        return {"kind": "pdf", "pages": doc.page_count}
+    finally:
+        doc.close()
+
+
 def preview(path, ext, max_rows=200, max_blocks=600):
-    if ext == ".docx":
-        return preview_docx(path, max_blocks)
-    if ext == ".xlsx":
-        return preview_xlsx(path, max_rows)
-    if ext == ".pdf":
-        import pymupdf as fitz
+    det = sniff.detect(path, ext)
+    if det["error"]:
+        raise ExtractError(*det["error"])
+    route = det["route"]
+    if route == "docx":
+        out = preview_docx(path, max_blocks)
+    elif route == "xlsx":
+        out = preview_xlsx(path, max_rows)
+    elif route == "pdf":
+        out = _preview_pdf(path)
+    elif route == "image":
+        pages = 1
         try:
-            doc = fitz.open(path)
+            from PIL import Image
+            with Image.open(path) as img:
+                if img.format == "TIFF":
+                    pages = max(1, min(getattr(img, "n_frames", 1), MAX_TIFF_PAGES))
         except Exception as exc:
-            raise ExtractError("UNREADABLE_FILE", "pdf cannot be opened") from exc
-        try:
-            if doc.needs_pass or doc.is_encrypted:
-                raise ExtractError("ENCRYPTED", "pdf is encrypted")
-            if doc.page_count == 0:
-                raise ExtractError("UNREADABLE_FILE", "pdf has no pages")
-            return {"kind": "pdf", "pages": doc.page_count}
-        finally:
-            doc.close()
-    if ext in IMAGE_EXTS:
-        return {"kind": "image", "pages": 1}
-    raise ExtractError("UNSUPPORTED_FORMAT", "unsupported format")
+            raise ExtractError("UNREADABLE_FILE", "image cannot be decoded") from exc
+        out = {"kind": "image", "pages": pages}
+    else:
+        lim = {"max_rows": max_rows, "max_blocks": max_blocks}
+        out = fmt_common.to_preview(parse_route(route, path, ext, lim, det["claimed"]), max_rows, max_blocks)
+    if det["mismatch"] and out.get("kind") in ("document", "spreadsheet"):
+        out["warnings"] = list(out.get("warnings", [])) + ["文件扩展名与内容不符（实际为 %s），已按实际格式解析" % sniff_label(det["detected"])]
+    return out
+
+
+_LABELS = {"doc": "Word 97-2003", "xls": "Excel 97-2003", "ppt": "PowerPoint 97-2003", "docx": "Word", "xlsx": "Excel",
+           "pptx": "PowerPoint", "pdf": "PDF", "image": "图片", "html": "HTML", "rtf": "RTF", "text": "纯文本",
+           "eml": "邮件", "msg": "Outlook 邮件", "odt": "OpenDocument 文本", "ods": "OpenDocument 表格",
+           "odp": "OpenDocument 演示", "csv": "CSV"}
+
+
+def sniff_label(detected):
+    return _LABELS.get(detected, detected)
 
 
 def main():

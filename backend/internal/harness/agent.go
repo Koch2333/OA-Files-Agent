@@ -210,6 +210,8 @@ func (a *Agent) seal(r Result, s *Session) Result {
 			r.Warnings = append(r.Warnings, "ocr_quality:poor")
 		}
 	}
+	r.ContentStatus, r.ContentReason, r.Basis = s.contentOutcome()
+	r.FormatNote = s.formatNote
 	if len(r.Warnings) > maxWarnings {
 		r.Warnings = r.Warnings[:maxWarnings]
 	}

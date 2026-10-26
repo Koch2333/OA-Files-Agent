@@ -1,3 +1,4 @@
+import { isJunk } from './formats'
 import type { PickedFile } from '../api/types'
 
 /** 规范化浏览器给出的相对路径：统一分隔符，拒绝 .. 与绝对路径（防路径穿越，后端仍须再校验）。 */
@@ -26,6 +27,7 @@ export interface CollectOptions {
 }
 
 async function walk(entry: FsEntry, out: PickedFile[], opt: CollectOptions) {
+  if (entry.isFile && isJunk(entry.name)) return // Thumbs.db、~$锁文件等：不是文档，文件夹导入时静默忽略
   if (entry.isFile && entry.file) {
     try {
       const file = await new Promise<File>((res, rej) => entry.file!(res, rej))
@@ -70,6 +72,7 @@ export async function collectDropped(dt: DataTransfer, opt: CollectOptions = {})
 /** <input webkitdirectory> / 多选文件 → 文件列表。 */
 export function fromInput(list: FileList): PickedFile[] {
   return Array.from(list).flatMap((f) => {
+    if (isJunk(f.name) && (f as File & { webkitRelativePath?: string }).webkitRelativePath) return [] // 仅文件夹选择时过滤
     const rel = safeRelativePath((f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name)
     return rel ? [{ file: f, relativePath: rel }] : []
   })

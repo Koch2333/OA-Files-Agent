@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"oa-agent/backend/internal/formats"
 	"os"
 	"path"
 	"path/filepath"
@@ -75,16 +76,7 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 			fail("INVALID_PATH", "文件名或路径包含本系统不支持的字符", "", max64(rf.Size, 0), "application/octet-stream")
 			continue
 		}
-		ext := strings.ToLower(path.Ext(rel))
-		contentType, supported := mimeTypes[ext]
-		if !supported {
-			msg := "暂不支持此文件格式"
-			if ext == ".doc" || ext == ".xls" {
-				msg = "请先使用办公软件转换为 DOCX/XLSX 后导入"
-			}
-			fail("UNSUPPORTED_FORMAT", msg, "", max64(rf.Size, 0), "application/octet-stream")
-			continue
-		}
+		contentType := formats.MIME(rel)
 		if s.Limits.TooLarge(rf.Size) {
 			fail("FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes), "", rf.Size, contentType)
 			continue
@@ -106,7 +98,7 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 			rc.Close()
 			return batch, idErr
 		}
-		stored := filepath.Join(dir, fileID+ext)
+		stored := filepath.Join(dir, fileID+safeExt(rel))
 		f, openErr := os.OpenFile(stored, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if openErr != nil {
 			rc.Close()
@@ -132,9 +124,6 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 		case s.Limits.TooLarge(size):
 			os.Remove(stored)
 			fail("FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes), "", size, contentType)
-		case size == 0:
-			os.Remove(stored)
-			fail("EMPTY_FILE", "文件为空", sum, 0, contentType)
 		default:
 			fmt.Fprintf(fp, "%d:%s:%d:%s;", len(rel), rel, size, sum)
 			batch.Files = append(batch.Files, File{ID: fileID, TaskID: id, SourceName: path.Base(rel), SourcePath: rel, MIMEType: contentType, SHA256: sum, SizeBytes: size, Evidence: []string{}, ReviewRequired: true, ArchiveStatus: "pending", CreatedAt: now, StoredPath: stored})

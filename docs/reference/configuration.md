@@ -101,6 +101,7 @@
 | `OA_TZ` | `UTC` | 容器时区，例如 `Asia/Shanghai`；时钟必须正确（TOTP） |
 | `OA_PG_MEM` `OA_API_MEM` `OA_WORKER_MEM` `OA_CADDY_MEM` | `1g` `1g` `3g` `256m` | 内存上限 |
 | `OA_LOG_MAX_SIZE` `OA_LOG_MAX_FILE` | `10m` `5` | 容器日志轮转 |
+| `OA_LANG` | 空 | `zh`/`en`：install.sh 写入的界面语言，`oa-agentctl.sh` 在环境变量 `OA_LANG` 未设置时沿用 |
 | `OA_BEHIND_PROXY` | 空 | `1`：放在已有反向代理之后（无 Caddy 层） |
 | `OA_BUILD_GOPROXY` `OA_BUILD_NPM_REGISTRY` `OA_BUILD_PIP_INDEX` | 空 | 源码构建镜像（`--mirror cn`） |
 

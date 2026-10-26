@@ -34,6 +34,9 @@ import (
 
 const cliActor = "oa-admin(cli)"
 
+// english is set by runDB from OA_LANG: the checklist texts are then translated (see dbcmd_en.go).
+var english bool
+
 // tsv writes one tab separated line; tabs and line breaks inside fields are flattened to spaces.
 func tsv(w io.Writer, fields ...string) {
 	for i, f := range fields {
@@ -61,7 +64,8 @@ func dbEnv(getenv func(string) string, pw string, fromStdin bool) func(string) s
 
 func printReport(w io.Writer, rep dbadmin.Report) {
 	for _, c := range rep.Checks {
-		tsv(w, "CHECK", c.Status, c.ID, c.Title, c.Detail)
+		title, detail := localize(english, c.ID, c.Title, c.Detail)
+		tsv(w, "CHECK", c.Status, c.ID, title, detail)
 	}
 	tsv(w, "INFO", "provider", rep.Provider)
 	tsv(w, "INFO", "server_version", rep.ServerVersion)
@@ -98,6 +102,7 @@ func runDB(cmd string, args []string, in io.Reader, out, errw io.Writer, getenv 
 			return 2
 		}
 	}
+	english = strings.HasPrefix(strings.ToLower(getenv("OA_LANG")), "en")
 	cfg, ok, err := dbconfig.FromEnv(dbEnv(getenv, pw, *passStdin))
 	if err != nil {
 		fmt.Fprintln(errw, cmd+": "+sqldb.SafeError(err, cfg))
@@ -181,7 +186,8 @@ func dbInit(ctx context.Context, cfg sqldb.Config, dir string, apply bool, appro
 	for _, c := range pv.Checks {
 		if c.Status == dbadmin.Fail {
 			for _, x := range pv.Checks {
-				tsv(out, "CHECK", x.Status, x.ID, x.Title, x.Detail)
+				t, d := localize(english, x.ID, x.Title, x.Detail)
+				tsv(out, "CHECK", x.Status, x.ID, t, d)
 			}
 			tsv(out, "RESULT", "fail", "the target does not pass the checklist: run db-check first")
 			return 1

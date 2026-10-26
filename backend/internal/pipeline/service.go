@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"oa-agent/backend/internal/formats"
 	"os"
 	"path"
 	"path/filepath"
@@ -309,36 +310,34 @@ func (s *Service) analyzeOne(ctx context.Context, job imports.Job, f imports.Fil
 		s.event(ctx, taskID, e.Phase, e.Type, &fid, e.Summary, e.Details)
 	}
 	started := time.Now()
-	res, err := s.cfg.Analyzer.AnalyzeFile(ctx, harness.FileInput{FileID: f.ID, SourceName: f.SourceName, SourcePath: f.SourcePath, MIMEType: f.MIMEType, StoredPath: f.StoredPath,
-		Instruction: job.Instruction, Provider: tm.Provider, Vision: tm.Vision}, tpls, emit)
-	logx.Debugf("analyze file=%s task=%s ext=%s took=%s err=%v", f.ID, taskID, filepath.Ext(f.SourceName), time.Since(started).Round(time.Millisecond), err)
-	if ctx.Err() != nil {
-		return
-	}
-	// A file above the worker's extraction cap is not a failure: it is imported, hashed and kept, but only judged from
-	// its name/metadata and always routed to manual review ("metadata-only").
-	tooLarge := false
-	var we0 *harness.WorkerError
-	if err != nil && errors.As(err, &we0) && we0.Code == harness.CodeFileTooLarge {
-		tooLarge, err = true, nil
-		res = harness.Result{Evidence: []string{}, Warnings: []string{}, Trace: []harness.ToolCall{}}
-	}
-	if err == nil {
-		// A tool observation with a fatal worker code (encrypted, corrupt, unsupported) means the file itself is
-		// unusable: report it as a file error instead of guessing from the filename alone. Too large is handled above.
-		for _, t := range res.Trace {
-			switch t.ErrorCode {
-			case harness.CodeEncrypted, harness.CodeUnreadableFile, harness.CodeUnsupportedFormat:
-				err = &harness.WorkerError{Code: t.ErrorCode}
-			case harness.CodeFileTooLarge:
-				tooLarge = true
-			}
+	fin := harness.FileInput{FileID: f.ID, SourceName: f.SourceName, SourcePath: f.SourcePath, MIMEType: f.MIMEType, StoredPath: f.StoredPath, SizeBytes: f.SizeBytes,
+		Instruction: job.Instruction, Provider: tm.Provider, Vision: tm.Vision}
+	// A file whose content cannot be read is NOT a failed file. It is classified from its NAME only (flagged, review
+	// required, never fabricated): reason is one of the harness.Reason* codes ("" = content was readable).
+	reason := ""
+	var res harness.Result
+	var err error
+	if f.SizeBytes == 0 {
+		reason = harness.ReasonEmpty
+	} else {
+		res, err = s.cfg.Analyzer.AnalyzeFile(ctx, fin, tpls, emit)
+		logx.Debugf("analyze file=%s task=%s ext=%s took=%s err=%v", f.ID, taskID, filepath.Ext(f.SourceName), time.Since(started).Round(time.Millisecond), err)
+		if ctx.Err() != nil {
+			return
+		}
+		var we *harness.WorkerError
+		switch {
+		case err != nil && errors.As(err, &we) && harness.ReasonFromCode(we.Code) != "":
+			reason, err = harness.ReasonFromCode(we.Code), nil
+		case err == nil && res.ContentStatus == harness.ContentUnreadable:
+			reason = res.ContentReason
 		}
 	}
-	if tooLarge && err == nil {
-		res.ReviewRequired = true
-		res.Warnings = append(res.Warnings, "metadata_only:file_too_large")
-		res.Evidence = append(res.Evidence, fmt.Sprintf("文件较大（%.1f MiB），已跳过全文识别，仅按文件名/元数据判断，需人工审核", float64(f.SizeBytes)/(1<<20)))
+	if reason != "" && err == nil {
+		res, err = s.filenameOnly(ctx, fin, tpls, reason, emit)
+		if ctx.Err() != nil {
+			return
+		}
 	}
 	if err != nil {
 		s.reportAnalyzeFailure(job, f, err)
@@ -359,8 +358,23 @@ func (s *Service) analyzeOne(ctx context.Context, job imports.Job, f imports.Fil
 		}
 	}
 	an := map[string]any{"trace": res.Trace, "warnings": res.Warnings}
-	if tooLarge {
-		an["metadata_only"] = true
+	if reason != "" {
+		an["basis"], an["content_status"], an["content_reason"] = harness.BasisFilenameOnly, harness.ContentUnreadable, reason
+		res.ReviewRequired = true // filename-only results never reach automatic archiving
+		if reason == harness.ReasonTooLarge {
+			an["metadata_only"] = true // kept for older clients: the file was judged by name/metadata only
+			res.Warnings = append(res.Warnings, "metadata_only:file_too_large")
+			an["warnings"] = res.Warnings
+			res.Evidence = append(res.Evidence, fmt.Sprintf("文件较大（%.1f MiB），已跳过全文识别，需人工审核", float64(f.SizeBytes)/(1<<20)))
+		}
+	} else if res.ContentStatus != "" {
+		an["basis"], an["content_status"] = harness.BasisContent, res.ContentStatus
+		if res.ContentReason != "" {
+			an["content_reason"] = res.ContentReason
+		}
+		if res.FormatNote != "" {
+			an["format_note"] = res.FormatNote
+		}
 	}
 	if res.OCR != nil && res.OCR.Used {
 		an["ocr"] = res.OCR
@@ -373,7 +387,25 @@ func (s *Service) analyzeOne(ctx context.Context, job imports.Job, f imports.Fil
 	}
 	_ = s.cfg.Store.Progress(ctx, taskID)
 	d, t, dt := strOr(res.Department), strOr(res.DocumentType), strOr(res.DocumentDate)
-	s.event(ctx, taskID, "analyzing", "file_classified", &fid, fmt.Sprintf("%s → %s / %s / %s", f.SourceName, d, t, dt), nil)
+	note := ""
+	if reason != "" {
+		note = "（内容无法读取：" + harness.ReasonLabel(reason) + "，仅依据文件名）"
+	}
+	s.event(ctx, taskID, "analyzing", "file_classified", &fid, fmt.Sprintf("%s → %s / %s / %s%s", f.SourceName, d, t, dt, note), nil)
+}
+
+// filenameAnalyzer is implemented by the harness agent; any other Analyzer (test fakes) gets the plain placeholder.
+type filenameAnalyzer interface {
+	AnalyzeFilenameOnly(ctx context.Context, f harness.FileInput, tpls []harness.Template, reason string, emit func(harness.Event)) (harness.Result, error)
+}
+
+func (s *Service) filenameOnly(ctx context.Context, f harness.FileInput, tpls []harness.Template, reason string, emit func(harness.Event)) (harness.Result, error) {
+	if fa, ok := s.cfg.Analyzer.(filenameAnalyzer); ok {
+		return fa.AnalyzeFilenameOnly(ctx, f, tpls, reason, emit)
+	}
+	return harness.Result{Evidence: []string{fmt.Sprintf("内容无法读取（%s），仅依据文件名判断", harness.ReasonLabel(reason))},
+		Warnings: []string{"content_unreadable:" + reason}, Trace: []harness.ToolCall{}, ReviewRequired: true,
+		ContentStatus: harness.ContentUnreadable, ContentReason: reason, Basis: harness.BasisFilenameOnly}, nil
 }
 
 func strOr(p *string) string {
@@ -467,7 +499,10 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 		if f.Error != nil || f.ArchiveStatus == "archived" {
 			continue
 		}
-		name, dir, warns, err := archive.Render(rule, f.SourceName, archive.Meta{Department: f.Department, DocumentType: f.DocumentType, Date: f.Date})
+		// Plan layer rule: an undetermined department/type is shown as the placeholder 其他 (flagged, never approved silently).
+		probe := store.PlanItem{Department: f.Department, DocumentType: f.DocumentType}
+		store.ApplyFallbackPlaceholder(&probe)
+		name, dir, warns, err := archive.Render(rule, f.SourceName, archive.Meta{Department: probe.Department, DocumentType: probe.DocumentType, Date: f.Date})
 		if err != nil {
 			msg := "归档规则渲染失败：" + err.Error()
 			_ = st.SaveAnalysis(ctx, f.ID, store.AnalysisResult{Department: f.Department, DocumentType: f.DocumentType, DocumentDate: f.Date, Evidence: f.Evidence, ReviewRequired: true, Error: &msg})
@@ -516,7 +551,9 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 			review = true
 			warns = append(warns, "全自动模式：内容与已归档文件相同，需人工确认是否重复归档")
 		}
-		items = append(items, store.PlanItem{FileID: f.ID, OriginalName: f.SourceName, SuggestedName: p.Name, SourcePath: f.SourcePath, DestinationPath: p.Rel, Department: f.Department, DocumentType: f.DocumentType, DocumentDate: f.Date, Warnings: warns, ReviewRequired: review})
+		it := store.PlanItem{FileID: f.ID, OriginalName: f.SourceName, SuggestedName: p.Name, SourcePath: f.SourcePath, DestinationPath: p.Rel, Department: f.Department, DocumentType: f.DocumentType, DocumentDate: f.Date, Warnings: warns, ReviewRequired: review}
+		store.ApplyFallbackPlaceholder(&it)
+		items = append(items, it)
 	}
 	var ruleID *string
 	if stored.ID != "" {
@@ -665,7 +702,7 @@ func (s *Service) run(ctx context.Context, op store.Operation, plan store.Plan, 
 	res := s.exec.Execute(ctx, ops)
 	out := make([]store.OpResult, 0, len(res))
 	for _, r := range res {
-		out = append(out, store.OpResult{OpID: r.OpID, FileID: r.FileID, FinalRel: r.FinalRel, Status: r.Status, Err: r.Err, SHA256: r.Sha256, CreatedDirs: r.CreatedDirs})
+		out = append(out, store.OpResult{OpID: r.OpID, FileID: r.FileID, FinalRel: r.FinalRel, Status: r.Status, Err: r.Err, SHA256: r.Sha256, CreatedDirs: r.CreatedDirs, DuplicateOf: r.DuplicateOf})
 	}
 	done, err := s.cfg.Store.FinishExecution(ctx, op, plan, out)
 	if err != nil {
@@ -794,13 +831,11 @@ func (s *Service) Rollback(ctx context.Context, opID, actor string) error {
 
 // ---- template test ----
 
-var testExt = map[string]string{".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
-
 func (s *Service) TestTemplate(ctx context.Context, t store.Template, filename string, content ioReader) (api.TemplateTestResult, error) {
 	ext := strings.ToLower(path.Ext(filename))
-	mime, ok := testExt[ext]
-	if !ok {
-		return api.TemplateTestResult{}, &api.ExecError{Status: 422, Code: "UNSUPPORTED_FORMAT", Msg: "样本格式不支持（支持 docx/xlsx/pdf/png/jpg）"}
+	mime := formats.MIME(filename)
+	if !formats.Extractable(filename) {
+		return api.TemplateTestResult{}, &api.ExecError{Status: 422, Code: "UNSUPPORTED_FORMAT", Msg: "样本格式无法读取内容，请换一个 Word/Excel/PPT/PDF/图片/文本样本"}
 	}
 	dir := filepath.Join(s.cfg.SpoolRoot, "template-tests")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

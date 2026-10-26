@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"oa-agent/backend/internal/formats"
 	"os"
 	"path"
 	"path/filepath"
@@ -636,19 +637,10 @@ func (s *Service) CommitStaged(ctx context.Context, owner, batchID, key, templat
 			batch.Failures = append(batch.Failures, Failure{Index: i, SourcePath: m.RelPath, Code: code, Message: msg, SHA256: m.SHA256, SizeBytes: m.Size, MIMEType: mime})
 			drop = append(drop, src, filepath.Join(dirStage, file+".json"))
 		}
-		ext := strings.ToLower(path.Ext(m.Name))
-		mime, supported := mimeTypes[ext]
+		mime := formats.MIME(m.Name)
 		switch {
 		case m.Code != "":
 			fail(m.Code, m.Message, "application/octet-stream")
-		case !supported:
-			msg := "暂不支持此文件格式"
-			if ext == ".doc" || ext == ".xls" {
-				msg = "请先使用办公软件转换为 DOCX/XLSX 后导入"
-			}
-			fail("UNSUPPORTED_FORMAT", msg, "application/octet-stream")
-		case m.Size == 0:
-			fail("EMPTY_FILE", "文件为空", mime)
 		case s.Limits.TooLarge(m.Size):
 			fail("FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes), mime)
 		default:

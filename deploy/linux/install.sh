@@ -34,6 +34,9 @@ PORT='8080'
 DOMAIN=''
 EMAIL=''
 MIRROR=''            # cn | default (empty = ask / default)
+DOCKER_SOURCE=''     # where Docker is installed from: official|aliyun|azure|tencent|tuna|ustc|auto|<https URL> (empty/auto = detected automatically)
+SRC_ORDER=''; SRC_AUTO=0   # the sources docker_official_script will try, and whether falling through to the next needs no consent
+LANG_SET=0           # 1 = the language was given (--lang / OA_LANG / config) or already asked
 VERSION='latest'      # release version, or the image tag in registry mode (--image-tag)
 VERSION_SET=0
 REPO_URL="${OA_REPO_URL:-}"      # PLACEHOLDER: e.g. https://example.com/PLACEHOLDER/oa-agent
@@ -140,7 +143,7 @@ LOG_OK=0
 STARTED_AT="$(date +%s)"
 
 # ---------------------------------------------------------------------------------------------- UI
-case "${OA_LANG:-${LC_ALL:-${LANG:-}}}" in zh* | *zh_* | *ZH*) UI=zh ;; *) UI=en ;; esac
+UI=en   # replaced by init_lang (locale, OA_LANG, --lang, the language question) before anything is printed
 if [ -t 1 ]; then C_R=$'\033[31m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_B=$'\033[1m'; C_0=$'\033[0m'; else C_R=''; C_G=''; C_Y=''; C_B=''; C_0=''; fi
 m() { if [ "$UI" = zh ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
 logf() { if [ "$LOG_OK" = 1 ]; then printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG_FILE" 2>/dev/null || true; fi; }
@@ -191,7 +194,10 @@ usage() {
   --port <端口>       HTTP 访问端口（默认 8080；使用域名时仅监听 127.0.0.1）
   --domain <域名>     启用 HTTPS（Caddy 自动证书，需要 80/443 对公网开放，域名已解析到本机）
   --email <邮箱>      证书到期通知邮箱（可选）
-  --mirror cn|default 中国大陆镜像：Docker 安装使用阿里云源，构建使用 goproxy.cn / npmmirror / 清华 PyPI
+  --mirror cn|default 中国大陆镜像：构建使用 goproxy.cn / npmmirror / 清华 PyPI；同时把 Docker 安装源视为「中国大陆」（跳过国家查询，按速度试可达镜像）。要指定 Docker 安装源请用 --docker-source
+  --docker-source auto|official|aliyun|azure|tencent|tuna|ustc|<https 地址>
+                      Docker 安装源（缺少 Docker 时）。默认 auto，与 1Panel 同思路：先用 ipinfo.io/country 查国家（第三方服务；本地信号兜底：阿里云 ECS 地域、时区、download.docker.com 是否可达），中国大陆则按速度依次试可达镜像（阿里云、Azure 中国、腾讯云、清华、中科大），最后官方；其他地区用官方。始终打印检测结果与将使用的源，不会静默。指定具体源则只用它（失败后交互时才询问是否试其他源）。命令与来源：get.docker.com 脚本（第三方）+ --mirror Aliyun|AzureChinaCloud 或 DOWNLOAD_URL=<仓库根>
+  --no-geo-lookup     不请求 ipinfo.io（环境变量 OA_INSTALL_GEO=off），只用本地信号判断是否在中国大陆
   --version <版本>    发行版本（默认 latest）
   --repo-url <URL>    发行包下载地址前缀（占位，环境变量 OA_REPO_URL）；从检出的仓库运行时不需要
   --registry <主机[/命名空间]>  换用另一个镜像仓库（OA_IMAGE_REGISTRY）。默认已内置生产仓库（阿里云 ACR koch2333 命名空间），无需指定：从 <仓库>/oa-agent-api|worker:<标签> 拉取镜像，安装包取自 <仓库>/oa-agent-deploy:<标签>，不在本机构建
@@ -205,7 +211,7 @@ usage() {
   --pg-dir <路径>       PostgreSQL 数据目录
   --extra-mount 名称=/宿主机/路径[:ro|:rw]   额外本地存储挂载到 /mnt/storage/<名称>（可重复）
   --yes, -y           非交互模式，全部使用默认值/参数
-  --install-docker    缺少 Docker 时允许自动安装（--yes 模式下必须显式给出）
+  --install-docker    缺少 Docker 时允许自动安装（--yes 模式下必须显式给出）。安装过程每 15 秒（OA_HEARTBEAT）打印一行进度（耗时、当前包管理器进程、apt 下载目录/dpkg 日志是否在动）；超过 OA_DOCKER_TIMEOUT 秒（默认 1200）只停止本脚本启动的进程组并打印诊断；安装前若别的 apt/dpkg/unattended-upgrades 占着锁会等待（OA_LOCK_WAIT 秒，默认 300）；容器/WSL 且没有 systemd 时先警告
   --systemd           安装开机自启 systemd 单元（默认询问；--yes 下不安装）
   --open-firewall     在检测到 ufw/firewalld 时放行端口（默认询问；--yes 下不修改）
   --skip-verify       下载发行包时不强制校验和（不推荐）
@@ -226,7 +232,7 @@ usage() {
   --upgrade           升级现有安装（刷新源码与脚本，备份后重建并重启）
   --uninstall         卸载容器（数据保留）；加 --purge 同时删除数据
   --purge             与 --uninstall 联用
-  --lang zh|en        界面语言（默认按 $LANG）
+  --lang zh|en        界面语言。不指定时：交互运行先问一次（默认来自系统区域设置 LC_ALL/LANGUAGE/LANG、/etc/default/locale、/etc/locale.conf），无人值守按区域设置并打印一行说明；选择会写入新安装的 .env（OA_LANG）
   -h, --help          显示本帮助
 
 工作方式：先【检测】本机已有什么（Docker/Compose、前置软件、已有安装、旧数据、端口占用者、已有数据库服务、防火墙/SELinux/时间同步…）并打印组件表，再按检测结果跳过已满足的步骤、只补缺少的；全新安装时用【向导】一次问一个问题（默认值来自检测），最后给出复核页（可逐项修改）；外部数据库会在安装任何东西之前先检查，建表需单独确认。对已有且健康的同版本安装，重新运行只显示状态（快速、只读为主）。
@@ -240,7 +246,10 @@ Usage: install.sh [options]
   --port <port>       HTTP port (default 8080; with a domain the API only listens on 127.0.0.1)
   --domain <fqdn>     enable HTTPS (Caddy automatic certificates; 80/443 must be reachable, DNS must point here)
   --email <address>   certificate expiry notices (optional)
-  --mirror cn|default China mirrors: Aliyun for Docker install; goproxy.cn / npmmirror / Tsinghua PyPI for builds
+  --mirror cn|default China mirrors: goproxy.cn / npmmirror / Tsinghua PyPI for builds; also treats the Docker installation source as "mainland China" (skips the country lookup, tries the reachable mirrors by speed). To pick the Docker installation source use --docker-source
+  --docker-source auto|official|aliyun|azure|tencent|tuna|ustc|<https URL>
+                      where Docker comes from when it is missing. Default auto, the same idea as 1Panel: the country is looked up with ipinfo.io/country (a third-party service; local signals back it up: Alibaba Cloud ECS region, time zone, whether download.docker.com answers); in mainland China the reachable mirrors are tried by speed (Alibaba Cloud, Azure China, Tencent Cloud, Tsinghua, USTC) with the official source last; elsewhere the official source. What was detected and what will be used is always printed, nothing is silent. A named source is used alone (after a failure only an interactive run is asked whether to try the others). Command and origin: the get.docker.com script (third-party) + --mirror Aliyun|AzureChinaCloud or DOWNLOAD_URL=<repository root>
+  --no-geo-lookup     do not contact ipinfo.io (env OA_INSTALL_GEO=off); only local signals decide whether this is mainland China
   --version <ver>     release version (default latest)
   --repo-url <URL>    release download base (PLACEHOLDER, env OA_REPO_URL); not needed from a checkout
   --registry <host[/ns]>  use another image registry (OA_IMAGE_REGISTRY). The production registry (Alibaba Cloud ACR, namespace koch2333) is built in as the default, so this is normally not needed: images come from <registry>/oa-agent-api|worker:<tag>, the installer bundle from <registry>/oa-agent-deploy:<tag>; nothing is built locally
@@ -254,7 +263,7 @@ Usage: install.sh [options]
   --pg-dir <path>       PostgreSQL data directory
   --extra-mount name=/host/path[:ro|:rw]   extra local storage mounted at /mnt/storage/<name> (repeatable)
   --yes, -y           non-interactive: use defaults / flags for everything
-  --install-docker    allow installing Docker when missing (required explicitly with --yes)
+  --install-docker    allow installing Docker when missing (required explicitly with --yes). The installation prints a progress line every 15 s (OA_HEARTBEAT: elapsed time, the active package-manager process, whether the apt download directory / dpkg log move); after OA_DOCKER_TIMEOUT seconds (default 1200) only the process group this script started is stopped and diagnostics are printed; another apt/dpkg/unattended-upgrades holding the lock is waited for first (OA_LOCK_WAIT seconds, default 300); a container/WSL without systemd is warned about first
   --systemd           install a start-on-boot systemd unit (asked by default; not installed with --yes)
   --open-firewall     open the port when ufw/firewalld is detected (asked by default; untouched with --yes)
   --skip-verify       do not insist on a checksum for downloaded releases (not recommended)
@@ -275,7 +284,7 @@ Usage: install.sh [options]
   --upgrade           upgrade an existing install (refresh source and scripts, back up, rebuild, restart)
   --uninstall         remove containers (data kept); with --purge also delete the data
   --purge             combine with --uninstall
-  --lang zh|en        UI language (default from $LANG)
+  --lang zh|en        UI language. When not given: an interactive run asks once first (default from the locale: LC_ALL/LANGUAGE/LANG, /etc/default/locale, /etc/locale.conf), an unattended run follows the locale and prints one line; the choice is stored in the .env of a new install (OA_LANG)
   -h, --help          this help
 
 How it works: it first DETECTS what this server already has (Docker/Compose, prerequisite tools, existing installations, old data, port owners, existing database servers, firewall/SELinux/time sync ...) and prints a component table, then skips whatever is satisfied and adds only what is missing; a fresh install uses a WIZARD that asks one question at a time (defaults come from the detection) and ends with a review screen where every setting can be edited; an existing database is checked before anything is installed and creating its tables needs a separate confirmation. Re-running it on a healthy installation of the same version only shows the status (fast, read-mostly).
@@ -298,6 +307,7 @@ on_err() {
 }
 on_int() {
     trap - INT TERM ERR
+    if [ -n "${DOCKER_CHILD:-}" ]; then printf '\n%s\n' "$(m "Docker 安装进程（pid $DOCKER_CHILD）仍在后台继续，请用 ps 查看；它结束前不要重跑本脚本。" "The Docker installation process (pid $DOCKER_CHILD) keeps running in the background, check it with ps; do not re-run this script until it has finished.")" >&2; fi
     printf '\n%s[FAIL]%s %s\n' "$C_R" "$C_0" "$(m "已中断。可安全地重新运行本脚本（密钥不会被改变；Docker 的镜像下载会续传已完成的层）。" "Interrupted. It is safe to re-run this script (secrets are never changed; Docker resumes the layers it already pulled).")" >&2
     exit 130
 }
@@ -323,13 +333,15 @@ parse_args() {
             --port) need_val "$@"; PORT="$2"; PORT_SET=1; shift 2 ;;
             --domain) need_val "$@"; DOMAIN="$2"; shift 2 ;;
             --email) need_val "$@"; EMAIL="$2"; shift 2 ;;
-            --mirror) need_val "$@"; MIRROR="$2"; shift 2 ;;
+            --mirror) need_val "$@"; case "$2" in cn | default) ;; *) die_usage "--mirror 只能是 cn 或 default（要指定 Docker 安装源请用 --docker-source）: $2" "--mirror must be cn or default (use --docker-source to pick the Docker installation source): $2" ;; esac; MIRROR="$2"; shift 2 ;;
             --version | --image-tag) need_val "$@"; VERSION="$2"; VERSION_SET=1; shift 2 ;;
             --repo-url) need_val "$@"; REPO_URL="$2"; shift 2 ;;
             --registry) need_val "$@"; REGISTRY="$2"; REGISTRY_SET=1; shift 2 ;;
             --build-from-source | --source) BUILD_FLAG=1; shift ;;
             --project) need_val "$@"; PROJECT="$2"; PROJECT_SET=1; shift 2 ;;
-            --lang) need_val "$@"; case "$2" in zh*) UI=zh ;; *) UI=en ;; esac; shift 2 ;;
+            --lang) need_val "$@"; case "$2" in zh* | ZH* | cn | 中文) UI=zh ;; en* | EN*) UI=en ;; *) die_usage "--lang 只能是 zh 或 en: $2" "--lang must be zh or en: $2" ;; esac; LANG_SET=1; shift 2 ;;
+            --no-geo-lookup) GEO=off; shift ;;
+            --docker-source) need_val "$@"; valid_docker_source "$2" || die_usage "--docker-source 只能是 official、aliyun、azure、tencent、tuna、ustc、auto 或 https:// 地址: $2" "--docker-source must be official, aliyun, azure, tencent, tuna, ustc, auto or an https:// URL: $2"; DOCKER_SOURCE="${2%/}"; shift 2 ;;
             --archive-dir) need_val "$@"; ARCHIVE_DIR="$2"; shift 2 ;;
             --spool-dir) need_val "$@"; SPOOL_DIR="$2"; shift 2 ;;
             --data-dir) need_val "$@"; APP_DIR="$2"; shift 2 ;;
@@ -765,23 +777,6 @@ net_retry() {
     return "$rc"
 }
 
-# docker_official_script: Docker Inc.'s get.docker.com script (third-party, informed); with --mirror cn the Aliyun mirror is
-# tried first, then AzureChinaCloud. Returns 1 when every attempt failed (the caller falls back to distro packages).
-docker_official_script() {
-    TMP="${TMP:-$(mktemp -d)}"
-    have_cmd curl || install_pkg curl || return 1
-    local mirrors=('') mir
-    [ "$MIRROR" != cn ] || mirrors=(Aliyun AzureChinaCloud)
-    if ! net_retry "get.docker.com" curl -fsSL --connect-timeout 10 --max-time 120 https://get.docker.com -o "$TMP/get-docker.sh"; then
-        warn "下载 get.docker.com 脚本失败。" "Failed to download the get.docker.com script."
-        return 1
-    fi
-    for mir in "${mirrors[@]}"; do
-        if sh "$TMP/get-docker.sh" ${mir:+--mirror "$mir"} 2>&1 | tee -a "$LOG_FILE" && have_docker; then return 0; fi
-        warn "get.docker.com 脚本${mir:+（镜像 $mir）}执行失败${mir:+，尝试下一个}。" "The get.docker.com script${mir:+ (mirror $mir)} failed${mir:+; trying the next one}."
-    done
-    return 1
-}
 
 # docker_pkg_install: distribution packages (best effort: package names differ, and some distributions ship no Compose v2)
 docker_pkg_install() {
@@ -800,14 +795,18 @@ docker_pkg_install() {
 install_docker() {
     local fam
     fam="$(os_family)"
-    say "需要安装 Docker Engine + Compose v2。顺序：Docker 官方安装脚本（get.docker.com${MIRROR:+，镜像 $MIRROR}，可重试/换镜像）→ 失败则用发行版软件包（apt/dnf/yum/zypper/apk）。" \
-        "Docker Engine + Compose v2 must be installed. Order: Docker's official script (get.docker.com${MIRROR:+, mirror $MIRROR}, with retries/mirror fallback) -> on failure the distribution packages (apt/dnf/yum/zypper/apk)."
+    docker_sources_order
+    say "需要安装 Docker Engine + Compose v2。安装源（按顺序尝试）：${SRC_ORDER}${DOCKER_SOURCE:+（--docker-source $DOCKER_SOURCE）}；任何一个源失败后$([ "$SRC_AUTO" = 1 ] && echo '自动试下一个，' || echo '询问是否试其他源，')全部失败则用发行版软件包（apt/dnf/yum/zypper/apk）。" \
+        "Docker Engine + Compose v2 must be installed. Installation source(s), tried in this order: ${SRC_ORDER}${DOCKER_SOURCE:+ (--docker-source $DOCKER_SOURCE)}; after a failed source $([ "$SRC_AUTO" = 1 ] && echo 'the next one is tried automatically,' || echo 'you are asked whether to try the other sources,') and when all fail the distribution packages (apt/dnf/yum/zypper/apk) are used."
     [ "$fam" != unknown ] || die "无法识别的发行版（$OS_ID）。请参考 https://docs.docker.com/engine/install/ 手动安装后重试。" "Unrecognised distribution ($OS_ID). Install Docker manually (https://docs.docker.com/engine/install/) and retry."
     if [ "$INSTALL_DOCKER" != 1 ]; then
         [ "$ASSUME_YES" != 1 ] || die "未检测到 Docker。--yes 模式下需显式加 --install-docker 才会自动安装；或先自行安装 Docker 与 compose 插件。" "Docker not found. In --yes mode pass --install-docker explicitly to allow installation, or install Docker and the compose plugin yourself."
-        say "将执行（需要联网，需 root）：第三方脚本 https://get.docker.com（Docker Inc. 官方），失败时回退到发行版软件包。" "About to run (needs network and root): the third-party script https://get.docker.com (Docker Inc.'s official one), falling back to distribution packages."
+        local first_src="${SRC_ORDER%% *}"
+        say "将执行（需要联网，需 root）：$(docker_source_cmd "$first_src")；脚本取自 https://get.docker.com（Docker Inc. 官方，第三方脚本），软件包仓库 $(docker_source_base "$first_src")；失败时按上面的顺序/发行版软件包回退。" "About to run (needs network and root): $(docker_source_cmd "$first_src"); the script comes from https://get.docker.com (Docker Inc.'s official, third-party script), package repository $(docker_source_base "$first_src"); on failure the order above / distribution packages follow."
         confirm "是否继续安装 Docker？" "Install Docker now?" n || die_cancel "已取消：未安装 Docker。" "Cancelled: Docker not installed."
     fi
+    warn_docker_env
+    wait_pkg_lock
     step "安装 Docker" "Installing Docker"
     local done_=0
     case "$fam" in
@@ -846,6 +845,7 @@ install_compose_only() {
         [ "$ASSUME_YES" != 1 ] || die "已有 Docker，但缺少 Compose v2 插件。--yes 模式下需显式加 --install-docker 才会安装插件（只装插件，不重装 Docker）；也可自行安装 docker-compose-plugin。" "Docker is present but the Compose v2 plugin is missing. In --yes mode pass --install-docker to allow installing the plugin (the plugin only, Docker is not reinstalled), or install docker-compose-plugin yourself."
         confirm "已有 Docker，缺少 Compose v2 插件。只安装该插件（不重装 Docker）？" "Docker is present but the Compose v2 plugin is missing. Install the plugin only (Docker is not reinstalled)?" y || die_cancel "已取消：缺少 Compose v2 插件。" "Cancelled: the Compose v2 plugin is missing."
     fi
+    wait_pkg_lock
     step "安装 Compose v2 插件（只装插件）" "Installing the Compose v2 plugin (plugin only)"
     install_compose_plugin 8>&- || die "Compose v2 插件安装失败：请手动安装 docker-compose-plugin（https://docs.docker.com/compose/install/linux/），Docker 本身未被改动。" "Installing the Compose v2 plugin failed: install docker-compose-plugin manually (https://docs.docker.com/compose/install/linux/); Docker itself was not touched."
     ok "Compose v2 插件已安装（Docker 未重装）" "Compose v2 plugin installed (Docker was not reinstalled)"
@@ -858,6 +858,7 @@ ensure_docker() {
         warn "未检测到 Docker。" "Docker is not installed."
         install_docker
         act_done "已安装 Docker Engine 与 Compose v2" "Installed Docker Engine and Compose v2"
+        DOCKER_FRESH=1
         DK_EVAL=0
     fi
     if ! docker info >/dev/null 2>&1; then
@@ -927,10 +928,33 @@ PY
 # parsed and merged (never replaced), backed up first, validated, and an invalid existing file is never touched. Restarting
 # Docker is a separate question. With --yes / no terminal nothing is changed and the manual steps are printed.
 configure_docker_mirror() {
+    # AUTOMATIC (only when THIS run installed Docker, so daemon.json is ours, and mainland China was detected): the built-in candidates
+    # are probed on /v2/ and only the ones that answer are used. A trivial daemon.json (absent / empty / {}) is written directly and Docker,
+    # which has no workload yet, is restarted; a daemon.json with content goes through the normal consent flow below.
+    if [ "${#DOCKER_MIRRORS[@]}" -eq 0 ] && [ "$DOCKER_FRESH" = 1 ] && [ "$DK_VERDICT" = cn ] && [ -z "$OFFLINE_FILE" ]; then
+        local cand=() cu tmpj
+        while IFS= read -r cu; do [ -z "$cu" ] || cand+=("$cu"); done < <(auto_registry_mirrors)
+        if [ "${#cand[@]}" -eq 0 ]; then
+            say "Docker 刚装好且检测到中国大陆，但内置的 Docker Hub 镜像都探测不通，不写 daemon.json。需要时手动：在 $DAEMON_JSON 加 \"registry-mirrors\": [\"<你的加速地址>\"] 后 systemctl restart docker，或用 --docker-mirror。" "Docker was just installed and mainland China was detected, but none of the built-in Docker Hub mirrors answered, so daemon.json is not written. By hand when needed: add \"registry-mirrors\": [\"<your mirror>\"] to $DAEMON_JSON and run systemctl restart docker, or use --docker-mirror."
+        elif [ ! -s "$DAEMON_JSON" ] || [ "$(tr -d ' \t\r\n' <"$DAEMON_JSON")" = '{}' ]; then
+            say "Docker 刚由本脚本安装且检测到中国大陆：以下 Docker Hub 镜像探测可用，自动写入 $DAEMON_JSON 并重启 Docker（尚无其他容器）：${cand[*]}" "Docker was just installed by this script and mainland China was detected: these Docker Hub mirrors answered and are written to $DAEMON_JSON automatically, then Docker is restarted (no other workload yet): ${cand[*]}"
+            mkdir -p "$(dirname -- "$DAEMON_JSON")"
+            tmpj="$(mktemp "$(dirname -- "$DAEMON_JSON")/.daemon.json.XXXXXX")"
+            json_merge_mirrors "$DAEMON_JSON" "$tmpj" "${cand[@]}" || { rm -f -- "$tmpj"; warn "写 daemon.json 失败，已跳过。" "Writing daemon.json failed; skipped."; return 0; }
+            chmod 644 "$tmpj"; mv -f "$tmpj" "$DAEMON_JSON"
+            if have_cmd systemctl; then systemctl restart docker >/dev/null 2>&1 || warn "重启 Docker 失败，请手动重启。" "Restarting Docker failed; restart it manually."; else service docker restart 8>&- >/dev/null 2>&1 || warn "重启 Docker 失败，请手动重启。" "Restarting Docker failed; restart it manually."; fi
+            docker info >/dev/null 2>&1 || die "Docker 重启后未恢复；删除 $DAEMON_JSON 后 systemctl restart docker" "Docker did not come back after the restart; remove $DAEMON_JSON and run systemctl restart docker"
+            act_chg "已把探测可用的 Docker Hub 镜像写入 $DAEMON_JSON：${cand[*]}" "Wrote the Docker Hub mirrors that answered to $DAEMON_JSON: ${cand[*]}"
+            ok "Docker Hub 镜像加速已配置" "Docker Hub registry mirror configured"
+            return 0
+        else
+            DOCKER_MIRRORS=("${cand[@]}")   # daemon.json already has content: ask first (below)
+        fi
+    fi
     if [ "${#DOCKER_MIRRORS[@]}" -eq 0 ]; then
         if [ "$MIRROR" = cn ] && [ -z "$OFFLINE_FILE" ]; then
             pf_info "提示：Docker Hub 基础镜像（postgres/caddy）在大陆可能很慢；可加 --docker-mirror <加速地址> 写入 daemon.json（会先询问）。生产镜像来自 ACR，不受影响。" \
-                "Tip: Docker Hub base images (postgres/caddy) can be slow in mainland China; add --docker-mirror <mirror URL> to put one into daemon.json (asked first). The production images come from ACR and are not affected."
+                "Tip: Docker Hub base images (postgres/caddy) can be slow in mainland China; add --docker-mirror <mirror URL> (or answer the registry-mirror question of the wizard) to put one into daemon.json (asked first). The production images come from ACR and are not affected."
         fi
         return 0
     fi
@@ -1036,6 +1060,8 @@ registry_help() { # printed after a failed pull/login: what to check
         "  Check: 1) the address and tag (sha-<7-char commit>, latest, a version); 2) that the three repositories oa-agent-api / oa-agent-worker / oa-agent-deploy exist and carry this tag (an ACR namespace needs the repositories created, or \"auto-create repository\" enabled);"
     say "  3) 私有仓库：先 docker login，或设置 OA_REGISTRY_USER / OA_REGISTRY_PASSWORD 后重试；4) 网络：阿里云 ECS 同地域内网请改用 VPC 域名（把 crpi-xxx 换成 crpi-xxx-vpc）。" \
         "  3) private repository: docker login first, or set OA_REGISTRY_USER / OA_REGISTRY_PASSWORD and retry; 4) network: on an Aliyun ECS in the same region use the VPC endpoint (crpi-xxx -> crpi-xxx-vpc)."
+    say "  6) 生产镜像（api/worker）来自上面的仓库，只有 postgres/caddy 基础镜像默认来自 Docker Hub，拉取失败时脚本会自动改用仓库里的副本（oa-agent-postgres / oa-agent-caddy）；仍不行可加 --docker-mirror <加速地址>（写入 daemon.json，先询问），或在 .env 里把 OA_PG_IMAGE / OA_CADDY_IMAGE 改成可访问的地址。" \
+        "  6) The production images (api/worker) come from the registry above; the postgres/caddy base images come from Docker Hub by default and the installer automatically falls back to the registry copies (oa-agent-postgres / oa-agent-caddy) when the pull fails; if that fails too, when Docker Hub is slow or unreachable add --docker-mirror <mirror URL> (written to daemon.json, asked first) or point OA_PG_IMAGE / OA_CADDY_IMAGE in .env at a reachable address."
     say "  5) 主机不能访问仓库：在联网机器上运行 scripts/save-images.sh 生成镜像包，再用 install.sh --offline <文件.tar> 安装。" \
         "  5) host without registry access: run scripts/save-images.sh on a connected machine, then install with install.sh --offline <file.tar>."
 }
@@ -1094,6 +1120,37 @@ pull_stack_images() {
         [ -n "$img" ] || continue
         docker pull "$img" >/dev/null 2>&1 || failed+=("$img")
     done < <(stack_images)
+    # Docker Hub is often unreachable from mainland China: the registry carries copies of the base images
+    # (<registry>/oa-agent-postgres|caddy, mirrored by images.yml); switch .env to them and retry once.
+    if [ "${#failed[@]}" -gt 0 ] && [ -n "${REGISTRY:-}" ]; then
+        local still=() var alt probed=""
+        for img in "${failed[@]}"; do
+            case "$img" in "$REGISTRY"/*) still+=("$img"); continue ;; esac
+            case "${img##*/}" in postgres:*) var=OA_PG_IMAGE ;; caddy:*) var=OA_CADDY_IMAGE ;; *) still+=("$img"); continue ;; esac
+            alt="$REGISTRY/oa-agent-${img##*/}"
+            say "Docker Hub 不可达，改用仓库里的镜像副本: $alt" "Docker Hub is unreachable; using the registry copy instead: $alt"
+            if docker pull "$alt" >/dev/null 2>&1; then env_set "$var" "$alt"; continue; fi
+            # second fallback: Docker Hub accelerators (Tencent first); pulled under the mirror name, then tagged as the
+            # original reference so compose finds it locally and .env stays unchanged
+            local mh u got=''
+            [ -n "${probed:-}" ] || probed="$(for u in ${DOCKER_MIRRORS[@]+"${DOCKER_MIRRORS[@]}"}; do printf "%s\n" "$u"; done; auto_registry_mirrors)"
+            say "探测到可访问的镜像加速地址: $(printf "%s " $probed)" "Reachable accelerators (probed on /v2/): $(printf "%s " $probed)"
+            for mh in $(printf "%s\n" "$probed" | sed "s#^https\?://##; s#/$##" | awk "NF && !s[\$0]++"); do
+                if docker pull "$mh/library/${img##*/}" >/dev/null 2>&1 && docker tag "$mh/library/${img##*/}" "$img" >/dev/null 2>&1; then
+                    say "已从加速地址拉取: $mh" "Pulled through the accelerator: $mh"; got=1; break
+                fi
+            done
+            [ -n "$got" ] || still+=("$img")
+        done
+        if [ "${#still[@]}" -eq 0 ]; then
+            # images pulled via an accelerator carry the original tag locally; do not re-pull them from Docker Hub
+            dcw pull --ignore-pull-failures >/dev/null 2>&1 || true
+            local miss=""; while IFS= read -r img; do [ -z "$img" ] || docker image inspect "$img" >/dev/null 2>&1 || miss=1; done < <(stack_images)
+            [ -n "$miss" ] || return 0
+        else
+            failed=("${still[@]}")
+        fi
+    fi
     registry_help
     if [ "${#failed[@]}" -gt 0 ]; then
         die "镜像拉取失败，出错的镜像: ${failed[*]}（详见上方提示与 $LOG_FILE）" "Image pull failed; failing image(s): ${failed[*]} (see the hints above and $LOG_FILE)"
@@ -1404,20 +1461,20 @@ apply_pending_storage() {
     for kv in ${PENDING_CORE[@]+"${PENDING_CORE[@]}"}; do
         role="${kv%%=*}"; path="${kv#*=}"
         say "更改 $role 目录 → $path" "Changing the $role directory to $path"
-        "$bin" --dir "$DIR" --yes mounts set "$role" "$path" || die "oa-agentctl mounts set $role 失败（已有数据不会被移动或删除；需要迁移请用 oa-agentctl mounts set $role <路径> --copy）" "oa-agentctl mounts set $role failed (existing data is never moved or deleted; use oa-agentctl mounts set $role <path> --copy to copy it)"
+        env OA_LANG="$UI" "$bin" --dir "$DIR" --yes mounts set "$role" "$path" || die "oa-agentctl mounts set $role 失败（已有数据不会被移动或删除；需要迁移请用 oa-agentctl mounts set $role <路径> --copy）" "oa-agentctl mounts set $role failed (existing data is never moved or deleted; use oa-agentctl mounts set $role <path> --copy to copy it)"
     done
     for spec in ${PENDING_EXTRA[@]+"${PENDING_EXTRA[@]}"}; do
         name="${spec%%=*}"; rest="${spec#*=}"; mode=--ro
         case "$rest" in *:rw) mode=--rw; rest="${rest%:rw}" ;; *:ro) rest="${rest%:ro}" ;; esac
         say "添加/更新外部挂载 $name → $rest" "Adding/updating extra mount $name -> $rest"
-        "$bin" --dir "$DIR" --yes mounts add "$name" "$rest" "$mode" --replace || die "oa-agentctl mounts add $name 失败" "oa-agentctl mounts add $name failed"
+        env OA_LANG="$UI" "$bin" --dir "$DIR" --yes mounts add "$name" "$rest" "$mode" --replace || die "oa-agentctl mounts add $name 失败" "oa-agentctl mounts add $name failed"
     done
 }
 
 apply_mounts() { # generate docker-compose.mounts.yml via the Go binary (never in shell)
     local bin="$BIN_DIR/oa-agentctl"
     if [ "$CTL_BINARY" = 1 ] && [ -x "$bin" ]; then
-        "$bin" mounts apply --dir "$DIR" || die "oa-agentctl mounts apply 失败" "oa-agentctl mounts apply failed"
+        env OA_LANG="$UI" "$bin" mounts apply --dir "$DIR" || die "oa-agentctl mounts apply 失败" "oa-agentctl mounts apply failed"
         [ -f "$DIR/docker-compose.mounts.yml" ] || die "oa-agentctl 没有生成 docker-compose.mounts.yml" "oa-agentctl did not generate docker-compose.mounts.yml"
         ok "已生成 docker-compose.mounts.yml" "Generated docker-compose.mounts.yml"
     else
@@ -1488,6 +1545,7 @@ write_new_env() {
         printf 'OA_STORAGE=on\nOA_CORS_ORIGINS=\n'
         printf 'OA_LLM_BASE_URL=\nOA_LLM_MODEL=\nOA_LLM_API_KEY=\nOA_LLM_TIMEOUT_SECONDS=60\nOA_LOG_LEVEL=\n'
         printf 'OA_TZ=%s\n' "$TZ_NAME"
+        printf 'OA_LANG=%s\n' "$UI"      # the language chosen at install time: oa-agentctl.sh and the Go tool follow it (OA_LANG in the environment wins)
         printf 'OA_PG_MEM=1g\nOA_API_MEM=1g\nOA_WORKER_MEM=3g\nOA_CADDY_MEM=256m\nOA_LOG_MAX_SIZE=10m\nOA_LOG_MAX_FILE=5\n'
         if [ "$DB_MODE" = external ]; then
             # secrets stay in this 0600 file; the password is single-quoted (compose and oa-agentctl read it literally)
@@ -1666,6 +1724,367 @@ uninstall_flow() {
     fi
 }
 
+# ---------------------------------------------------------------------------------------------- language
+# locale_ui: zh or en from the locale (LC_ALL, LC_MESSAGES, LANGUAGE, LANG, then /etc/default/locale and /etc/locale.conf). A value of C /
+# POSIX / empty says nothing and the next source is consulted; zh_CN, zh_TW, zh-Hans, ZH ... (case-insensitive) mean Chinese.
+locale_ui() {
+    local v f files="/etc/default/locale /etc/locale.conf" line
+    [ "$TEST_MODE" != 1 ] || files="${OA_TEST_LOCALE_FILES-$files}"
+    for v in "${LC_ALL:-}" "${LC_MESSAGES:-}" "$(printf %s "${LANGUAGE:-}" | cut -d: -f1)" "${LANG:-}"; do
+        v="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+        case "$v" in '' | c | c.* | posix) continue ;; zh*) printf zh; return 0 ;; *) printf en; return 0 ;; esac
+    done
+    for f in $files; do
+        [ -r "$f" ] || continue
+        line="$(grep -E '^(LC_ALL|LC_MESSAGES|LANGUAGE|LANG)=' "$f" 2>/dev/null | head -n 1 || true)"
+        v="$(printf '%s' "${line#*=}" | tr -d '"'"'"' ' | cut -d: -f1 | tr '[:upper:]' '[:lower:]')"
+        case "$v" in '' | c | c.* | posix) continue ;; zh*) printf zh; return 0 ;; *) printf en; return 0 ;; esac
+    done
+    printf en
+}
+# init_lang: the default language before anything is printed; OA_LANG (also set by the parent installer / the control tool) wins
+init_lang() {
+    UI="$(locale_ui)"
+    case "${OA_LANG:-}" in zh* | ZH*) UI=zh; LANG_SET=1 ;; en* | EN*) UI=en; LANG_SET=1 ;; esac
+}
+# ask_language [force]: the very first question of an interactive run when the language was not given explicitly (read from the
+# terminal, so it also works when the script is piped into bash). Unattended runs ask nothing and say which language is used.
+ask_language() {
+    local c='' def=2 tries=0
+    [ "$UI" = zh ] && def=1
+    if [ "${1:-}" != force ] && [ "$LANG_SET" = 1 ]; then return 0; fi
+    if [ "$ASSUME_YES" = 1 ] || ! have_tty; then
+        LANG_SET=1
+        say "界面语言：中文（来自系统区域设置；用 --lang zh|en 更改）。" "Language: English (from the system locale; change it with --lang zh|en)."
+        return 0
+    fi
+    printf '\n请选择语言 / Select language:\n  1) 中文\n  2) English\n' >&2
+    while :; do
+        printf '[%s]: ' "$def" >&2
+        IFS= read -r c <&9 || c=''
+        case "$c" in
+            '') c="$def" ;;
+        esac
+        case "$c" in
+            1 | zh | ZH | cn | 中文) UI=zh; break ;;
+            2 | en | EN | english | English) UI=en; break ;;
+        esac
+        tries=$((tries + 1))
+        if [ "$tries" -ge 5 ]; then [ "$def" = 1 ] && UI=zh || UI=en; break; fi
+        printf '%s[!]%s 请输入 1 或 2 / enter 1 or 2\n' "$C_R" "$C_0" >&2
+    done
+    LANG_SET=1
+}
+q_lang() { ask_language force; }
+
+# ---------------------------------------------------------------------------------------------- Docker installation source
+# get.docker.com (verified against the script text): --mirror takes ONLY "Aliyun" (https://mirrors.aliyun.com/docker-ce) or
+# "AzureChinaCloud" (https://mirror.azure.cn/docker-ce); the environment variable DOWNLOAD_URL (default https://download.docker.com)
+# replaces the package repository base ("$DOWNLOAD_URL/linux/<distribution>/..." and the GPG key), which is how the other mirrors work.
+valid_docker_source() {
+    case "$1" in official | aliyun | azure | tencent | tuna | ustc | auto) return 0 ;; esac
+    [[ "$1" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?/?$ ]]
+}
+docker_source_base() {
+    case "$1" in
+        official) echo https://download.docker.com ;;
+        aliyun) echo https://mirrors.aliyun.com/docker-ce ;;
+        azure) echo https://mirror.azure.cn/docker-ce ;;
+        tencent) echo https://mirrors.cloud.tencent.com/docker-ce ;;
+        tuna) echo https://mirrors.tuna.tsinghua.edu.cn/docker-ce ;;
+        ustc) echo https://mirrors.ustc.edu.cn/docker-ce ;;
+        https://*) echo "${1%/}" ;;
+    esac
+}
+# docker_source_cmd TOKEN: the exact command line (what will be run)
+docker_source_cmd() {
+    case "$1" in
+        official) echo 'sh get-docker.sh' ;;
+        aliyun) echo 'sh get-docker.sh --mirror Aliyun' ;;
+        azure) echo 'sh get-docker.sh --mirror AzureChinaCloud' ;;
+        *) echo "DOWNLOAD_URL=$(docker_source_base "$1") sh get-docker.sh" ;;
+    esac
+}
+# docker_source_name TOKEN: a readable name
+docker_source_name() {
+    case "$1" in
+        official) m "官方 download.docker.com" "official download.docker.com" ;; aliyun) m "阿里云" "Alibaba Cloud" ;; azure) m "Azure 中国" "Azure China" ;;
+        tencent) m "腾讯云" "Tencent Cloud" ;; tuna) m "清华 TUNA" "Tsinghua TUNA" ;; ustc) m "中科大 USTC" "USTC" ;; auto) m "自动" "automatic" ;; *) printf '%s' "$1" ;;
+    esac
+}
+# ---- automatic selection (the same idea as 1Panel: a country lookup decides, then the mirrors are measured and the usable ones are tried
+# in order of speed; official last). Local signals keep it working when the lookup is blocked. Nothing is hidden: one line says what
+# was detected and what will be used. --no-geo-lookup / OA_INSTALL_GEO=off skips the third-party lookup (ipinfo.io), local signals only.
+GEO=on; GEO_COUNTRY=''; DK_VERDICT=''; DK_AUTO_ORDER=''; DK_WHY_ZH=''; DK_WHY_EN=''; DK_RESOLVED=0; DOCKER_FRESH=0
+geo_lookup() {
+    [ "$GEO" = on ] || return 0
+    have_cmd curl || return 0
+    local c
+    c="$(curl -fsS -m 3 --connect-timeout 2 https://ipinfo.io/country 2>/dev/null | tr -d '[:space:]' | head -c 2 || true)"
+    if [[ "$c" =~ ^[A-Za-z]{2}$ ]]; then printf '%s' "$(printf '%s' "$c" | tr '[:lower:]' '[:upper:]')"; fi
+    return 0
+}
+# probe_url URL: "HTTP-code seconds" when ANY HTTP answer came back within 3 seconds, nothing otherwise
+probe_url() {
+    local out code t
+    out="$(curl -sS -o /dev/null -m 3 --connect-timeout 2 -w '%{http_code} %{time_total}' "$1" 2>/dev/null || true)"
+    code="${out%% *}"; t="${out#* }"
+    if [[ "$code" =~ ^[1-4][0-9][0-9]$ ]]; then printf '%s %s' "$code" "${t:-9}"; fi
+    return 0
+}
+resolve_docker_source() {
+    [ "$DK_RESOLVED" = 0 ] || return 0
+    DK_RESOLVED=1; DK_AUTO_ORDER=''; DK_VERDICT=''
+    case "${DOCKER_SOURCE:-}" in
+        '' | auto) ;;
+        *) DK_WHY_ZH="按你的指定使用 $(docker_source_name "$DOCKER_SOURCE")"; DK_WHY_EN="as you specified: $(docker_source_name "$DOCKER_SOURCE")"; return 0 ;;
+    esac
+    local tz ecs why_zh why_en sig_zh='' sig_en='' official=''
+    tz="$(detect_tz)"; [ "$TEST_MODE" != 1 ] || tz="${OA_TEST_TZ:-$tz}"
+    if [ "$MIRROR" = cn ]; then
+        DK_VERDICT=cn; sig_zh="--mirror cn"; sig_en="--mirror cn"
+    else
+        GEO_COUNTRY="$(geo_lookup)"
+        if [ "$GEO_COUNTRY" = CN ]; then DK_VERDICT=cn; sig_zh="ipinfo.io 返回国家 CN"; sig_en="ipinfo.io says country CN"
+        elif [ -n "$GEO_COUNTRY" ]; then DK_VERDICT=other; sig_zh="ipinfo.io 返回国家 $GEO_COUNTRY"; sig_en="ipinfo.io says country $GEO_COUNTRY"
+        else
+            # unknown (blocked, offline, or disabled): local signals
+            ecs="$(aliyun_ecs_region 2>/dev/null || true)"
+            case "$ecs" in cn-*) DK_VERDICT=cn; sig_zh="阿里云 ECS 地域 $ecs"; sig_en="Alibaba Cloud ECS region $ecs" ;; esac
+            if [ -z "$DK_VERDICT" ]; then case "$tz" in Asia/Shanghai | Asia/Chongqing | Asia/Harbin | Asia/Urumqi | PRC) DK_VERDICT=cn; sig_zh="时区 $tz"; sig_en="time zone $tz" ;; esac; fi
+            if [ -z "$DK_VERDICT" ] && have_cmd curl; then
+                official="$(probe_url https://download.docker.com/linux/)"
+                if [ -z "$official" ]; then DK_VERDICT=cn; sig_zh="download.docker.com 3 秒内不可达"; sig_en="download.docker.com is unreachable within 3 seconds"; fi
+            fi
+            [ -n "$DK_VERDICT" ] || { DK_VERDICT=other; sig_zh="国家未知（${GEO:+查询失败或被屏蔽}），本地信号无中国大陆迹象"; sig_en="country unknown (lookup failed, blocked or disabled), no local sign of mainland China"; }
+            [ "$GEO" = on ] || { sig_zh="$sig_zh（已按 --no-geo-lookup 关闭 ipinfo.io 查询）"; sig_en="$sig_en (the ipinfo.io lookup is off: --no-geo-lookup)"; }
+        fi
+    fi
+    if [ "$DK_VERDICT" = cn ]; then
+        local tok r list=''
+        if have_cmd curl; then
+            for tok in aliyun azure tencent tuna ustc; do
+                r="$(probe_url "$(docker_source_base "$tok")/linux/")"
+                if [ -n "$r" ]; then list="$list${r#* } $tok"$'\n'; fi
+            done
+            DK_AUTO_ORDER="$(printf '%s' "$list" | sort -s -n -k1,1 | awk '{print $2}' | tr '\n' ' ')official"
+        else DK_AUTO_ORDER="aliyun azure tuna ustc official"; fi
+        why_zh="自动：检测到中国大陆（$sig_zh）→ 按速度依次尝试可达的镜像：${DK_AUTO_ORDER}"
+        why_en="automatic: mainland China detected ($sig_en) -> reachable mirrors tried by speed: ${DK_AUTO_ORDER}"
+        [ "${DK_AUTO_ORDER%% *}" != official ] || { why_zh="自动：检测到中国大陆（$sig_zh），但没有可达的镜像 → 使用官方源"; why_en="automatic: mainland China detected ($sig_en) but no mirror answered -> official source"; }
+    else
+        DK_AUTO_ORDER=official
+        why_zh="自动：${sig_zh} → 官方源 download.docker.com"; why_en="automatic: ${sig_en} -> official source download.docker.com"
+    fi
+    DK_WHY_ZH="$why_zh"; DK_WHY_EN="$why_en"
+}
+announce_docker_source() {
+    resolve_docker_source
+    say "Docker 安装源：$DK_WHY_ZH（可用 --docker-source 或复核页第 8 项更改）" "Docker installation source: $DK_WHY_EN (change it with --docker-source or setting 8 of the review screen)"
+}
+# docker_sources_order: sets SRC_ORDER (tried in this order) and SRC_AUTO (1 = fall through to the next without asking)
+docker_sources_order() {
+    SRC_AUTO=0
+    case "${DOCKER_SOURCE:-}" in
+        '' | auto) resolve_docker_source; SRC_ORDER="${DK_AUTO_ORDER:-official}"; SRC_AUTO=1 ;;
+        *) SRC_ORDER="$DOCKER_SOURCE" ;;
+    esac
+}
+# auto_registry_mirrors: the built-in candidates that really answer on /v2/ right now (200 or 401); never a mirror that was not probed
+auto_registry_mirrors() {
+    local u c
+    have_cmd curl || return 0
+    for u in https://docker.1ms.run https://docker.m.daocloud.io https://docker.1panel.live https://mirror.ccs.tencentyun.com; do
+        c="$(curl -sS -o /dev/null -m 4 --connect-timeout 3 -w '%{http_code}' "$u/v2/" 2>/dev/null || true)"
+        case "$c" in 200 | 401) printf '%s\n' "$u" ;; esac
+    done
+}
+chk_https_url() { valid_docker_source "$1" && [ "$1" != auto ] && [[ "$1" == https://* ]] || { m "需要 https:// 开头的地址（该地址下应有 linux/<发行版>/gpg 与仓库文件，与 download.docker.com 同样的目录结构）" "an https:// URL is required (it must serve linux/<distribution>/gpg and the repository files in the same layout as download.docker.com)"; return 1; }; }
+chk_choice_1_8() { case "$1" in 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;; *) m "请输入 1-8" "enter 1-8"; return 1 ;; esac; }
+# ---------------------------------------------------------------------------------------------- visible progress for the Docker installation
+# get.docker.com installs silently (apt-get -qq ... >/dev/null) for minutes; run_docker_cmd therefore runs it in its own session, streams
+# what it prints, and every OA_HEARTBEAT seconds (default 15) says how long it has been running, which package-manager process is active
+# and whether the download directory / dpkg log are moving, so "slow" and "hung" can be told apart. After OA_DOCKER_TIMEOUT seconds
+# (default 1200) ONLY that child's process group is stopped and diagnostics are shown.
+APT_PARTIAL='/var/cache/apt/archives/partial'; DPKG_LOG='/var/log/dpkg.log'; APT_TERM_LOG='/var/log/apt/term.log'
+if [ "$TEST_MODE" = 1 ]; then APT_PARTIAL="${OA_APT_PARTIAL:-$APT_PARTIAL}"; DPKG_LOG="${OA_DPKG_LOG:-$DPKG_LOG}"; APT_TERM_LOG="${OA_APT_TERM_LOG:-$APT_TERM_LOG}"; fi
+DOCKER_CHILD=''
+# pkg_procs: running package-manager processes ("pid etime command ..."), one per line
+pkg_procs() {
+    ps -eo pid,etime,args 2>/dev/null | awk 'NR > 0 { n = split($3, a, "/"); b = a[n]
+        if (b ~ /^(apt|apt-get|aptitude|dpkg|unattended-upgr|unattended-upgrade|unattended-upgrades|packagekitd|dnf|yum|rpm|zypper|apk)$/ || $0 ~ /get-docker\.sh/) print }' || true
+}
+# pkg_lock_holders: processes that hold the package-manager lock (the same list, minus our own get-docker run)
+pkg_lock_holders() {
+    local files="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/run/yum.pid /var/lib/rpm/.rpm.lock"
+    pkg_procs | grep -v 'get-docker\.sh' || true
+    if [ "$TEST_MODE" != 1 ] && have_cmd fuser; then
+        # shellcheck disable=SC2086
+        fuser -v $files 2>&1 | grep -E '[0-9]+' | sed 's/^/lock: /' || true
+    fi
+}
+# wait_pkg_lock: another apt/dpkg/unattended-upgrades run would make the installation block silently
+wait_pkg_lock() {
+    local limit="${OA_LOCK_WAIT:-300}" start now h ans=''
+    h="$(pkg_lock_holders)"
+    [ -n "$h" ] || return 0
+    warn "检测到另一个包管理器进程正在运行（apt/dpkg/unattended-upgrades 等），它持有安装锁：" "Another package-manager process is running (apt/dpkg/unattended-upgrades ...) and holds the installation lock:"
+    printf '%s\n' "$h" | head -n 5 | sed 's/^/    /' >&2
+    if [ "$ASSUME_YES" != 1 ] && have_tty; then
+        printf '%s ' "$(m '[w]等它结束（最长 '"$limit"' 秒，默认）/ [c]不管锁直接继续 / [a]中止:' '[w]ait for it to finish (up to '"$limit"' s, default) / [c]ontinue regardless / [a]bort:')" >&2
+        IFS= read -r ans <&9 || ans=''
+        case "$ans" in c | C) return 0 ;; a | A) die_cancel "已中止：包管理器被占用。" "Aborted: the package manager is busy." ;; esac
+    fi
+    start="$(date +%s)"
+    while [ -n "$(pkg_lock_holders)" ]; do
+        now="$(date +%s)"
+        if [ $((now - start)) -ge "$limit" ]; then
+            die "等了 ${limit} 秒，包管理器仍被占用：先让上面的进程结束（或 systemctl stop unattended-upgrades），再重新运行本脚本；也可用 OA_LOCK_WAIT=<秒> 延长等待。" "Waited ${limit} s and the package manager is still busy: let the process above finish (or systemctl stop unattended-upgrades) and re-run this script; OA_LOCK_WAIT=<seconds> waits longer."
+        fi
+        say "  仍在等待包管理器空闲（已等 $((now - start)) 秒）：$(pkg_lock_holders | head -n 1 | cut -c1-100)" "  still waiting for the package manager to become idle ($((now - start)) s so far): $(pkg_lock_holders | head -n 1 | cut -c1-100)"
+        sleep "${OA_HEARTBEAT:-15}"
+    done
+}
+# env_kind: container | wsl | none (where docker-ce's postinst may not be able to start the service)
+env_kind() {
+    [ "$TEST_MODE" != 1 ] || [ -z "${OA_TEST_ENVKIND:-}" ] || { printf '%s' "$OA_TEST_ENVKIND"; return 0; }
+    if grep -qi microsoft /proc/version 2>/dev/null; then printf wsl
+    elif [ -e /.dockerenv ] || [ -e /run/.containerenv ] || { have_cmd systemd-detect-virt && systemd-detect-virt -cq 2>/dev/null; }; then printf container
+    else printf none; fi
+}
+# warn_docker_env: BEFORE installing Docker: without systemd (container / WSL without systemd) the docker-ce post-install script can hang or fail
+warn_docker_env() {
+    local k; k="$(env_kind)"
+    [ "$k" != none ] || return 0
+    [ "$SYSTEMD_OK" != 1 ] || return 0
+    case "$k" in
+        wsl) warn "检测到 WSL 且没有 systemd：docker-ce 的安装后脚本启动服务时可能卡住或失败。正确做法：在 /etc/wsl.conf 写 [boot] systemd=true 后 wsl --shutdown 重开，或使用 Docker Desktop 的 WSL 集成（宿主 Windows 上的 Docker）。" "WSL without systemd detected: the docker-ce post-install script may hang or fail when it starts the service. Do this instead: put [boot] systemd=true into /etc/wsl.conf and run wsl --shutdown, or use Docker Desktop's WSL integration (Docker on the Windows host)." ;;
+        *) warn "检测到容器环境且没有 systemd：在容器里装 docker-ce，安装后脚本启动服务时可能卡住或失败。正确做法：不要在容器里装 Docker，改为挂载宿主机的 /var/run/docker.sock 使用宿主 Docker，或在宿主机上运行本安装器。" "A container without systemd was detected: installing docker-ce inside a container, its post-install script may hang or fail when it starts the service. Do this instead: do not install Docker inside the container, use the host's Docker through its /var/run/docker.sock, or run this installer on the host." ;;
+    esac
+    if [ "$ASSUME_YES" != 1 ] && have_tty; then
+        confirm "仍要在这里安装 Docker？" "Install Docker here anyway?" n || die_cancel "已取消：未安装 Docker。" "Cancelled: Docker not installed."
+    fi
+}
+# dir_kb DIR: size in KB (0 when absent)
+dir_kb() { du -sk "$1" 2>/dev/null | awk '{print $1}' | head -n 1 | grep -E '^[0-9]+$' || echo 0; }
+docker_heartbeat() { # docker_heartbeat ELAPSED PREV_KB_VAR
+    local el="$1" prev kb cur trend age mt
+    prev="${!2:-0}"; kb="$(dir_kb "$APT_PARTIAL")"
+    if [ "$kb" -gt "$prev" ]; then trend="$(m '在增长' 'growing')"; elif [ "$kb" -lt "$prev" ]; then trend="$(m '已减小（下载完成/清理）' 'shrank (download finished / cleaned)')"; else trend="$(m '无变化' 'unchanged')"; fi
+    printf -v "$2" '%s' "$kb"
+    cur="$(pkg_procs | tail -n 1 | cut -c1-110)"; [ -n "$cur" ] || cur="$(m '（没有发现包管理器进程）' '(no package-manager process found)')"
+    age=''; if [ -f "$DPKG_LOG" ]; then mt="$(stat -c %Y "$DPKG_LOG" 2>/dev/null || echo 0)"; [ "$mt" -le 0 ] || age="$(( $(date +%s) - mt ))"; fi
+    say "  仍在安装 Docker…已用 ${el} 秒；当前进程：${cur}；apt 下载目录 ${kb} KB（${trend}）${age:+；dpkg 日志 ${age} 秒前有更新}" "  Still installing Docker... ${el} s elapsed; current process: ${cur}; apt download directory ${kb} KB (${trend})${age:+; dpkg log last written ${age} s ago}"
+}
+# docker_diag: concrete diagnostics after a timeout
+docker_diag() {
+    say "诊断信息（超时后）：" "Diagnostics (after the timeout):"
+    printf '  -- %s\n' "$(m '包管理器相关进程 (ps)' 'package-manager processes (ps)')" >&2; pkg_procs | head -n 8 | sed 's/^/     /' >&2
+    printf '  -- %s\n' "$(m '谁持有安装锁 (fuser/lsof)' 'who holds the installation lock (fuser/lsof)')" >&2
+    if have_cmd fuser; then fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>&1 | sed 's/^/     /' >&2 || true
+    elif have_cmd lsof; then lsof /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null | sed 's/^/     /' >&2 || true
+    else printf '     %s\n' "$(m '（没有 fuser/lsof）' '(neither fuser nor lsof installed)')" >&2; fi
+    if [ -f "$DPKG_LOG" ]; then printf '  -- tail %s\n' "$DPKG_LOG" >&2; tail -n 15 "$DPKG_LOG" | sed 's/^/     /' >&2; fi
+    if [ -f "$APT_TERM_LOG" ]; then printf '  -- tail %s\n' "$APT_TERM_LOG" >&2; tail -n 15 "$APT_TERM_LOG" | sed 's/^/     /' >&2; fi
+    if [ "$SYSTEMD_OK" = 1 ]; then printf '  -- systemctl status docker\n' >&2; systemctl status docker --no-pager -l 2>&1 | head -n 15 | sed 's/^/     /' >&2 || true; fi
+}
+# run_docker_cmd CMD...: rc 124 = timed out (the child's process group was stopped), otherwise the command's own status
+run_docker_cmd() {
+    local to="${OA_DOCKER_TIMEOUT:-1200}" hb="${OA_HEARTBEAT:-15}" tick="${OA_TICK:-1}" out start now el last=0 off=0 size rc=0 timed=0 prev=0 i
+    out="$(mktemp "${TMPDIR:-/tmp}/oa-docker.XXXXXX")"
+    prev="$(dir_kb "$APT_PARTIAL")"
+    if have_cmd setsid; then setsid "$@" >"$out" 2>&1 </dev/null 8>&- & else "$@" >"$out" 2>&1 </dev/null 8>&- & fi
+    DOCKER_CHILD=$!
+    start="$(date +%s)"
+    while kill -0 "$DOCKER_CHILD" 2>/dev/null; do
+        sleep "$tick"
+        size="$(wc -c <"$out" 2>/dev/null || echo 0)"
+        if [ "$size" -gt "$off" ]; then tail -c +"$((off + 1))" "$out" | tee -a "$LOG_FILE"; off="$size"; fi
+        now="$(date +%s)"; el=$((now - start))
+        if [ "$el" -ge "$to" ]; then
+            timed=1
+            warn "Docker 安装超过 ${to} 秒仍未结束，停止它的进程组（只停本脚本启动的这一个，不会碰其他进程）。" "The Docker installation ran longer than ${to} s; stopping its process group (only the one started by this script, nothing else)."
+            kill -TERM -- "-$DOCKER_CHILD" 2>/dev/null || kill -TERM "$DOCKER_CHILD" 2>/dev/null || true
+            for i in 1 2 3 4 5; do kill -0 "$DOCKER_CHILD" 2>/dev/null || break; sleep "$tick"; done
+            kill -KILL -- "-$DOCKER_CHILD" 2>/dev/null || kill -KILL "$DOCKER_CHILD" 2>/dev/null || true
+            break
+        fi
+        if [ $((el - last)) -ge "$hb" ]; then docker_heartbeat "$el" prev; last="$el"; fi
+    done
+    wait "$DOCKER_CHILD" 2>/dev/null || rc=$?
+    DOCKER_CHILD=''
+    size="$(wc -c <"$out" 2>/dev/null || echo 0)"
+    if [ "$size" -gt "$off" ]; then tail -c +"$((off + 1))" "$out" | tee -a "$LOG_FILE"; fi
+    rm -f -- "$out"
+    if [ "$timed" = 1 ]; then return 124; fi
+    return "$rc"
+}
+# docker_timeout_choice: interactive menu after a timeout -> r | n | a ; unattended: fail with the hints
+TO_CHOICE=''
+docker_timeout_choice() {
+    local ch=''
+    docker_diag
+    if [ "$ASSUME_YES" = 1 ] || ! have_tty; then
+        die "Docker 安装超时（${OA_DOCKER_TIMEOUT:-1200} 秒）。看上面的诊断：常见原因是 apt 锁被占用、网络极慢、或容器/WSL 无 systemd。解决后重新运行；OA_DOCKER_TIMEOUT=<秒> 可延长。" "The Docker installation timed out (${OA_DOCKER_TIMEOUT:-1200} s). See the diagnostics above: common causes are a held apt lock, a very slow network, or a container/WSL without systemd. Fix it and re-run; OA_DOCKER_TIMEOUT=<seconds> allows longer."
+    fi
+    printf '%s ' "$(m '[r]重试同一个源 / [n]换下一个源 / [a]中止（默认）:' '[r]etry the same source / [n]ext source / [a]bort (default):')" >&2
+    IFS= read -r ch <&9 || ch=''
+    case "$ch" in r | R) TO_CHOICE=r ;; n | N) TO_CHOICE=n ;; *) TO_CHOICE=a ;; esac
+}
+
+# run_docker_source TOKEN: show exactly what is run and from where, then run it (rc 0 ok, 1 failed, 2 timed out)
+run_docker_source() {
+    local tok="$1" base cmd
+    base="$(docker_source_base "$tok")"; cmd="$(docker_source_cmd "$tok")"
+    say "执行：$cmd   （脚本取自 https://get.docker.com，Docker Inc. 官方，属第三方脚本；软件包仓库：$base）" "Running: $cmd   (the script comes from https://get.docker.com, Docker Inc.'s official but third-party script; package repository: $base)"
+    local rc=0
+    case "$tok" in
+        official) run_docker_cmd env -u DOWNLOAD_URL sh "$TMP/get-docker.sh" || rc=$? ;;
+        aliyun) run_docker_cmd env -u DOWNLOAD_URL sh "$TMP/get-docker.sh" --mirror Aliyun || rc=$? ;;
+        azure) run_docker_cmd env -u DOWNLOAD_URL sh "$TMP/get-docker.sh" --mirror AzureChinaCloud || rc=$? ;;
+        *) run_docker_cmd env DOWNLOAD_URL="$base" sh "$TMP/get-docker.sh" || rc=$? ;;
+    esac
+    if [ "$rc" = 124 ]; then return 2; fi
+    have_docker
+}
+# docker_official_script: Docker Inc.'s get.docker.com script from the chosen source; the next source is only tried with consent
+# (interactive) or when the order came from auto / --mirror cn. Returns 1 when everything failed (the caller falls back to distro packages).
+docker_official_script() {
+    TMP="${TMP:-$(mktemp -d)}"
+    have_cmd curl || install_pkg curl || return 1
+    local srcs=() src rest='' all="official aliyun azure tuna ustc" x rc
+    if ! net_retry "get.docker.com" curl -fsSL --connect-timeout 10 --max-time 120 https://get.docker.com -o "$TMP/get-docker.sh"; then
+        warn "下载 get.docker.com 脚本失败。" "Failed to download the get.docker.com script."
+        return 1
+    fi
+    docker_sources_order
+    read -r -a srcs <<<"$SRC_ORDER"
+    for src in "${srcs[@]}"; do
+        while :; do
+            rc=0; run_docker_source "$src" || rc=$?
+            [ "$rc" != 0 ] || return 0
+            if [ "$rc" = 2 ]; then
+                warn "安装源 $src 超时（$(docker_source_cmd "$src")）。" "The installation source $src timed out ($(docker_source_cmd "$src"))."
+                docker_timeout_choice
+                case "$TO_CHOICE" in r) continue ;; n) break ;; *) die_cancel "已中止：Docker 安装超时。" "Aborted: the Docker installation timed out." ;; esac
+            fi
+            warn "安装源 $src 失败（$(docker_source_cmd "$src")）。" "The installation source $src failed ($(docker_source_cmd "$src"))."
+            break
+        done
+    done
+    if [ "$SRC_AUTO" = 0 ]; then
+        for x in $all; do case " $SRC_ORDER " in *" $x "*) ;; *) rest="$rest$x " ;; esac; done
+        if [ "$ASSUME_YES" != 1 ] && have_tty && confirm "依次尝试其他内置安装源（${rest}）？" "Try the other built-in installation sources in turn (${rest})?" y; then
+            for src in $rest; do
+                rc=0; run_docker_source "$src" || rc=$?
+                [ "$rc" != 0 ] || return 0
+                warn "安装源 $src 失败。" "The installation source $src failed."
+            done
+        fi
+    fi
+    return 1
+}
+
 # ---------------------------------------------------------------------------------------------- state file
 # $STATE_FILE (/etc/oa-agent/install.json) records every installation this installer made: one JSON object per line inside
 # {"schema":1,"installs":[ ... ]}. Values are restricted to a safe character set (validated paths, tags, project names), so
@@ -1817,10 +2236,10 @@ port_describe() {
 }
 # next_free_port START: the first free port from START upward (at most 200 tries)
 next_free_port() {
-    local cand="$1" tries=0
-    while [ "$tries" -lt 200 ] && [ "$cand" -lt 65535 ]; do
-        if ! port_in_use "$cand"; then printf '%s' "$cand"; return 0; fi
-        cand=$((cand + 1)); tries=$((tries + 1))
+    local candp="$1" tries=0
+    while [ "$tries" -lt 200 ] && [ "$candp" -lt 65535 ]; do
+        if ! port_in_use "$candp"; then printf '%s' "$candp"; return 0; fi
+        candp=$((candp + 1)); tries=$((tries + 1))
     done
     printf '%s' "$1"
 }
@@ -1899,6 +2318,7 @@ install_prereqs() {
             return 0
         }
     fi
+    wait_pkg_lock
     step "安装缺少的软件包" "Installing the missing packages"
     for p in "${pkgs[@]}"; do install_pkg "$p" 8>&- 2>&1 | tee -a "$LOG_FILE" || true; done
     for c in "${PREREQ_MISSING[@]}"; do have_cmd "$c" || die "安装后仍缺少 $c。" "$c is still missing after the installation."; done
@@ -1939,6 +2359,7 @@ det_docker() {
     DK_SVER=''; DK_UP=0; DK_CMP=''; DK_CMP_KIND=none; DK_EVAL=0
     local v1 sock en rl
     if ! have_docker; then
+        if [ "$(env_kind)" != none ] && [ "$SYSTEMD_OK" != 1 ]; then pf_warn "$(env_kind) 环境且没有 systemd：在这里安装 docker-ce，其安装后脚本启动服务时可能卡住或失败（正确做法：WSL 开启 systemd 或用 Docker Desktop 集成；容器里改用宿主的 docker.sock）。" "A $(env_kind) environment without systemd: installing docker-ce here, its post-install script may hang or fail when starting the service (do this instead: enable systemd in WSL or use Docker Desktop integration; in a container use the host's docker.sock)."; fi
         pf_missing "Docker 引擎：未安装 -> 将安装（需 --install-docker 或交互确认）；Compose v2 插件随 Docker 一起安装" "Docker Engine: not installed -> will be installed (needs --install-docker or interactive consent); the Compose v2 plugin comes with it"
         return 0
     fi
@@ -2246,13 +2667,17 @@ detect_local() {
 # ---------------------------------------------------------------------------------------------- answers: config file, environment, print-config
 # Precedence: command-line flags > OA_INSTALL_<KEY> environment variables > --config file > wizard answers > built-in defaults.
 # Settings from the environment/config file are "seeded": the wizard does not ask them again (they appear in the review screen).
-CFG_KEYS='dir port domain email mirror image_tag registry project archive_dir spool_dir app_dir pg_dir extra_mount behind_proxy db_mode db_provider db_host db_port db_name db_user db_password db_password_file db_tls db_ca_file db_schema secret_key_file systemd open_firewall install_docker'
+CFG_KEYS='lang geo_lookup docker_source docker_mirrors dir port domain email mirror image_tag registry project archive_dir spool_dir app_dir pg_dir extra_mount behind_proxy db_mode db_provider db_host db_port db_name db_user db_password db_password_file db_tls db_ca_file db_schema secret_key_file systemd open_firewall install_docker'
 SECRET_KEY_FILE=''
 seeded() { case "$SEEDED" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # cfg_assign KEY VALUE SOURCE: take VALUE for KEY unless a higher-precedence source already set it
 cfg_assign() {
     local k="$1" v="$2" src="$3"
     case "$k" in
+        lang) [ "$LANG_SET" = 0 ] || return 0; case "$v" in zh* | ZH*) UI=zh ;; en* | EN*) UI=en ;; *) die_usage "$src: lang 只能是 zh 或 en" "$src: lang must be zh or en" ;; esac; LANG_SET=1 ;;
+        geo_lookup) case "$v" in no | off | false | 0) GEO=off ;; yes | on | true | 1) ;; *) die_usage "$src: geo_lookup 只能是 yes/no" "$src: geo_lookup must be yes or no" ;; esac ;;
+        docker_source) [ -z "$DOCKER_SOURCE" ] || return 0; valid_docker_source "$v" || die_usage "$src: docker_source 不合法: $v" "$src: invalid docker_source: $v"; DOCKER_SOURCE="${v%/}" ;;
+        docker_mirrors) [ "${#DOCKER_MIRRORS[@]}" -eq 0 ] || return 0; local mu; for mu in $v; do valid_mirror_url "$mu" || die_usage "$src: docker_mirrors 含非法地址: $mu" "$src: docker_mirrors contains an invalid URL: $mu"; DOCKER_MIRRORS+=("${mu%/}"); done ;;
         dir) [ "$DIR_SET" = 0 ] || return 0; DIR="$v"; DIR_SET=1 ;;
         port) [ "$PORT_SET" = 0 ] || return 0; PORT="$v"; PORT_SET=1 ;;
         project) [ "$PROJECT_SET" = 0 ] || return 0; PROJECT="$v"; PROJECT_SET=1 ;;
@@ -2326,6 +2751,7 @@ load_config_file() {
 load_env_answers() {
     local k up v
     [ "${#EXTRA_MOUNTS[@]}" -eq 0 ] || CFG_EXTRA_FROM_FLAGS=1
+    case "${OA_INSTALL_GEO:-}" in off | no | false | 0) GEO=off ;; esac   # OA_INSTALL_GEO=off: no ipinfo.io lookup, local signals only
     for k in $CFG_KEYS; do
         up="OA_INSTALL_$(printf '%s' "$k" | tr '[:lower:]' '[:upper:]')"
         v="${!up:-}"
@@ -2346,6 +2772,9 @@ print_config() {
     {
         printf '# OA Agent installer answers, written by install.sh --print-config. Contains NO secrets.\n'
         printf '# Reuse on another server:  sudo bash install.sh --config THIS_FILE   (chmod 600 THIS_FILE; the file may also hold db_password=...)\n'
+        printf 'lang=%s\n' "$UI"
+        [ -z "$DOCKER_SOURCE" ] || printf 'docker_source=%s\n' "$DOCKER_SOURCE"
+        [ "${#DOCKER_MIRRORS[@]}" -eq 0 ] || printf 'docker_mirrors=%s\n' "${DOCKER_MIRRORS[*]}"
         printf 'dir=%s\nport=%s\n' "$DIR" "$PORT"
         [ -z "$DOMAIN" ] || printf 'domain=%s\n' "$DOMAIN"
         [ -z "$EMAIL" ] || printf 'email=%s\n' "$EMAIL"
@@ -2520,6 +2949,52 @@ q_tag() {
     VERSION_SET=1
 }
 q_storage() { collect_mounts; }
+# q_docker: where Docker comes from (only when it has to be installed) and the Docker Hub registry mirror (daemon.json, never applied
+# without consent). Unattended runs only validate what the flags / config gave.
+q_docker() {
+    local c='' def=8 u='' cur
+    # not part of the questions of a normal run (the source is chosen automatically and announced); the review screen's setting 8 lands here
+    [ -z "$OFFLINE_FILE" ] || return 0
+    if [ "$ASSUME_YES" = 1 ] || ! have_tty; then return 0; fi
+    if ! have_docker && ! seeded docker_source; then
+        say "Docker 安装源（默认「自动」：先查国家/本地信号，再按速度尝试可达镜像，官方源垫底）：" "Docker installation source (the default, automatic, checks the country / local signals, then tries the reachable mirrors by speed with the official source last):"
+        say "  1) 官方 download.docker.com" "  1) official download.docker.com"
+        say "  2) 阿里云 mirrors.aliyun.com/docker-ce（get.docker.com --mirror Aliyun）" "  2) Alibaba Cloud mirrors.aliyun.com/docker-ce (get.docker.com --mirror Aliyun)"
+        say "  3) Azure 中国 mirror.azure.cn/docker-ce（--mirror AzureChinaCloud）" "  3) Azure China mirror.azure.cn/docker-ce (--mirror AzureChinaCloud)"
+        say "  4) 清华 TUNA mirrors.tuna.tsinghua.edu.cn/docker-ce（DOWNLOAD_URL）" "  4) Tsinghua TUNA mirrors.tuna.tsinghua.edu.cn/docker-ce (DOWNLOAD_URL)"
+        say "  5) 中科大 USTC mirrors.ustc.edu.cn/docker-ce（DOWNLOAD_URL）" "  5) USTC mirrors.ustc.edu.cn/docker-ce (DOWNLOAD_URL)"
+        say "  6) 腾讯云 mirrors.cloud.tencent.com/docker-ce（DOWNLOAD_URL）" "  6) Tencent Cloud mirrors.cloud.tencent.com/docker-ce (DOWNLOAD_URL)"
+        say "  7) 自定义 https 地址（须与 download.docker.com 同样的目录结构）" "  7) custom https URL (must use the same layout as download.docker.com)"
+        say "  8) 自动（默认）" "  8) automatic (default)"
+        case "$DOCKER_SOURCE" in official) def=1 ;; aliyun) def=2 ;; azure) def=3 ;; tuna) def=4 ;; ustc) def=5 ;; tencent) def=6 ;; https://*) def=7 ;; esac
+        ask_valid c "选择 [1-8]" "Choice [1-8]" "$def" chk_choice_1_8
+        case "$c" in
+            1) DOCKER_SOURCE=official ;; 2) DOCKER_SOURCE=aliyun ;; 3) DOCKER_SOURCE=azure ;; 4) DOCKER_SOURCE=tuna ;; 5) DOCKER_SOURCE=ustc ;; 6) DOCKER_SOURCE=tencent ;; 8) DOCKER_SOURCE='' ;;
+            7) cur=''; case "$DOCKER_SOURCE" in https://*) cur="$DOCKER_SOURCE" ;; esac
+                ask_valid u "自定义安装源地址（https://…）" "Custom installation source URL (https://...)" "$cur" chk_https_url; DOCKER_SOURCE="${u%/}" ;;
+        esac
+        DK_RESOLVED=0
+    fi
+    if ! seeded docker_mirrors; then
+        def=1; [ "${#DOCKER_MIRRORS[@]}" -eq 0 ] || def=2
+        say "Docker Hub 镜像加速（写入 /etc/docker/daemon.json 的 registry-mirrors；只影响 postgres/caddy 基础镜像，生产镜像来自镜像仓库；本次由本脚本新装 Docker 且在中国大陆时会自动探测并配置，已有 Docker 总是先征求同意）：" "Docker Hub registry mirror (registry-mirrors in /etc/docker/daemon.json; it only affects the postgres/caddy base images, the production images come from the registry; when this run installs Docker itself in mainland China it is probed and configured automatically, an existing Docker is always asked first):"
+        say "  1) 不手动指定（默认）" "  1) none given (default)"
+        say "  2) 输入我自己的加速地址（可填多个，空格分隔）" "  2) enter my own mirror URL(s) (several separated by spaces)"
+        ask_valid c "选择 [1-2]" "Choice [1-2]" "$def" chk_choice_1_2
+        if [ "$c" = 2 ]; then
+            u="${DOCKER_MIRRORS[*]:-}"
+            ask_valid u "加速地址（https://…，空格分隔）" "Mirror URL(s) (https://..., space separated)" "$u" chk_mirror_urls
+            DOCKER_MIRRORS=(); for c in $u; do DOCKER_MIRRORS+=("${c%/}"); done
+        else DOCKER_MIRRORS=(); fi
+    fi
+}
+chk_choice_1_2() { case "$1" in 1 | 2) ;; *) m "请输入 1 或 2" "enter 1 or 2"; return 1 ;; esac; }
+chk_mirror_urls() {
+    local x any=0
+    for x in $1; do valid_mirror_url "$x" || { m "不是合法的 http(s):// 地址: $x" "not a valid http(s):// URL: $x"; return 1; }; any=1; done
+    [ "$any" = 1 ] || { m "至少填一个地址（或回到上一步选 1 不配置）" "enter at least one URL (or choose 1, none, in the previous question)"; return 1; }
+}
+
 
 # wizard_answers: all questions, in order. Used for a fresh installation.
 wizard_answers() {
@@ -2533,10 +3008,10 @@ wizard_answers() {
 }
 
 # review_screen: every setting (secrets masked) and "Proceed? [Y]es / [e]dit a setting / [c]ancel"
-EDIT_FNS=(q_dir q_port q_expose q_db q_storage q_mirror q_tag)
+EDIT_FNS=(q_dir q_port q_expose q_db q_storage q_mirror q_tag q_docker q_lang)
 review_line() { printf '  %s) %-18s %s\n' "$1" "$2" "$3"; }
 review_screen() {
-    local ans='' n i db acc stor img
+    local ans='' n i db acc stor img dk
     while :; do
         if [ "$PROXY_MODE" = 1 ]; then acc="$(m "域名 $DOMAIN，放在已有反向代理后面（OA 监听 127.0.0.1:$PORT，不启用 Caddy）" "domain $DOMAIN behind an existing reverse proxy (OA listens on 127.0.0.1:$PORT, no Caddy)")"
         elif [ -n "$DOMAIN" ]; then acc="$(m "https://$DOMAIN（内置 Caddy 自动证书${EMAIL:+，邮箱 $EMAIL}）" "https://$DOMAIN (bundled Caddy, automatic certificates${EMAIL:+, e-mail $EMAIL})")"
@@ -2555,6 +3030,12 @@ review_screen() {
         review_line 6 "$(m '镜像源' 'Mirror')" "${MIRROR:-default}$([ -n "$MIRROR_HINT" ] && [ "$MIRROR" = "$MIRROR_HINT" ] && m '（依据检测预选）' ' (preselected from detection)')" >&2
         if [ -n "$REGISTRY" ]; then img="$REGISTRY : $VERSION"; else img="$(m '本机用源码构建' 'built from source on this host')"; fi
         review_line 7 "$(m '镜像/标签' 'Images/tag')" "$img" >&2
+        if have_docker; then dk="$(m 'Docker 已安装，沿用不重装' 'Docker is already installed and kept')"
+        elif [ -n "$OFFLINE_FILE" ]; then dk="$(m '离线模式' 'offline mode')"
+        else resolve_docker_source; dk="$(m "将安装；Docker 安装源：$DK_WHY_ZH" "will be installed; Docker installation source: $DK_WHY_EN")"; fi
+        if [ "${#DOCKER_MIRRORS[@]}" -gt 0 ]; then dk="$dk; $(m 'Docker Hub 加速' 'Docker Hub mirror') ${DOCKER_MIRRORS[*]} $(m '（写 daemon.json 前会再询问）' '(asked again before daemon.json is written)')"; fi
+        review_line 8 "Docker" "$dk" >&2
+        review_line 9 "$(m '界面语言' 'Language')" "$([ "$UI" = zh ] && echo '中文' || echo 'English')" >&2
         printf '  %s\n' "$(m "此外：systemd 开机单元、防火墙放行在最后单独询问；管理员账号由初始化向导 + 一次性令牌创建（安装结束时显示令牌）。" "Also: the systemd unit and the firewall are asked at the end; the admin account is created by the setup wizard with a one-time token (shown when the installation ends).")" >&2
         if [ "$ASSUME_YES" = 1 ] || ! have_tty; then return 0; fi
         printf '%s ' "$(m '继续安装？[Y]是 / [e]修改某项 / [c]取消:' 'Proceed? [Y]es / [e]dit a setting / [c]ancel:')" >&2
@@ -2563,11 +3044,11 @@ review_screen() {
             '' | y | Y | yes | YES) return 0 ;;
             c | C | cancel | n | N | no) die_cancel "已取消：未做任何更改。" "Cancelled: nothing was changed." ;;
             e | E | edit)
-                printf '%s ' "$(m '修改哪一项？[1-7]:' 'Edit which setting? [1-7]:')" >&2
+                printf '%s ' "$(m '修改哪一项？[1-9]:' 'Edit which setting? [1-9]:')" >&2
                 IFS= read -r n <&9 || n=''
                 case "$n" in
-                    1 | 2 | 3 | 4 | 5 | 6 | 7) SEEDED=' '; "${EDIT_FNS[$((n - 1))]}" ;;
-                    *) printf '%s[!]%s %s\n' "$C_R" "$C_0" "$(m '请输入 1-7' 'enter 1-7')" >&2 ;;
+                    1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) SEEDED=' '; "${EDIT_FNS[$((n - 1))]}" ;;
+                    *) printf '%s[!]%s %s\n' "$C_R" "$C_0" "$(m '请输入 1-9' 'enter 1-9')" >&2 ;;
                 esac ;;
             *) printf '%s[!]%s %s\n' "$C_R" "$C_0" "$(m '请输入 Y、e 或 c' 'enter Y, e or c')" >&2 ;;
         esac
@@ -2749,7 +3230,7 @@ db_image() { printf '%s/oa-agent-api:%s' "${REGISTRY:-$PROJECT}" "$VERSION"; }
 db_run() {
     local sub="$1" pw; shift
     pw="$(db_password_value)"
-    local a=(run --rm -i --add-host host.docker.internal:host-gateway -e "OA_DB_PROVIDER=$DB_PROVIDER" -e "OA_DB_HOST=$DB_HOST" -e "OA_DB_PORT=$DB_PORT" -e "OA_DB_NAME=$DB_NAME" -e "OA_DB_USER=$DB_USER" -e "OA_DB_TLS_MODE=${DB_TLS:-require}")
+    local a=(run --rm -i --add-host host.docker.internal:host-gateway -e "OA_LANG=$UI" -e "OA_DB_PROVIDER=$DB_PROVIDER" -e "OA_DB_HOST=$DB_HOST" -e "OA_DB_PORT=$DB_PORT" -e "OA_DB_NAME=$DB_NAME" -e "OA_DB_USER=$DB_USER" -e "OA_DB_TLS_MODE=${DB_TLS:-require}")
     [ -z "$DB_SCHEMA" ] || a+=(-e "OA_DB_SCHEMA=$DB_SCHEMA")
     if [ -n "$DB_CA_FILE" ]; then a+=(-v "$DB_CA_FILE:/oa-db-ca.pem:ro" -e OA_DB_TLS_CA_FILE=/oa-db-ca.pem); fi
     a+=(--entrypoint oa-admin "$(db_image)" "$sub" --password-stdin "$@")
@@ -2849,7 +3330,7 @@ db_init_flow() {
     stmts="$(printf '%s' "$plan" | tr '\t' '\n' | sed -n 's/^statements=//p')"
     migs="$(printf '%s' "$plan" | tr '\t' '\n' | sed -n 's/^migrations=//p')"
     say "将在 $DB_HOST:$DB_PORT/$DB_NAME 中创建 OA Agent 的表结构：$migs 个迁移、共 $stmts 条 DDL（计划指纹 $fp）。" "OA Agent would create its schema in $DB_HOST:$DB_PORT/$DB_NAME: $migs migration(s), $stmts DDL statement(s) in total (plan fingerprint $fp)."
-    printf '%s\n' "$out" | awk -F'\t' '$1=="STEP" {printf "    migration %s %s (%s statements)\n", $2, $3, $4}' >&2
+    printf '%s\n' "$out" | awk -F'\t' -v fmt="$(m '    迁移 %s %s（%s 条语句）' '    migration %s %s (%s statements)')" '$1=="STEP" {printf fmt "\n", $2, $3, $4}' >&2
     if [ "$ASSUME_YES" = 1 ] || ! have_tty; then
         say "非交互模式不会代你批准 DDL：表结构将由 API 首次启动时按部署级批准（OA_AUTO_MIGRATE=1）创建。预览与指纹已记入日志。" "Non-interactive mode does not approve DDL on your behalf: the API creates the schema on its first start under the deployment-level approval (OA_AUTO_MIGRATE=1). The preview and fingerprint are in the log."
         logf "db-init preview fingerprint=$fp statements=$stmts"
@@ -3004,7 +3485,7 @@ run_check() {
     if [ "$DB_MODE" = external ]; then say "  数据库:     已有 $(db_label "$DB_PROVIDER") $DB_HOST:$DB_PORT/$DB_NAME（先检查再建表，建表需你确认）" "  database:     existing $(db_label "$DB_PROVIDER") $DB_HOST:$DB_PORT/$DB_NAME (checked first; creating tables needs your approval)"
     else say "  数据库:     内置 PostgreSQL 容器" "  database:     bundled PostgreSQL container"; fi
     if [ "$EXISTING" = 0 ]; then say "  存储目录:   归档 $ARCHIVE_DIR | 暂存 $SPOOL_DIR | 应用数据 $APP_DIR | 数据库 $PG_DIR" "  storage:      archive $ARCHIVE_DIR | spool $SPOOL_DIR | app data $APP_DIR | database $PG_DIR"; fi
-    if ! have_docker; then say "  Docker:     将安装（get.docker.com${MIRROR:+，镜像 $MIRROR}，失败回退发行版软件包）" "  Docker:       would be installed (get.docker.com${MIRROR:+, mirror $MIRROR}, distribution packages as fallback)"; fi
+    if ! have_docker; then docker_sources_order; say "  Docker:     将安装（安装源 ${SRC_ORDER}：$(docker_source_cmd "${SRC_ORDER%% *}")；失败回退发行版软件包）" "  Docker:       would be installed (source(s) ${SRC_ORDER}: $(docker_source_cmd "${SRC_ORDER%% *}"); distribution packages as fallback)"; fi
     if [ "${#PREREQ_MISSING[@]}" -gt 0 ]; then say "  软件包:     将只安装缺少的：${PREREQ_MISSING[*]}" "  packages:     only the missing ones would be installed: ${PREREQ_MISSING[*]}"; fi
     if [ "${#DOCKER_MIRRORS[@]}" -gt 0 ]; then say "  镜像加速:   ${DOCKER_MIRRORS[*]}（仅交互确认后写入 daemon.json）" "  registry mirror: ${DOCKER_MIRRORS[*]} (written to daemon.json only after interactive consent)"; fi
     say "  systemd:    $([ "$SYSTEMD" = yes ] && echo '安装' || echo '询问（--yes 下不安装）')；防火墙: $([ "$OPEN_FW" = yes ] && echo '放行端口' || echo '询问（--yes 下不修改）')" "  systemd:      $([ "$SYSTEMD" = yes ] && echo 'install' || echo 'ask (not with --yes)'); firewall: $([ "$OPEN_FW" = yes ] && echo 'open the port' || echo 'ask (untouched with --yes)')"
@@ -3107,22 +3588,24 @@ status_all() {
 main() {
     # Truncation guard: the last line of this file passes the sentinel as the final argument (see the header comment).
     if [ $# -eq 0 ] || [ "${!#}" != "$EOS_SENTINEL" ]; then
-        printf '%s[FAIL]%s %s\n' "$C_R" "$C_0" "$(m "脚本不完整（下载被截断？），未执行任何操作。请重新下载后再运行。" "The script is incomplete (truncated download?); nothing was executed. Download it again and re-run.")" >&2
+        printf '%s[FAIL]%s 脚本不完整（下载被截断？），未执行任何操作。请重新下载后再运行。 / The script is incomplete (truncated download?); nothing was executed. Download it again and re-run.\n' "$C_R" "$C_0" >&2
         exit 1
     fi
     set -- "${@:1:$#-1}"
+    init_lang
     parse_args "$@"
     local ro=0
     if [ "$CHECK" = 1 ] || [ "$STATUS_ONLY" = 1 ] || [ "$PRINT_CONFIG" = 1 ]; then ro=1; fi   # read-only runs need no root, no log, no lock
     if [ "$CHECK" = 1 ] || [ "$STATUS_ONLY" = 1 ]; then ASSUME_YES=1; fi                       # ... and never prompt
     if [ "$PRINT_CONFIG" = 1 ]; then exec 3>&1 1>&2; fi                                         # stdout carries only the answers
+    load_env_answers
+    load_config_file
     if [ "$ro" != 1 ]; then require_root; setup_log; fi
     if [ "$ASSUME_YES" != 1 ]; then open_tty; fi
     if [ "$ro" != 1 ]; then lock_install; fi
+    ask_language                       # the first question (interactive, language not given), or one line saying which language is used
     banner
-    logf "install.sh started (dir=$DIR version=$VERSION yes=$ASSUME_YES)"
-    load_env_answers
-    load_config_file
+    logf "install.sh started (dir=$DIR version=$VERSION yes=$ASSUME_YES lang=$UI)"
     if [ "$DB_MODE" = bundled ] && [ -n "$DB_HOST$DB_NAME$DB_USER$DB_PASSWORD$DB_PASSWORD_FILE$DB_CA_FILE$DB_TLS$DB_SCHEMA" ]; then die_usage "选了内置数据库，却给了外部数据库的参数（--db-*）。" "The bundled database was chosen but external-database options (--db-*) were given."; fi
     if [ -z "$DB_MODE" ] && [ -n "$DB_PROVIDER$DB_HOST" ]; then DB_MODE=external; fi
     if [ "$STATUS_ONLY" = 1 ] && { [ "$DO_UPGRADE" = 1 ] || [ "$REINSTALL" = 1 ] || [ "$DO_UNINSTALL" = 1 ] || [ "$PURGE" = 1 ] || [ "$PRINT_CONFIG" = 1 ]; }; then die_usage "--status 不能与改动类选项同时使用。" "--status cannot be combined with options that change things."; fi
@@ -3156,7 +3639,10 @@ main() {
         if [ "$PORT_SET" = 1 ] && [ "$PORT" != "${IN_PORT[$TGT]}" ]; then warn "已忽略 --port $PORT：已有安装使用端口 ${IN_PORT[$TGT]}（更改：oa-agentctl config set OA_PORT <端口>）。" "Ignored --port $PORT: the installation uses port ${IN_PORT[$TGT]} (change it with oa-agentctl config set OA_PORT <port>)."; fi
         exit 0
     fi
-    if network_needed; then det_network; fi
+    if network_needed; then
+        det_network
+        if ! have_docker && [ -z "$OFFLINE_FILE" ]; then announce_docker_source; fi   # automatic, never hidden: one line says what was detected and used
+    fi
 
     # ---- 2. DECIDE the answers: orphaned data first, then the wizard (fresh) or the existing .env
     if [ "$EXISTING" = 0 ]; then orphan_decide; fi

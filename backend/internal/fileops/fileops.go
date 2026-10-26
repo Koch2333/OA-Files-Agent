@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 
 	"oa-agent/backend/internal/fsman"
 	"oa-agent/backend/internal/store"
@@ -18,12 +19,23 @@ type Service struct {
 	Store       *store.Store
 	FS          *fsman.Manager
 	AllowReveal bool // OA_ALLOW_REVEAL != "0"
+
+	mu sync.Mutex // serialises bulk/conflict-aware mutations (planning and writing happen under it)
+	hc hashCache
+
+	// testHookBeforeWrite runs right before an item is written, after its conflict check (race tests).
+	testHookBeforeWrite func(from, to string)
 }
 
 // ListedEntry is an entry plus its ledger record (nil for folders and files outside the ledger).
 type ListedEntry struct {
 	fsman.Entry
 	Ledger *store.LedgerRef `json:"ledger"`
+	// Lazy hash information: never computed while listing. SHA256 is the ledger value; HashStatus is not_task,
+	// unverified, verified or mismatch (see hash.go).
+	TaskRelated bool   `json:"task_related"`
+	SHA256      string `json:"sha256,omitempty"`
+	HashStatus  string `json:"hash_status"`
 }
 
 type Listing struct {
@@ -69,6 +81,10 @@ func (s *Service) List(ctx context.Context, rel string) (Listing, error) {
 	if err != nil {
 		return Listing{}, err
 	}
+	hashes, err := s.Store.LedgerHashes(ctx, paths)
+	if err != nil {
+		return Listing{}, err
+	}
 	out := Listing{Path: rel, Parent: parentOf(rel), Entries: make([]ListedEntry, 0, len(entries))}
 	for _, e := range entries {
 		le := ListedEntry{Entry: e}
@@ -76,6 +92,11 @@ func (s *Service) List(ctx context.Context, rel string) (Listing, error) {
 			r := r
 			le.Ledger = &r
 		}
+		var row *store.LedgerHash
+		if h, ok := hashes[e.Path]; ok {
+			row = &h
+		}
+		s.listHashStatus(&le, row)
 		out.Entries = append(out.Entries, le)
 	}
 	return out, nil
@@ -183,4 +204,27 @@ func (s *Service) Reveal(ctx context.Context, rel, actor string) (string, error)
 	}
 	s.Store.Audit(ctx, actor, "fs.reveal", rel, "在资源管理器中显示")
 	return rel, nil
+}
+
+// Entry returns one entry with its ledger and lazy hash information.
+func (s *Service) Entry(ctx context.Context, rel string) (ListedEntry, error) {
+	e, err := s.FS.Stat(rel)
+	if err != nil {
+		return ListedEntry{}, err
+	}
+	le := ListedEntry{Entry: e, HashStatus: HashNotTask}
+	if e.IsDir {
+		return le, nil
+	}
+	if refs, rerr := s.Store.LedgerByPaths(ctx, []string{rel}); rerr == nil {
+		if r, ok := refs[rel]; ok {
+			le.Ledger = &r
+		}
+	}
+	if hs, herr := s.Store.LedgerHashes(ctx, []string{rel}); herr == nil {
+		if h, ok := hs[rel]; ok {
+			s.listHashStatus(&le, &h)
+		}
+	}
+	return le, nil
 }

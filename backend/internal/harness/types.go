@@ -45,6 +45,12 @@ type ExtractResult struct {
 	Warnings  []string     `json:"warnings"`
 	Metadata  FileMetadata `json:"metadata"`
 	Quality   *OCRQuality  `json:"quality,omitempty"`
+	// ContentStatus is ok | partial | unreadable (unreadable here means OCR found nothing; unreadable files are
+	// reported as worker errors). ContentReason: capped | damaged | encoding | ocr_empty.
+	ContentStatus     string `json:"content_status"`
+	ContentReason     string `json:"content_reason"`
+	DetectedFormat    string `json:"detected_format"`
+	ExtensionMismatch bool   `json:"extension_mismatch"`
 }
 
 // Extractor extracts text from a stored file. Implemented by WorkerExtractor.
@@ -74,6 +80,7 @@ type FileInput struct {
 	SourcePath string
 	MIMEType   string
 	StoredPath string
+	SizeBytes  int64
 	// Instruction is the operator's free-text task description (already length-limited by the API). It reaches the
 	// model only as a delimited block in the system prompt and never as tool access or rule changes.
 	Instruction string
@@ -108,6 +115,14 @@ type Result struct {
 	Warnings       []string   `json:"warnings"`
 	// OCR summarises OCR/vision use; nil when OCR was not used.
 	OCR *OCRSummary `json:"ocr"`
+	// ContentStatus: ok | partial | unreadable ("" = no extraction happened). ContentReason is one of ReasonEncrypted,
+	// ReasonDamaged, ReasonUnsupported, ReasonTooLarge, ReasonTimeout, ReasonOCREmpty, ReasonOCRUnavailable (unreadable)
+	// or capped | damaged | encoding (partial). Basis is "content" or "filename_only" (see AnalyzeFilenameOnly).
+	ContentStatus string `json:"content_status"`
+	ContentReason string `json:"content_reason"`
+	Basis         string `json:"basis"`
+	// FormatNote is set when the content did not match the extension (e.g. "html").
+	FormatNote string `json:"format_note,omitempty"`
 }
 
 // Event is emitted for progress reporting. Details never contain document

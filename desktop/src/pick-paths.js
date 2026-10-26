@@ -3,7 +3,11 @@
 // { folders }; everything else (dialog properties, filters, the shape of the answer) is fixed here and unit-tested.
 const path = require('path')
 
-const FILTERS = [{ name: 'Word / Excel / PDF / 图片', extensions: ['docx', 'xlsx', 'pdf', 'png', 'jpg', 'jpeg'] }, { name: '所有文件', extensions: ['*'] }]
+// Extensions whose content is read (contracts/formats.json); any other file is accepted too and archived by its name only.
+const FILTERS = [
+  { name: '可识别内容的文档 / 图片', extensions: ['docx', 'doc', 'odt', 'rtf', 'xlsx', 'xls', 'ods', 'csv', 'tsv', 'pptx', 'ppt', 'odp', 'pdf', 'png', 'jpg', 'jpeg', 'jfif', 'bmp', 'tif', 'tiff', 'webp', 'gif', 'txt', 'md', 'html', 'htm', 'eml', 'msg'] },
+  { name: '所有文件', extensions: ['*'] },
+]
 
 function dialogOptions(opts) {
   const folders = !!(opts && opts.folders === true)

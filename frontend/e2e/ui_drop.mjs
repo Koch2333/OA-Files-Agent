@@ -70,7 +70,7 @@ await reset()
 // 6. unsupported type: visible toast, not silent
 await drag([x], await zoneCentre()); await sleep(500)
 const toasts = await page.$$eval('[role="status"], .toast, [data-testid="toast"]', (n) => n.map((e) => e.textContent)).catch(() => [])
-run.check('unsupported file gives a visible hint', toasts.some((t) => /格式不支持/.test(t)) || /格式不支持|将被拒绝/.test((await page.evaluate(() => document.body.innerText))), JSON.stringify(toasts))
+run.check('unsupported file gives a visible hint', toasts.some((t) => /仅按文件名|内容无法读取/.test(t)) || /仅按文件名|内容无法读取/.test((await page.evaluate(() => document.body.innerText))), JSON.stringify(toasts))
 
 // 7. import page (FilePicker) is page-wide too
 await page.goto(base + '/import', { waitUntil: 'networkidle0' })

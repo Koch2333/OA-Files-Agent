@@ -18,7 +18,7 @@ import (
 )
 
 // SchemaVersion is the newest migration this build expects.
-const SchemaVersion = 10
+const SchemaVersion = 12
 
 // Migration is one numbered migration file.
 type Migration struct {

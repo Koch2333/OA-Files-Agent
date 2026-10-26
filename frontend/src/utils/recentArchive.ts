@@ -1,4 +1,5 @@
 import type { LedgerEntry } from '../api/types'
+import { displayCategory } from './classification'
 
 /** “最近归档”行视图模型：只显示易读名称与标签；原文件名和完整路径放进详情。 */
 export interface ArchiveRow {
@@ -62,8 +63,9 @@ export function archiveRow(l: LedgerEntry, now: number = Date.now(), max = 36): 
     id: l.id,
     title: truncateName(l.canonical_name, max),
     fullTitle: l.canonical_name,
-    department: txt(l.department, '待审核'),
-    type: txt(l.document_type, '待审核'),
+    // 空值/未知值读出时一律显示为「其他」（不改写存量数据）
+    department: txt(displayCategory(l.department), '其他'),
+    type: txt(displayCategory(l.document_type), '其他'),
     date: date ? { text: date, missing: false } : { text: '日期未知', missing: true },
     decision: l.decision ?? 'manual',
     decisionModel: l.decision_model,

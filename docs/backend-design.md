@@ -20,8 +20,10 @@ PostgreSQL 16 在 WSL 运行于 `127.0.0.1:5432`，用户 `oa`，信任认证，
 成功 200：
 ```json
 {"data":{"text":"全文(截断至 200000 字符)","pages":[{"page":1,"text":"...","source":"native|ocr","confidence":0.93}],
- "ocr_used":true,"truncated":false,"warnings":["..."],"metadata":{"title":null,"author":null,"created":null,"modified":null}}}
+ "ocr_used":true,"truncated":false,"warnings":["..."],"metadata":{"title":null,"author":null,"created":null,"modified":null},
+ "content_status":"ok|partial|unreadable","content_reason":null,"detected_format":"doc","extension_mismatch":false}}
 ```
+`content_status`：`partial`（reason `capped|damaged|encoding`）= 读到一部分；`unreadable`（reason `ocr_empty`）= OCR 没识别出文字。完全读不了的文件（加密/损坏/格式不识别/空文件/过大/超时）仍以下面的结构化错误返回；Go 流水线把这些错误以及 `ocr_empty` 统一转为“**仅依据文件名**”分析（`harness.AnalyzeFilenameOnly`，证据首条为“内容无法读取（原因），仅依据文件名判断”，条目恒需人工审核），而不是失败项。格式按**内容**识别（`sniff.py`），`detected_format` / `extension_mismatch` 记录真实格式；支持的扩展名见 `contracts/formats.json`。
 错误统一 `{"error":{"code","message"}}`：401 UNAUTHORIZED；400 INVALID_REQUEST；403 PATH_NOT_ALLOWED；404 FILE_NOT_FOUND；413 FILE_TOO_LARGE；422 UNREADABLE_FILE / ENCRYPTED / UNSUPPORTED_FORMAT；503 OCR_UNAVAILABLE；504 EXTRACT_TIMEOUT。
 解析在子进程中执行并有超时，崩溃不影响服务。日志不得包含正文或路径。
 

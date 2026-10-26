@@ -8,18 +8,18 @@ const big = (name: string, size: number): PickedFile => ({ file: { name, size } 
 
 describe('import flow helpers (shared by the home drop zone and ImportView)', () => {
   it('lists recognised formats in a fixed order', () => {
-    expect(recognisedFormats([pf('a.pdf'), pf('b.docx'), pf('c.JPG'), pf('d.txt')])).toEqual(['Word', 'PDF', '图片'])
-    expect(recognisedFormats([pf('d.txt')])).toEqual([])
+    expect(recognisedFormats([pf('a.pdf'), pf('b.docx'), pf('c.JPG'), pf('d.txt'), pf('e.ppt'), pf('f.xls')])).toEqual(['Word', 'Excel', 'PowerPoint', 'PDF', '图片', '文本'])
+    expect(recognisedFormats([pf('d.exe')])).toEqual([])
   })
   it('builds the confirmation bar text', () => {
     const picked = [big('a.pdf', 1048576), big('b.xlsx', 1048576)]
     const b = pickBrief(picked)
     expect(b.text).toBe('2 个文件 · 2.0 MB · 将识别 Excel / PDF')
     expect(b.blocking).toBe(false)
-    expect(b.rejected).toBe(0)
+    expect(b.nameOnly).toBe(0)
   })
-  it('counts rejected files without blocking; huge batches and files are never blocked', () => {
-    expect(pickBrief([pf('a.pdf'), pf('b.exe')]).rejected).toBe(1)
+  it('counts name-only files without blocking; huge batches and files are never blocked', () => {
+    expect(pickBrief([pf('a.pdf'), pf('b.exe')]).nameOnly).toBe(1)
     expect(pickBrief([pf('a.pdf'), pf('b.exe')]).blocking).toBe(false)
     const many = Array.from({ length: 3000 }, (_, i) => big(`f${i}.pdf`, 10))
     expect(pickBrief(many)).toMatchObject({ blocking: false, blockReason: '' })
@@ -36,6 +36,7 @@ describe('import flow helpers (shared by the home drop zone and ImportView)', ()
     expect(list.map((p) => p.relativePath)).toEqual(['image.png', 'image(1).png'])
     expect(fromClipboard(null)).toEqual([])
     expect(hasSupported(list)).toBe(true)
-    expect(hasSupported([pf('x.txt')])).toBe(false)
+    expect(hasSupported([pf('x.txt')])).toBe(true)
+    expect(hasSupported([pf('x.exe')])).toBe(false)
   })
 })

@@ -111,7 +111,7 @@ oa-agentctl upgrade --tag <标签>      # 升级或回滚
 | 目录 | 内容 |
 |---|---|
 | `backend/` | Go API（Gin 路由）、Agent Harness、归档、流水线、存储、启动器与管理命令 |
-| `workers/document-ai/` | Python 解析与 OCR Worker（python-docx、openpyxl、PyMuPDF、RapidOCR） |
+| `workers/document-ai/` | Python 解析与 OCR Worker（python-docx、openpyxl、olefile、xlrd、PyMuPDF、RapidOCR；格式清单见 `contracts/formats.json`） |
 | `frontend/` | Vue 3 + TypeScript + Vite 界面 |
 | `desktop/` | Electron 桌面外壳（Windows 个人版） |
 | `contracts/` | `openapi.yaml`（唯一契约源）、`events.md` |

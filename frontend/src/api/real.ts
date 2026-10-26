@@ -3,9 +3,9 @@ import { openEventStream } from './sse'
 import { buildImportForm } from './importForm'
 import type {
   AiPolicy, ErrorReport, ErrorReportDetail, LlmStatus, LlmOauthStart, LlmOauthStatus, SystemInfo,
-  Api, ArchivePlan, ArchiveRule, AuditLog, CorrectionProposal, FileRecord, FolderListing, FsEntry, ImportJob,
+  Api, ArchivePlan, ArchiveRule, AuditLog, ClassificationOptions, CorrectionProposal, FileRecord, FolderListing, FsEntry, ImportJob,
   LedgerEntry, LlmConfig, LlmPreset, LlmTestResult, OATemplate, Page, Preview, ProviderStatus, ReadinessInfo, Replication, StorageConnection, StorageKind,
-  StorageListing, StorageTestResult, TemplateTestResult, TrashItem,
+  StorageListing, StorageTestResult, TemplateTestResult, TrashItem, FsBatchResult, FsVerifyReport, MoveResult, RestoreResult,
   ImportConfig, UploadSession, ImportBatchStatus, PathImportStatus,
   AdminUser, InviteCreated, Invitation, LoginResult, Me, MfaEnrolled, Passkey, SecuritySettings, SecuritySummary, SessionInfo, SetupStatus, TotpEnrollment, WebAuthnBegin,
 } from './types'
@@ -70,6 +70,7 @@ export const realApi: Api = {
 
   getPlan: (id) => json<ArchivePlan>(`/v1/archive-plans/${id}`),
   patchPlan: (id, version, items) => json<ArchivePlan>(`/v1/archive-plans/${id}`, { method: 'PATCH' }, { version, items }),
+  getClassificationOptions: (taskId) => json<ClassificationOptions>('/v1/classification/options' + qs(taskId ? { task_id: taskId } : undefined)),
   approvePlan: (id, version) => json<ArchivePlan>(`/v1/archive-plans/${id}/approve`, { method: 'POST' }, { version }),
   executePlan: (id, key) => json<ArchivePlan>(`/v1/archive-plans/${id}/execute`, { method: 'POST', headers: { 'Idempotency-Key': key } }),
   rollbackOperation: (id) => json<void>(`/v1/archive-operations/${id}/rollback`, { method: 'POST' }),
@@ -111,10 +112,18 @@ export const realApi: Api = {
     ? API_BASE + `/v1/files/${source.id}/preview/page` + qs({ page, max_side: maxSide })
     : API_BASE + '/v1/fs/preview/page' + qs({ path: source.path, page, max_side: maxSide }),
   createFolder: (path) => json<FsEntry>('/v1/fs/folders', { method: 'POST' }, { path }),
-  moveEntry: (from, to) => json<{ entry: FsEntry; ledger_updated: number }>('/v1/fs/move', { method: 'POST' }, { from, to }),
+  moveEntry: (from, to, opts) => json<MoveResult>('/v1/fs/move', { method: 'POST' }, { from, to, ...opts }),
+  bulkMove: (paths, targetDir, opts) => json<FsBatchResult>('/v1/fs/bulk/move', { method: 'POST' }, { paths, target_dir: targetDir, ...opts }),
+  bulkTrash: (paths) => json<FsBatchResult>('/v1/fs/bulk/trash', { method: 'POST' }, { paths }),
+  verifyFiles: (paths) => json<FsVerifyReport>('/v1/fs/verify', { method: 'POST' }, { paths }),
+  downloadUrl: (paths) => API_BASE + '/v1/fs/download?' + paths.map((p) => 'path=' + encodeURIComponent(p)).join('&'),
+  async downloadSelection(paths) {
+    const res = await raw('/v1/fs/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths }) })
+    return { blob: await res.blob(), filename: filenameFromDisposition(res.headers.get('Content-Disposition'), 'oa-files.zip') }
+  },
   trashEntry: (path) => json<TrashItem>('/v1/fs/trash', { method: 'POST' }, { path }),
   listTrash: () => json<TrashItem[]>('/v1/fs/trash'),
-  restoreTrash: (id) => json<{ path: string; ledger_updated: number }>(`/v1/fs/trash/${id}/restore`, { method: 'POST' }),
+  restoreTrash: (id, onConflict) => json<RestoreResult>(`/v1/fs/trash/${id}/restore`, { method: 'POST' }, onConflict ? { on_conflict: onConflict } : undefined),
   async revealInExplorer(path) { await json<{ revealed: string }>('/v1/fs/reveal', { method: 'POST' }, { path }) },
 
   listStorageKinds: () => json<StorageKind[]>('/v1/storage/kinds'),

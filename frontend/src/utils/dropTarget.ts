@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 import type { PickedFile } from '../api/types'
-import { LEGACY_RE, SUPPORTED_RE } from './importLimits'
+import { isReadable } from './formats'
 
 /**
  * 页面级文件拖放：整页都是投放区（带“松开即可上传”遮罩），页面外的拖放永不导航离开应用。
@@ -78,13 +78,10 @@ export function intakeNote(added: PickedFile[], skipped: string[]): IntakeNote {
   if (!added.length) {
     return { kind: 'error', text: skipped.length ? `没有读取到可用的文件：${skipped.length} 个条目读取失败或路径不安全。` : '没有读取到文件。拖入的可能是空文件夹、快捷方式，或没有读取权限的位置；也可以点“选择文件”。' }
   }
-  const unsupported = added.filter((p) => !SUPPORTED_RE.test(p.file.name))
-  const legacy = unsupported.filter((p) => LEGACY_RE.test(p.file.name)).length
-  const other = unsupported.length - legacy
+  const nameOnly = added.filter((p) => !isReadable(p.file.name) || p.file.size === 0).length
   const parts = [`已添加 ${added.length} 个文件`]
-  if (other) parts.push(`${other} 个格式不支持（仍会提交，在任务中显示为失败项）`)
-  if (legacy) parts.push(`${legacy} 个旧版 Office 文件需先转换`)
+  if (nameOnly) parts.push(`${nameOnly} 个文件的内容无法读取，将只按文件名处理（仍会提交，进入人工审核）`)
   if (skipped.length) parts.push(`${skipped.length} 个条目已跳过`)
-  const bad = unsupported.length === added.length
+  const bad = false
   return { kind: bad ? 'error' : parts.length > 1 ? 'info' : 'success', text: parts.join('；') + '。' }
 }

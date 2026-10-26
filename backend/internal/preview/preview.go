@@ -122,7 +122,7 @@ func (s *Service) build(ctx context.Context, t target) (Preview, error) {
 	var we *WorkerError
 	if errors.As(err, &we) && we.Code == "UNSUPPORTED_FORMAT" {
 		p.Kind = "unsupported"
-		p.Message = "该格式暂不支持预览（旧版 .doc/.xls 请先用 Office 另存为 .docx/.xlsx）；可下载后查看。"
+		p.Message = "该格式暂不支持预览；可下载后查看（文件仍可按文件名归档）。"
 		return p, nil
 	}
 	if err != nil {

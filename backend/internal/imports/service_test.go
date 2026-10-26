@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,17 +59,19 @@ func code(err error) string {
 	return ""
 }
 
-func TestImportKeepsRelativePathsAndFlagsUnsupportedFilesWithoutFailingTheBatch(t *testing.T) {
+func TestImportAcceptsEveryFileKeepsRelativePathsAndNeverFailsTheBatchOnFormat(t *testing.T) {
 	b, ms, err, root := run(t,
 		paths("财务/a.docx", "财务/旧.doc", "空.pdf", "图/b.PNG"),
 		part{"files", "a.docx", "hello"}, part{"files", "旧.doc", "legacy"}, part{"files", "空.pdf", ""}, part{"files", "b.PNG", "img"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Job.TotalFiles != 4 || len(b.Files) != 2 || len(b.Failures) != 2 || b.Job.FailureCount != 2 || b.Job.ProcessedFiles != 2 || b.Job.Status != "queued" {
+	// legacy .doc, an empty .pdf and (below) an unknown extension are all accepted: content that cannot be read is
+	// handled later by name only, so intake never rejects on format or emptiness.
+	if b.Job.TotalFiles != 4 || len(b.Files) != 4 || len(b.Failures) != 0 || b.Job.FailureCount != 0 || b.Job.ProcessedFiles != 0 || b.Job.Status != "queued" {
 		t.Fatalf("batch = %+v", b.Job)
 	}
-	if b.Files[0].SourcePath != "财务/a.docx" || b.Files[1].SourcePath != "图/b.PNG" || b.Files[1].MIMEType != "image/png" {
+	if b.Files[0].SourcePath != "财务/a.docx" || b.Files[1].MIMEType != "application/msword" || b.Files[2].SizeBytes != 0 || b.Files[3].SourcePath != "图/b.PNG" || b.Files[3].MIMEType != "image/png" {
 		t.Fatalf("files = %+v", b.Files)
 	}
 	codes := map[string]string{}
@@ -78,7 +81,7 @@ func TestImportKeepsRelativePathsAndFlagsUnsupportedFilesWithoutFailingTheBatch(
 			t.Errorf("failure %s has no hash", f.SourcePath)
 		}
 	}
-	if codes["财务/旧.doc"] != "UNSUPPORTED_FORMAT" || codes["空.pdf"] != "EMPTY_FILE" {
+	if len(codes) != 0 {
 		t.Fatalf("codes = %v", codes)
 	}
 	if ms.saved == nil || len(b.Fingerprint) != 64 {
@@ -304,5 +307,29 @@ func TestRemoteImportRecordsAISettingsAndFingerprint(t *testing.T) {
 	}
 	if do(TaskAI{Fingerprint: "a"}).Fingerprint == do(TaskAI{Fingerprint: "b"}).Fingerprint {
 		t.Fatal("options must change the fingerprint")
+	}
+}
+
+func TestImportStoresOddExtensionsSafelyAndKeepsTheOriginalName(t *testing.T) {
+	long := "a." + strings.Repeat("x", 80)
+	b, _, err, root := run(t,
+		paths("x/图纸.dwg", "x/"+long, "x/noext", "x/压缩.ZIP"),
+		part{"files", "图纸.dwg", "d"}, part{"files", long, "l"}, part{"files", "noext", "n"}, part{"files", "压缩.ZIP", "z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Files) != 4 || len(b.Failures) != 0 {
+		t.Fatalf("every extension is accepted: %+v %+v", b.Files, b.Failures)
+	}
+	for _, f := range b.Files {
+		if f.MIMEType != "application/octet-stream" {
+			t.Errorf("%s: unknown formats are octet-stream, got %s", f.SourceName, f.MIMEType)
+		}
+		if !strings.HasPrefix(f.StoredPath, root) || len(filepath.Base(f.StoredPath)) > 60 {
+			t.Errorf("stored name must stay short and inside the spool: %s", f.StoredPath)
+		}
+	}
+	if b.Files[0].SourceName != "图纸.dwg" || b.Files[3].SourceName != "压缩.ZIP" || !strings.HasSuffix(b.Files[0].StoredPath, ".dwg") || strings.Contains(b.Files[1].StoredPath, "xxxxxxxx") {
+		t.Fatalf("names: %+v", b.Files)
 	}
 }

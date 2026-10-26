@@ -65,11 +65,28 @@ func scanFile(r sqldb.Row) (imports.File, error) {
 		f.Evidence = []string{}
 	}
 	var parsed struct {
-		OCR      *imports.OCRInfo  `json:"ocr"`
-		LLMError *imports.LLMError `json:"llm_error"`
+		OCR           *imports.OCRInfo  `json:"ocr"`
+		LLMError      *imports.LLMError `json:"llm_error"`
+		ContentStatus string            `json:"content_status"`
+		ContentReason string            `json:"content_reason"`
+		Basis         string            `json:"basis"`
+		FormatNote    string            `json:"format_note"`
 	}
 	if len(an) > 0 && json.Unmarshal(an, &parsed) == nil && parsed.OCR != nil && parsed.OCR.Used {
 		f.OCR = parsed.OCR
+	}
+	if f.Error == nil && parsed.ContentStatus != "" {
+		c := &imports.ContentInfo{Status: parsed.ContentStatus, Basis: parsed.Basis}
+		if c.Basis == "" {
+			c.Basis = "content"
+		}
+		if parsed.ContentReason != "" {
+			c.Reason = &parsed.ContentReason
+		}
+		if parsed.FormatNote != "" {
+			c.FormatMismatch = &parsed.FormatNote
+		}
+		f.Content = c
 	}
 	if f.Error != nil && len(an) > 0 && json.Unmarshal(an, &parsed) == nil {
 		f.LLMError = parsed.LLMError

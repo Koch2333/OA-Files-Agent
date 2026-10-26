@@ -93,7 +93,7 @@ func TestChunkedUploadResumeIdempotencyAndCommit(t *testing.T) {
 	if _, err = s.GetUpload("u2", sess.ID); status(err) != 403 {
 		t.Fatalf("foreign access → %v", err)
 	}
-	// a second, unsupported + an empty file, then commit
+	// a second file of an unknown type + an empty file: both are accepted (handled by name only later), then commit
 	bad, _ := s.CreateUpload("u1", CreateUploadReq{BatchID: batchA, Name: "x.zip", Size: 3})
 	s.AppendChunk(ctx, "u1", bad.ID, 0, strings.NewReader("abc"), 3)
 	s.CompleteUpload(ctx, "u1", bad.ID)
@@ -103,7 +103,7 @@ func TestChunkedUploadResumeIdempotencyAndCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Files) != 1 || len(b.Failures) != 2 || b.Files[0].SHA256 != sum(data) || b.Files[0].SourcePath != "合同/a.pdf" || b.Files[0].SizeBytes != int64(len(data)) {
+	if len(b.Files) != 3 || len(b.Failures) != 0 || b.Files[0].SHA256 != sum(data) || b.Files[0].SourcePath != "合同/a.pdf" || b.Files[0].SizeBytes != int64(len(data)) {
 		t.Fatalf("batch: %+v %+v", b.Files, b.Failures)
 	}
 	raw, err := os.ReadFile(b.Files[0].StoredPath)
@@ -328,14 +328,14 @@ func TestPathImportCopiesWalksAndNeverTouchesSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := waitPath(t, p)
-	if st.State != "done" || st.Copied != 3 {
+	if st.State != "done" || st.Copied != 5 {
 		t.Fatalf("status: %+v", st)
 	}
 	codes := map[string]string{}
 	for _, r := range st.Results {
 		codes[filepath.Base(r.Path)+":"+r.Status] = r.Code
 	}
-	if codes["empty.pdf:failed"] != "EMPTY_FILE" || codes["nope.pdf:failed"] != "NOT_FOUND" || codes["x.pdf:failed"] != "INVALID_PATH" || codes["notes.txt:skipped"] != "UNSUPPORTED_FORMAT" {
+	if codes["empty.pdf:copied"] != "" || codes["notes.txt:copied"] != "" || codes["nope.pdf:failed"] != "NOT_FOUND" || codes["x.pdf:failed"] != "INVALID_PATH" {
 		t.Fatalf("results: %v", codes)
 	}
 	if _, hidden := codes[".hidden.pdf:copied"]; hidden {
@@ -357,7 +357,7 @@ func TestPathImportCopiesWalksAndNeverTouchesSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Files) != 3 || len(b.Failures) != 1 {
+	if len(b.Files) != 5 || len(b.Failures) != 0 {
 		t.Fatalf("commit: %d files %d failures %+v", len(b.Files), len(b.Failures), b.Failures)
 	}
 	rels := map[string]string{}

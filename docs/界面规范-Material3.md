@@ -74,6 +74,8 @@
 | 标签页 | `.tabs` + `[role=tab]` | 高 48，激活指示 3dp |
 | 标签（Chip） | `.chip`（只读标签）、`button.chip`（assist/filter/input/suggestion） | 高 32、圆角 8、label-large；表格内 `.tbl .chip`/`.chip.sm` 为 24 高（密集）；`aria-pressed="true"` 为选中 |
 | 卡片 | `.card`（filled）、`.card.elevated`、`.card.outlined` | 12dp 圆角；filled = surface-container-highest，elevated = container-low + Level 1，outlined = surface + outline-variant |
+| 可输入下拉框（combobox） | `ComboField.vue`（纯逻辑 `utils/classification.ts`） | M3 outlined 文本框 + 末尾 `arrow_drop_down`/清除图标按钮；ARIA 1.2 combobox（`role=combobox`、`aria-expanded`、`aria-controls`、`aria-activedescendant`）+ listbox；输入即过滤，任意文本可输入，列表底部“新建值”；分组“已使用 / 预设 / 兜底分类”；↑↓ Enter Esc Home End Alt+↓；列表 Teleport 到 body（Dialog 内不被裁剪），选项高 48（粗指针）/40；错误显示在输入框下方（`.supporting.error`）；值纯文本渲染 |
+| 步骤按钮 | `StepButtons.vue`（纯逻辑 `utils/planSteps.ts`） | ①②编号徽标 + chevron 连接；当前步 tonal，已完成 outlined + check，下一步 filled，锁定步 lock 图标 + `aria-disabled`（仍可聚焦/点击）；悬停/聚焦 plain tooltip，点击弹出带动作的气泡（`role=dialog` 非模态，Esc 关闭）；首次提示 coach 气泡（不抢焦点，记住在 localStorage，存储失败时不显示）；提示脉冲遵守 `prefers-reduced-motion` |
 | 对话框 | `Dialog.vue` | 28dp 圆角，surface-container-high，headline-small 标题，body-medium 说明，操作右对齐 8dp 间距，遮罩 32%，进入用 emphasized decelerate |
 | 侧边抽屉 | `Drawer.vue` | surface-container-low，左侧 28dp 圆角，宽 ≤480 |
 | Snackbar | `Toasts.vue` | inverse-surface，4dp 圆角，最小高 48，操作为文本按钮（inverse-primary）；错误用 error-container |

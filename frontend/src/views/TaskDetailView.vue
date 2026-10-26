@@ -19,6 +19,8 @@ import FileDetail from '../components/FileDetail.vue'
 import AgentTrace from '../components/AgentTrace.vue'
 import CorrectionDrawer from '../components/CorrectionDrawer.vue'
 import FilePreview from '../components/FilePreview.vue'
+import ContentBadge from '../components/ContentBadge.vue'
+import { nameOnlyCount, nameOnlySummary } from '../utils/contentStatus'
 import { isPoorOcr } from '../utils/ocr'
 
 const auth = useAuth()
@@ -54,6 +56,7 @@ async function act(kind: 'cancel' | 'retry') {
   try { await (kind === 'cancel' ? api.cancelTask(props.id) : api.retryTask(props.id)); ui.toast(kind === 'cancel' ? '已请求取消' : '已重新排队', 'success'); await task.run(); if (kind === 'retry') { void files.run(); trace.value?.connect() } }
   catch (e) { ui.toast(errMsg(e), 'error') } finally { busy.value = false }
 }
+const nameOnlyN = computed(() => nameOnlyCount(files.data.value))
 </script>
 
 <template>
@@ -68,6 +71,7 @@ async function act(kind: 'cancel' | 'retry') {
 
   <StateView :loading="task.loading.value && !task.data.value" :error="task.error.value" :empty="false" @retry="task.run">
     <template v-if="task.data.value">
+      <div v-if="nameOnlyN" class="banner" role="status" data-testid="name-only-summary"><Icon name="draft" /><div><b>{{ nameOnlySummary(nameOnlyN) }}</b><div class="t-label">加密、损坏、过大或格式无法识别的文件不会失败：系统只依据文件名判断，并标记为“仅依据文件名”，需要你人工确认后才会归档，原件不会被修改。</div></div></div>
       <div v-if="autoBanner" class="banner autob" role="status" data-testid="auto-banner"><Icon name="bolt" /><div><b>{{ autoBanner }}</b><div class="t-label">无法确认的文件已留待人工处理；已归档的内容可在计划页「撤销本次归档」。</div></div></div>
       <section v-if="task.data.value.instruction || task.data.value.llm_source" class="card meta row wrap" data-testid="task-ai-meta">
         <span class="chip" :class="{ attention: modeBadge(task.data.value).tone === 'attention' }">{{ modeBadge(task.data.value).label }}</span>
@@ -94,7 +98,7 @@ async function act(kind: 'cancel' | 'retry') {
                     <td><span v-if="f.detected_department">{{ f.detected_department }}</span><span v-else class="chip attention">待审核</span></td>
                     <td><span v-if="f.detected_type">{{ f.detected_type }}</span><span v-else class="chip attention">待审核</span></td>
                     <td class="nowrap"><span v-if="f.detected_date">{{ f.detected_date }}</span><span v-else class="chip attention">待审核</span></td>
-                    <td><span v-if="f.error" class="chip error" :title="f.error"><Icon name="error" sm />{{ f.llm_error ? `模型出错${f.llm_error.status ? ' ' + f.llm_error.status : ''}` : '解析失败' }}</span><span v-else-if="f.review_required" class="chip attention">需确认</span><span v-else class="chip success">已识别</span></td>
+                    <td><span v-if="f.error" class="chip error" :title="f.error"><Icon name="error" sm />{{ f.llm_error ? `模型出错${f.llm_error.status ? ' ' + f.llm_error.status : ''}` : '解析失败' }}</span><template v-else><ContentBadge :content="f.content" /><span v-if="f.review_required" class="chip attention">需确认</span><span v-else class="chip success">已识别</span></template></td>
                   </tr>
                 </tbody>
               </table>

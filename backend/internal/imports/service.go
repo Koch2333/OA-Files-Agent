@@ -11,6 +11,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"oa-agent/backend/internal/formats"
 	"os"
 	"path"
 	"path/filepath"
@@ -73,12 +74,6 @@ func ValidatePath(value string) error {
 		}
 	}
 	return nil
-}
-
-var mimeTypes = map[string]string{
-	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-	".pdf":  "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 }
 
 // Import copies into an application-owned spool; client paths are metadata only.
@@ -171,24 +166,11 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 		if parseErr != nil || ValidatePath(filename) != nil || strings.Contains(filename, "/") || ValidatePath(relative) != nil || path.Base(relative) != filename {
 			return batch, &Error{400, "INVALID_PATH", "文件名或相对路径无效"}
 		}
-		extension := strings.ToLower(path.Ext(filename))
 		// Length-prefixed paths and a per-file digest form a stable semantic request fingerprint.
 		fmt.Fprintf(requestHash, "%d:%s:", len(relative), relative)
-		contentType, supported := mimeTypes[extension]
-		if !supported {
-			message := "暂不支持此文件格式"
-			if extension == ".doc" || extension == ".xls" {
-				message = "请先使用办公软件转换为 DOCX/XLSX 后导入"
-			}
-			hash := sha256.New()
-			size, readErr := io.Copy(hash, part)
-			if readErr != nil {
-				return batch, &Error{400, "INVALID_MULTIPART", "上传内容不完整"}
-			}
-			batch.Failures = append(batch.Failures, Failure{Index: index, SourcePath: relative, Code: "UNSUPPORTED_FORMAT", Message: message, SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: size, MIMEType: "application/octet-stream"})
-			fmt.Fprintf(requestHash, "%d:%x;", size, hash.Sum(nil))
-			continue
-		}
+		// Every extension is accepted: a file whose content cannot be read (unknown type, encrypted, damaged, empty) is
+		// still imported and later archived by its name only. The extension only decides the MIME type recorded.
+		contentType := formats.MIME(filename)
 		fileID, idErr := NewID()
 		if idErr != nil {
 			return batch, idErr
@@ -196,7 +178,7 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 		if err = s.Limits.CheckSpace(s.Root, 0); err != nil {
 			return batch, err
 		}
-		stored := filepath.Join(dir, fileID+extension)
+		stored := filepath.Join(dir, fileID+safeExt(filename))
 		partial := stored + ".part"
 		file, openErr := os.OpenFile(partial, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if openErr != nil {
@@ -231,12 +213,6 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 			}
 			batch.Failures = append(batch.Failures, Failure{Index: index, SourcePath: relative, Code: "FILE_TOO_LARGE", Message: "超过管理员设置的单文件上限 " + HumanBytes(s.Limits.MaxUploadBytes), SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: size + rest, MIMEType: contentType})
 			fmt.Fprintf(requestHash, "%d:%x;", size+rest, hash.Sum(nil))
-			continue
-		}
-		if size == 0 {
-			fmt.Fprintf(requestHash, "%d:%x;", size, hash.Sum(nil))
-			os.Remove(partial)
-			batch.Failures = append(batch.Failures, Failure{Index: index, SourcePath: relative, Code: "EMPTY_FILE", Message: "文件为空", SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: 0, MIMEType: contentType})
 			continue
 		}
 		fmt.Fprintf(requestHash, "%d:%x;", size, hash.Sum(nil))

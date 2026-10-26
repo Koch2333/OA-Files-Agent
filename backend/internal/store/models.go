@@ -39,7 +39,18 @@ type PlanItem struct {
 	DocumentDate    *string  `json:"document_date"`
 	Warnings        []string `json:"warnings"`
 	ReviewRequired  bool     `json:"review_required"`
+	// FallbackFields lists the fields ("department", "document_type") that hold the system-assigned placeholder 其他
+	// because they could not be determined. They stay until a person confirms or changes them.
+	FallbackFields []string `json:"fallback_fields"`
+	// Basis is "content" or "filename_only" (the file's content could not be read, so department/type/date come from its
+	// name alone); BasisNote then holds the explanation, e.g. 内容无法读取（已加密），仅依据文件名判断. Read-only: derived
+	// from the file's analysis, never stored on the item.
+	Basis     string  `json:"basis"`
+	BasisNote *string `json:"basis_note"`
 }
+
+// FilenameOnlyMarker starts the first evidence line of a file that was judged from its name only (harness.AnalyzeFilenameOnly).
+const FilenameOnlyMarker = "内容无法读取（"
 
 type Plan struct {
 	ID               string     `json:"id"`
@@ -159,6 +170,7 @@ type OpResult struct {
 	Status      string   `json:"status"`
 	Err         string   `json:"err,omitempty"`
 	SHA256      string   `json:"sha256"`
+	DuplicateOf string   `json:"duplicate_of,omitempty"` // archive path that already held identical content (no second copy was made)
 }
 
 type Operation struct {

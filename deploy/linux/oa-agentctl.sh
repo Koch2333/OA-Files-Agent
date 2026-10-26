@@ -8,7 +8,7 @@ OA_DEFAULT_DIR='/opt/oa-agent'
 CTL_VERSION='1'
 
 # ---------------------------------------------------------------------------------------------- messages
-case "${OA_LANG:-${LC_ALL:-${LANG:-}}}" in zh* | *zh_* | *ZH*) UI=zh ;; *) UI=en ;; esac
+case "${OA_LANG:-${LC_ALL:-${LANG:-}}}" in [Zz][Hh]* | *[Zz][Hh]_* | *[Zz][Hh]-*) UI=zh ;; *) UI=en ;; esac
 if [ -n "${OA_LANG:-}" ]; then case "$OA_LANG" in zh*) UI=zh ;; *) UI=en ;; esac; fi
 m() { if [ "$UI" = zh ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
 if [ -t 1 ]; then C_R=$'\033[31m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_0=$'\033[0m'; else C_R=''; C_G=''; C_Y=''; C_0=''; fi
@@ -776,6 +776,12 @@ main() {
             *) break ;;
         esac
     done
+    # the language chosen at install time (OA_LANG in .env) applies unless OA_LANG is set in the environment
+    if [ -z "${OA_LANG:-}" ] && [ -f "$DIR/.env" ]; then
+        local l; l="$(env_get OA_LANG)"
+        case "$l" in zh*) UI=zh ;; en*) UI=en ;; esac
+        [ -z "$l" ] || export OA_LANG="$UI"
+    fi
     case "$DIR" in /*) ;; *) die "安装目录必须是绝对路径: $DIR" "install dir must be absolute: $DIR" ;; esac
     local cmd="${1:-help}"
     shift || true

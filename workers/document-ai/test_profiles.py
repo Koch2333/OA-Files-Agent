@@ -349,9 +349,9 @@ class PreviewTest(RootsBase):
         self.assertEqual((status, body["data"]), (200, {"kind": "image", "pages": 1}))
 
     def test_errors(self):
-        legacy = os.path.join(self.extra, "old.doc")
+        legacy = os.path.join(self.extra, "old.xyz")   # unknown extension + unrecognised binary: unsupported
         with open(legacy, "wb") as f:
-            f.write(b"x")
+            f.write(b"\x00\x01\x02binary" * 50)
         status, body = self.preview(legacy)
         self.assertEqual((status, body["error"]["code"]), (422, "UNSUPPORTED_FORMAT"))
         status, body = self.preview(self.sample("财务部_损坏的报表.docx"))

@@ -7,15 +7,16 @@ const pf = (name: string, size = 10, rel = name): PickedFile => ({ file: Object.
 describe('import limits', () => {
   it('classifies files', () => {
     expect(verdict({ name: 'a.PDF', size: 5 })).toBe('ok')
-    expect(verdict({ name: 'a.doc', size: 5 })).toBe('legacy')
-    expect(verdict({ name: 'a.zip', size: 5 })).toBe('unsupported')
+    for (const n of ['a.doc', 'a.XLS', 'a.ppt', 'a.pptx', 'a.odt', 'a.rtf', 'a.txt', 'a.csv', 'a.html', 'a.eml', 'a.webp', 'a.tif']) expect(verdict({ name: n, size: 5 })).toBe('ok') // legacy Office needs no conversion
+    expect(verdict({ name: 'a.zip', size: 5 })).toBe('name_only')
+    expect(verdict({ name: 'noext', size: 5 })).toBe('name_only')
     expect(verdict({ name: 'a.pdf', size: 0 })).toBe('empty')
     expect(verdict({ name: 'a.pdf', size: 50 * 1024 ** 3 })).toBe('ok') // no size limit
   })
-  it('rejected files never block; there is no size or count limit', () => {
-    const s = summarize([pf('a.pdf'), pf('b.zip'), pf('c.pdf', 8 * 1024 ** 3)])
-    expect(s).toMatchObject({ count: 3, ok: 2, rejected: 1, blocking: false, overCount: false, overBatch: false })
-    expect(s.rejectedList.map((r) => r.verdict)).toEqual(['unsupported'])
+  it('name-only files never block; there is no size or count limit', () => {
+    const s = summarize([pf('a.pdf'), pf('b.zip'), pf('c.pdf', 8 * 1024 ** 3), pf('e.doc', 0)])
+    expect(s).toMatchObject({ count: 4, ok: 2, nameOnly: 2, blocking: false, overCount: false, overBatch: false })
+    expect(s.nameOnlyList.map((r) => r.verdict)).toEqual(['name_only', 'empty'])
     const many = Array.from({ length: 5000 }, (_, i) => pf(`f${i}.pdf`))
     expect(summarize(many)).toMatchObject({ count: 5000, ok: 5000, overCount: false, blocking: false })
   })

@@ -7,7 +7,10 @@
 | Vue、Vue Router、Pinia、Vite | 前端 | MIT |
 | @material/material-color-utilities | 主题配色 | Apache-2.0 |
 | Material Symbols（@material-symbols/svg-400，生成为内联 SVG 路径） | 图标 | Apache-2.0 |
-| python-docx、openpyxl | Word/Excel 解析 | MIT |
+| python-docx、openpyxl | Word/Excel（.docx/.xlsx）解析 | MIT |
+| olefile | Office 97-2003（.doc/.ppt/.xls/.msg）所用的 OLE2 复合文档读取 | BSD-2-Clause |
+| xlrd（2.x，只读 .xls） | Excel 97-2003（.xls）解析 | BSD-3-Clause |
+| 无新增依赖（自写，标准库） | .doc / .ppt 文本抽取、RTF、OpenDocument、PPTX、HTML、EML、CSV 编码识别 | 本项目 AGPL-3.0 |
 | **PyMuPDF** | PDF 文本提取与渲染 | **AGPL-3.0**（商业分发需遵守 AGPL 或向 Artifex 购买商业许可；对外发行前必须评审） |
 | RapidOCR（PaddleOCR 模型的 ONNX 版）、ONNX Runtime、OpenCV | OCR | Apache-2.0 / MIT / Apache-2.0 |
 | NumPy、Pillow | 图像处理 | BSD / HPND |

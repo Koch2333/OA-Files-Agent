@@ -87,7 +87,7 @@ onBeforeUnmount(() => prev?.focus?.())
           <Icon name="visibility" class="muted" />
           <div class="grow">
             <h2 class="t-title-m ellipsis" :title="title">{{ title }}</h2>
-            <div v-if="pv" class="row meta"><span class="chip">{{ kindLabel(pv.kind) }}</span><span class="muted">{{ fmtBytes(pv.size_bytes) }}</span></div>
+            <div v-if="pv" class="row meta"><span class="chip">{{ kindLabel(pv.kind) }}</span><span class="muted">{{ fmtBytes(pv.size_bytes) }}</span><slot name="meta" /></div>
           </div>
           <a v-if="canDownload" class="btn tonal has-icon" :href="downloadUrl" :download="title"><Icon name="download" sm />下载</a>
           <button class="btn icon-only" aria-label="关闭" title="关闭（Esc）" @click="emit('close')"><Icon name="close" /></button>
@@ -172,7 +172,7 @@ onBeforeUnmount(() => prev?.focus?.())
               <div v-else class="center pad" data-testid="preview-unsupported">
                 <Icon name="visibility_off" class="big" />
                 <div class="t-title-m">无法预览此文件</div>
-                <p class="muted">{{ pv.message || '暂不支持预览该格式。旧版 .doc/.xls 需先转换为 .docx/.xlsx。' }}</p>
+                <p class="muted">{{ pv.message || '暂不支持预览该格式，可下载后查看；文件仍可按文件名归档。' }}</p>
                 <a v-if="canDownload" class="btn filled has-icon" :href="downloadUrl" :download="title"><Icon name="download" sm />下载原件</a>
               </div>
             </template>

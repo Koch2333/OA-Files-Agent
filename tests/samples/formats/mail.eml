@@ -1,0 +1,19 @@
+From: =?utf-8?b?5byg5Lyf?= <zhang@example.com>
+To: li@example.com
+Subject: =?utf-8?b?6K6+5aSH6YeH6LSt5a6h5om5?=
+Date: Fri, 27 Mar 2026 10:00:00 +0800
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+5oKo5aW977yM6ZmE5Lu25Li66K6+5aSH6YeH6LSt5a6h5om55Y2V77yM6K+35a6h5om544CCCumHh+i0remDqA==
+--b1
+Content-Type: application/octet-stream; name="approval.xlsx"
+Content-Disposition: attachment; filename="approval.xlsx"
+Content-Transfer-Encoding: base64
+
+UEsDBA==
+--b1--

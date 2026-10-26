@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# OA Agent document-AI worker (python-docx, openpyxl, PyMuPDF, RapidOCR/onnxruntime).
+# OA Agent document-AI worker (python-docx, openpyxl, PyMuPDF, RapidOCR/onnxruntime, olefile + xlrd for Office 97-2003).
 # Build context = repository root.  NOTE: PyMuPDF is AGPL-3.0 (see docs/THIRD-PARTY-LICENSES.md).
 ARG PYTHON_VERSION=3.12
 FROM python:${PYTHON_VERSION}-slim-bookworm AS deps

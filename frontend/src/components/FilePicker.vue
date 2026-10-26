@@ -35,11 +35,11 @@ const chipFor = (p: PickedFile) => verdict(p.file)
       <div class="t-title-m">{{ scanning ? `正在读取文件${found ? `（已发现 ${found} 个）` : ''}…` : dragging ? '松开即可上传' : '把文件或整个文件夹拖到这里' }}</div>
       <p v-if="!compact" class="muted">子文件夹会被递归读取，并保留相对路径</p>
       <div class="row wrap" style="justify-content: center">
-        <label class="btn filled has-icon" :aria-disabled="disabled"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden :disabled="disabled" accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.doc,.xls" @change="onPick" /></label>
+        <label class="btn filled has-icon" :aria-disabled="disabled"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden :disabled="disabled" @change="onPick" /></label>
         <label class="btn tonal has-icon" :aria-disabled="disabled"><Icon name="folder_open" sm />选择文件夹<input type="file" hidden webkitdirectory :disabled="disabled" @change="onPick" /></label>
         <slot name="actions" />
       </div>
-      <p class="muted lim">不限制文件大小，大文件分块上传；支持 .docx / .xlsx / .pdf / .png / .jpg</p>
+      <p class="muted lim">不限制文件大小与格式，大文件分块上传；Word / Excel / PPT（含 .doc .xls .ppt）、PDF、图片、文本、网页、邮件可识别内容，其他格式按文件名处理</p>
     </div>
     <DropOverlay :show="dragging" />
     <ElevatedNotice />
@@ -47,7 +47,7 @@ const chipFor = (p: PickedFile) => verdict(p.file)
 
     <div v-if="modelValue.length" class="card flat">
       <div class="row hd">
-        <div class="grow"><b>{{ sum.count }}</b> 个文件 · {{ fmtBytes(sum.totalBytes) }}<span v-if="sum.rejected" class="chip attention" style="margin-left: 8px" data-testid="rejected-count">{{ sum.rejected }} 个将被拒绝</span></div>
+        <div class="grow"><b>{{ sum.count }}</b> 个文件 · {{ fmtBytes(sum.totalBytes) }}<span v-if="sum.nameOnly" class="chip attention" style="margin-left: 8px" data-testid="rejected-count">{{ sum.nameOnly }} 个仅按文件名处理</span></div>
         <button class="btn sm" :disabled="disabled" @click="emit('update:modelValue', [])">清空</button>
       </div>
       <div class="table-wrap" :style="{ maxHeight: compact ? '240px' : '360px' }">
@@ -57,13 +57,13 @@ const chipFor = (p: PickedFile) => verdict(p.file)
             <tr v-for="p in modelValue" :key="p.relativePath">
               <td class="ellipsis" style="max-width: 420px" :title="p.relativePath">{{ p.relativePath }}</td>
               <td class="nowrap muted">{{ fmtBytes(p.file.size) }}</td>
-              <td><span class="chip" :class="chipFor(p) === 'ok' ? 'success' : chipFor(p) === 'unsupported' ? 'error' : 'attention'">{{ VERDICT_LABEL[chipFor(p)] }}</span></td>
+              <td><span class="chip" :class="chipFor(p) === 'ok' ? 'success' : 'attention'">{{ VERDICT_LABEL[chipFor(p)] }}</span></td>
               <td><button class="btn icon-only sm" :aria-label="`移除 ${p.file.name}`" :disabled="disabled" @click="remove(p)"><Icon name="close" sm /></button></td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p v-if="sum.rejected" class="muted rej" data-testid="rejected-list">格式不支持或空的文件仍会提交，在任务中显示为失败项，不会导致整批失败：{{ sum.rejectedList.slice(0, 5).map((r) => r.path).join('、') }}<template v-if="sum.rejectedList.length > 5"> 等 {{ sum.rejectedList.length }} 个</template></p>
+      <p v-if="sum.nameOnly" class="muted rej" data-testid="rejected-list">格式无法读取内容（或是空文件）的文件仍会提交：只依据文件名判断，一定进入人工审核，原件不会被修改：{{ sum.nameOnlyList.slice(0, 5).map((r) => r.path).join('、') }}<template v-if="sum.nameOnlyList.length > 5"> 等 {{ sum.nameOnlyList.length }} 个</template></p>
     </div>
   </div>
 </template>

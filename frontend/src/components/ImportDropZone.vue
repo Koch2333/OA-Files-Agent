@@ -29,7 +29,7 @@ const listOpen = ref(false)
 const instrOpen = ref(false)
 const canWrite = computed(() => auth.canWrite)
 const shown = computed(() => picked.value.slice(0, listOpen.value ? 100 : 0))
-const rejectedPreview = computed(() => flow.summary.value.rejectedList.slice(0, 4).map((r) => r.path).join('、'))
+const nameOnlyPreview = computed(() => flow.summary.value.nameOnlyList.slice(0, 4).map((r) => r.path).join('、'))
 
 // 页面级投放（见 utils/dropTarget.ts）：整页可放，遮罩提示“松开即可上传”；只读账号/提交中仍阻止导航但不接收
 const { dragging } = useWindowDrop({ enabled: () => canWrite.value && !flow.submitting.value, onDrop: (dt) => { void flow.addFromDrop(dt) } })
@@ -45,7 +45,7 @@ onMounted(() => {
   document.addEventListener('paste', onPaste)
 })
 onBeforeUnmount(() => { document.removeEventListener('paste', onPaste) })
-const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' : v === 'unsupported' ? 'error' : 'attention' }
+const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' : 'attention' }
 </script>
 <template>
   <section class="dz" :class="{ on: dragging, has: picked.length > 0, off: !canWrite }" role="group" aria-label="导入文件" data-testid="home-dropzone">
@@ -60,9 +60,9 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
     <div v-else-if="!picked.length" class="empty">
       <Icon :name="flow.scanning.value ? 'progress_activity' : 'cloud_upload'" class="big" :class="{ spin: flow.scanning.value }" />
       <div class="t-title" data-testid="dz-title" aria-live="polite">{{ flow.scanning.value ? `正在读取文件${flow.found.value ? `（已发现 ${flow.found.value} 个）` : ''}…` : dragging ? '松开即可上传' : '把文件或文件夹拖到这里，AI 自动识别并归档' }}</div>
-      <p class="muted">支持 Word / Excel / PDF / 图片（含扫描件 OCR）。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
+      <p class="muted">支持 Word / Excel / PPT（含旧版 .doc .xls .ppt）、PDF、图片（含扫描件 OCR）、文本、网页、邮件；其他格式也会接收，只按文件名处理。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
       <div class="row wrap" style="justify-content: center">
-        <label class="btn filled has-icon"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.doc,.xls" data-testid="dz-files" @change="onPick" /></label>
+        <label class="btn filled has-icon"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden data-testid="dz-files" @change="onPick" /></label>
         <label class="btn tonal has-icon"><Icon name="folder_open" sm />选择文件夹<input type="file" hidden webkitdirectory data-testid="dz-folder" @change="onPick" /></label>
       </div>
       <div v-if="flow.nativePick.value" class="row wrap" style="justify-content: center" data-testid="dz-native">
@@ -70,7 +70,7 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
         <button class="btn tonal has-icon" type="button" :disabled="flow.submitting.value" data-testid="dz-native-folder" @click="flow.pickNative(true)"><Icon name="folder_open" sm />从本机选择文件夹（免上传）</button>
       </div>
       <UploadProgress v-if="flow.localProgress.value" :progress="null" :local="flow.localProgress.value" @cancel="flow.cancelUpload()" />
-      <p class="muted lim">不限制文件大小和数量；大文件会分块上传，中断后可以继续。超大文件只做元数据判断，并标记为待人工审核。</p>
+      <p class="muted lim">不限制文件大小和数量；大文件会分块上传，中断后可以继续。超大文件和无法读取内容的文件只依据文件名判断，并标记为待人工审核。</p>
       <ol v-if="props.firstRun" class="steps" aria-label="使用步骤">
         <li><b>1</b>拖入文件</li><li class="sep" aria-hidden="true"><Icon name="arrow_forward" sm /></li><li><b>2</b>AI 识别并生成计划</li><li class="sep" aria-hidden="true"><Icon name="arrow_forward" sm /></li><li><b>3</b>你审批后归档</li>
       </ol>
@@ -82,8 +82,8 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
       <div class="row wrap top">
         <Icon name="inventory_2" class="ico" />
         <div class="grow"><div class="t-title-m" data-testid="dz-brief">{{ brief.text }}</div>
-          <div class="muted t-label"><button type="button" class="link" :aria-expanded="listOpen" @click="listOpen = !listOpen">{{ listOpen ? '收起文件清单' : '查看文件清单' }}</button><span v-if="brief.rejected" class="chip attention" style="margin-left: 8px" data-testid="rejected-count">{{ brief.rejected }} 个将被拒绝</span></div></div>
-        <label class="btn sm has-icon"><Icon name="add" sm />继续添加<input type="file" multiple hidden accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.doc,.xls" @change="onPick" /></label>
+          <div class="muted t-label"><button type="button" class="link" :aria-expanded="listOpen" @click="listOpen = !listOpen">{{ listOpen ? '收起文件清单' : '查看文件清单' }}</button><span v-if="brief.nameOnly" class="chip attention" style="margin-left: 8px" data-testid="rejected-count">{{ brief.nameOnly }} 个仅按文件名处理</span></div></div>
+        <label class="btn sm has-icon"><Icon name="add" sm />继续添加<input type="file" multiple hidden @change="onPick" /></label>
         <button class="btn sm has-icon" :disabled="flow.submitting.value" data-testid="dz-clear" @click="flow.clear()"><Icon name="delete_sweep" sm />全部移除</button>
       </div>
       <div v-if="listOpen" class="table-wrap files">
@@ -92,7 +92,7 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
             <td><button class="btn icon-only sm" :aria-label="`移除 ${p.file.name}`" @click="flow.remove(p)"><Icon name="close" sm /></button></td></tr>
         </tbody></table>
       </div>
-      <p v-if="brief.rejected" class="muted t-label" data-testid="rejected-list">格式不支持或空的文件仍会提交，在任务里显示为失败项，不影响其他文件：{{ rejectedPreview }}<template v-if="flow.summary.value.rejectedList.length > 4"> 等 {{ flow.summary.value.rejectedList.length }} 个</template></p>
+      <p v-if="brief.nameOnly" class="muted t-label" data-testid="rejected-list">格式无法读取内容（或是空文件）的文件仍会提交：只依据文件名判断，一定进入人工审核：{{ nameOnlyPreview }}<template v-if="flow.summary.value.nameOnlyList.length > 4"> 等 {{ flow.summary.value.nameOnlyList.length }} 个</template></p>
       <div class="opts">
         <AutomationSelector :mode="auto.mode.value" :gate="auto.gate.value" :disabled="flow.submitting.value" @select="auto.select" />
         <div class="field instr">

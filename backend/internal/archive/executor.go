@@ -54,12 +54,14 @@ type Op struct {
 // OpResult is the outcome of one Op. CreatedDirs lists directories (relative,
 // shallow to deep) this op created, used by Rollback for pruning.
 type OpResult struct {
-	OpID        string   `json:"op_id"`
-	FileID      string   `json:"file_id"`
-	FinalRel    string   `json:"final_rel"`
-	Status      string   `json:"status"`
-	Err         string   `json:"error,omitempty"`
-	Sha256      string   `json:"sha256"`
+	OpID     string `json:"op_id"`
+	FileID   string `json:"file_id"`
+	FinalRel string `json:"final_rel"`
+	Status   string `json:"status"`
+	Err      string `json:"error,omitempty"`
+	Sha256   string `json:"sha256"`
+	// DuplicateOf is the archive path that already holds identical content (Status skipped_exists_identical): no second copy was made.
+	DuplicateOf string   `json:"duplicate_of,omitempty"`
 	CreatedDirs []string `json:"created_dirs,omitempty"`
 }
 
@@ -478,6 +480,9 @@ func (e *Executor) executeOne(ctx context.Context, realRoot, id string, op Op, p
 		case perr == nil:
 			res.FinalRel = finalRel
 			res.Status = status
+			if status == StatusSkipped {
+				res.DuplicateOf = finalRel
+			}
 			return res
 		case errors.Is(perr, fs.ErrExist):
 			continue

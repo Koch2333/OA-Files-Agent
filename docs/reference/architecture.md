@@ -7,7 +7,7 @@
 | 前端 | Vue 3 + TypeScript + Vite，Material Design 3 | 界面；类型由 `contracts/openapi.yaml` 生成；构建产物可由 API 直接提供 |
 | 桌面外壳 | Electron（`desktop/`） | 仅 Windows：启动画面、启动 / 停止本机后端、加载界面、托盘、工作目录管理、应用内密钥窗口 |
 | API 与调度 | Go（Gin 只做路由、恢复与 CORS，处理器是 `net/http`） | HTTP / SSE、登录与权限、持久化任务队列、归档执行与回滚 |
-| 文档 Worker | Python 3.12（python-docx、openpyxl、PyMuPDF、RapidOCR） | 解析 Word / Excel / PDF 与图片 OCR、预览渲染；子进程隔离，有超时 |
+| 文档 Worker | Python 3.12（python-docx、openpyxl、PyMuPDF、RapidOCR） | 解析 Word / Excel / PPT（含 97-2003）/ PDF / OpenDocument / RTF / 文本 / 网页 / 邮件与图片 OCR、预览渲染；按内容识别格式；子进程隔离，有超时 |
 | 数据库 | PostgreSQL（默认）/ MySQL 8.0+ / SQL Server 2019+ | 真相源：任务、文件、计划、台账、审计、事件 |
 | 反向代理（可选） | Caddy | 企业版自动 HTTPS |
 

@@ -92,26 +92,48 @@ func TestJobLifecycleFromQueueToArchiveAndRollback(t *testing.T) {
 	svc.process(ctx, job)
 
 	job, _ = st.GetJob(ctx, b.Job.ID)
-	if job.Status != "awaiting_review" || job.PlanID == nil || job.ProcessedFiles != 3 || job.FailureCount != 1 || job.SuccessCount != 2 {
+	if job.Status != "awaiting_review" || job.PlanID == nil || job.ProcessedFiles != 3 || job.FailureCount != 0 || job.SuccessCount != 3 {
 		t.Fatalf("after processing: %+v", job)
 	}
 	files, _ := st.JobFiles(ctx, b.Job.ID)
 	for _, f := range files {
-		if f.SourceName == "坏.pdf" && (f.Error == nil || !strings.Contains(*f.Error, "损坏")) {
-			t.Fatalf("worker error must become a readable file error, got %v", f.Error)
+		// A damaged file is no longer a failed file: it is judged by its name only and always needs review.
+		if f.SourceName == "坏.pdf" && (f.Error != nil || f.Content == nil || f.Content.Basis != "filename_only" || f.Content.Status != "unreadable" || f.Content.Reason == nil || *f.Content.Reason != "damaged" || !f.ReviewRequired || len(f.Evidence) == 0 || !strings.HasPrefix(f.Evidence[0], "内容无法读取（")) {
+			t.Fatalf("damaged file must be classified from its name: %+v", f)
 		}
 	}
 	plan, _ := st.GetPlan(ctx, *job.PlanID)
-	if len(plan.Items) != 2 {
-		t.Fatalf("failed files must not be planned: %d items", len(plan.Items))
+	if len(plan.Items) != 3 {
+		t.Fatalf("unreadable files must still be planned: %d items", len(plan.Items))
 	}
-	var unknownID string
+	var unknownID, brokenID string
 	for _, it := range plan.Items {
 		if it.OriginalName == "不明.pdf" {
 			unknownID = it.FileID
 			if !it.ReviewRequired {
 				t.Fatal("unidentified file must require review")
 			}
+			// plan layer: placeholder 其他 is filled in (path previewable) but flagged; the analysis itself stays null
+			if it.Department == nil || *it.Department != "其他" || it.DocumentType == nil || *it.DocumentType != "其他" || len(it.FallbackFields) != 2 {
+				t.Fatalf("undetermined fields must hold flagged 其他: %+v", it)
+			}
+			if !strings.HasPrefix(it.DestinationPath, "其他/") {
+				t.Fatalf("destination must use 其他: %s", it.DestinationPath)
+			}
+			files, _ := st.JobFiles(ctx, job.ID)
+			for _, f := range files {
+				if f.SourceName == "不明.pdf" && (f.Department != nil || f.DocumentType != nil) {
+					t.Fatalf("the analysis result must stay null: %+v", f)
+				}
+			}
+		}
+		if it.OriginalName == "坏.pdf" {
+			brokenID = it.FileID
+			if it.Basis != "filename_only" || it.BasisNote == nil || !strings.Contains(*it.BasisNote, "仅依据文件名") || !it.ReviewRequired || len(it.FallbackFields) != 2 {
+				t.Fatalf("filename-only item: %+v", it)
+			}
+		} else if it.Basis != "content" || it.BasisNote != nil {
+			t.Fatalf("readable item must report basis content: %+v", it)
 		}
 		if it.OriginalName == "合同甲.pdf" && it.DestinationPath != "采购部/2026/合同/2026-03-15_采购部_合同_合同甲.pdf" {
 			t.Fatalf("destination = %s", it.DestinationPath)
@@ -123,7 +145,7 @@ func TestJobLifecycleFromQueueToArchiveAndRollback(t *testing.T) {
 	if _, err := st.ApprovePlan(ctx, plan.ID, plan.Version, "u"); !errors.Is(err, store.ErrReviewRequired) {
 		t.Fatalf("approve must be blocked until review items are resolved, got %v", err)
 	}
-	plan, err = st.PatchPlan(ctx, plan.ID, plan.Version, []store.PlanPatch{{FileID: unknownID, Department: sp("行政部"), DocumentType: sp("通知"), DocumentDate: sp("2026-04-01")}},
+	plan, err = st.PatchPlan(ctx, plan.ID, plan.Version, []store.PlanPatch{{FileID: unknownID, Department: sp("行政部"), DocumentType: sp("通知"), DocumentDate: sp("2026-04-01")}, {FileID: brokenID, Department: sp("人事部"), DocumentType: sp("通知"), DocumentDate: sp("2026-04-02")}},
 		func(it store.PlanItem) (string, string, []string, error) { return svc.Derive(ctx, it) })
 	if err != nil {
 		t.Fatal(err)
@@ -149,12 +171,12 @@ func TestJobLifecycleFromQueueToArchiveAndRollback(t *testing.T) {
 	if err != nil || again.Status != "executed" {
 		t.Fatalf("re-execute must be a no-op: %v", err)
 	}
-	if _, total, _ := st.Ledger(ctx, store.Page{}, store.LedgerFilter{}); total != 2 {
+	if _, total, _ := st.Ledger(ctx, store.Page{}, store.LedgerFilter{}); total != 3 {
 		t.Fatalf("ledger rows = %d", total)
 	}
 	job, _ = st.GetJob(ctx, b.Job.ID)
-	if job.Status != "partial_failure" {
-		t.Fatalf("a task with a failed file ends partial_failure, got %s", job.Status)
+	if job.Status == "partial_failure" || job.Status == "failed" {
+		t.Fatalf("a task whose files were all archived must not end as a failure, got %s", job.Status)
 	}
 
 	if err := svc.Rollback(ctx, *done.OperationID, "u"); err != nil {

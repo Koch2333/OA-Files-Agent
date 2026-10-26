@@ -76,6 +76,7 @@ const TOKENS = ['{date}', '{year}', '{month}', '{department}', '{type}', '{origi
     </template>
   </PageHeader>
 
+  <div class="banner info" style="margin-bottom: 16px" data-testid="builtin-other"><Icon name="info" /><div>内置分类「其他」：部门或类型无法识别时，计划会暂填「其他」（待你确认）；它是内置的保留值，不可删除、不可重命名，命名与目录规则中的 {department}/{type} 会按字面渲染（例如 其他/2026/…）。</div></div>
   <div v-if="tab === 'templates'" class="card flat">
     <StateView :loading="tpls.loading.value && !tpls.data.value" :error="tpls.error.value" :empty="!tpls.data.value?.length" empty-title="还没有 OA 模板" empty-icon="rule_settings" empty-hint="新建模板后，导入时可指定使用或自动按优先级匹配。" @retry="tpls.run">
       <ul class="list">

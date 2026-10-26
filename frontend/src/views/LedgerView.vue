@@ -5,6 +5,7 @@ import { api, type LedgerEntry } from '../api'
 import { errMsg, useAsync } from '../utils/useAsync'
 import { fmtTime } from '../utils/format'
 import { archiveRow } from '../utils/recentArchive'
+import { displayCategory, OTHER } from '../utils/classification'
 import { downloadBlob } from '../utils/download'
 import { useUi } from '../stores/ui'
 import PageHeader from '../components/PageHeader.vue'
@@ -29,7 +30,7 @@ const cols = ref<'full' | 'lite'>(loadCols())
 watch(cols, (v) => { try { sessionStorage.setItem('oa.ledger.cols', v) } catch { /* ignore */ } })
 const query = computed(() => ({ q: q.value, department: dept.value, type: type.value, date_from: from.value, date_to: to.value, sort: sort.value, order: order.value, decision: onlyAuto.value ? ('ai_auto' as const) : undefined }))
 const r = useAsync(() => api.listLedger({ ...query.value, page: page.value, page_size: size.value }))
-onMounted(r.run)
+onMounted(() => { void r.run(); void loadOptions() })
 let t = 0
 watch(q, () => { clearTimeout(t); t = window.setTimeout(() => { page.value = 1; void r.run() }, 300) })
 watch([dept, type, from, to, sort, order, size, onlyAuto], () => { page.value = 1; void r.run() })
@@ -57,7 +58,15 @@ async function exportIt() {
     ui.toast(`已导出：${filename}`, 'success')
   } catch (e) { ui.toast('导出失败：' + errMsg(e), 'error') } finally { exporting.value = false }
 }
-const DEPTS = ['财务部', '人事部', '采购部', '行政部'], TYPES = ['合同', '通知', '报表', '申请']
+// 筛选下拉：台账里实际出现过的值 + 内置词表（自动生成）；「其他」固定在末尾，匹配显式「其他」和空值/未知值
+const DEPTS = ref<string[]>(['财务部', '人事部', '采购部', '行政部', OTHER]), TYPES = ref<string[]>(['合同', '通知', '报表', '申请', OTHER])
+async function loadOptions() {
+  try {
+    const o = await api.getClassificationOptions()
+    const vals = (xs: { value: string }[]) => [...xs.filter((x) => x.value !== OTHER).map((x) => x.value), OTHER]
+    DEPTS.value = vals(o.departments); TYPES.value = vals(o.types)
+  } catch { /* 保持默认候选 */ }
+}
 </script>
 
 <template>
@@ -83,7 +92,7 @@ const DEPTS = ['财务部', '人事部', '采购部', '行政部'], TYPES = ['�
             <tr v-for="l in rows" :key="l.id" class="clickable" tabindex="0" :aria-label="`查看详情：${l.canonical_name}`" @click="sel = l" @keydown.enter="sel = l">
               <td class="ellipsis" style="max-width: 220px" :title="l.original_name" v-html="hl(l.original_name)" />
               <td class="ellipsis" style="max-width: 260px" :title="l.canonical_name" v-html="hl(l.canonical_name)" />
-              <td class="nowrap" v-html="hl(l.department)" /><td class="nowrap" v-html="hl(l.document_type)" /><td class="nowrap">{{ l.document_date }}</td>
+              <td class="nowrap" v-html="hl(displayCategory(l.department))" /><td class="nowrap" v-html="hl(displayCategory(l.document_type))" /><td class="nowrap">{{ l.document_date }}</td>
               <td class="mono ellipsis" style="max-width: 320px" :title="l.archive_path"><RouterLink :to="{ path: '/manage', query: { path: l.archive_path.split('/').slice(0, -1).join('/') } }" title="在文件管理中查看" @click.stop v-html="hl(l.archive_path)" /></td>
               <td class="muted nowrap">{{ fmtTime(l.executed_at) }}</td>
               <td class="nowrap"><DecisionBadge :decision="l.decision ?? 'manual'" :model="l.decision_model" /></td>

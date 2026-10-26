@@ -273,8 +273,19 @@ func (m *Manager) Move(from, to string) (Entry, error) {
 	if pfi, perr := os.Stat(filepath.Dir(dst)); perr != nil || !pfi.IsDir() {
 		return Entry{}, ErrNotFound
 	}
-	if _, err = os.Lstat(dst); err == nil {
-		return Entry{}, ErrExists
+	if dfi, derr := os.Lstat(dst); derr == nil {
+		if !(sameEntryRename(from, to) && os.SameFile(fi, dfi)) {
+			return Entry{}, ErrExists
+		}
+		// the target is this very entry under another spelling (case-only rename): go through a temporary name
+		if err = renameSpelling(src, dst); err != nil {
+			return Entry{}, fmt.Errorf("move failed: %w", err)
+		}
+		nfi, nerr := os.Lstat(dst)
+		if nerr != nil {
+			return Entry{}, nerr
+		}
+		return entryOf(to, nfi), nil
 	}
 	if fi.IsDir() {
 		err = os.Rename(src, dst) // fails if dst appeared meanwhile (non-empty dir) on every platform

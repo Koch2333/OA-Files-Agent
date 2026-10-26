@@ -204,7 +204,7 @@ func main() {
 	}
 	_ = json.Unmarshal(raw, &manifest)
 
-	// R01/R02: batch import with sub-folders, including a corrupt and an encrypted file and a legacy .doc.
+	// R01/R02: batch import with sub-folders, including a corrupt and an encrypted file and a legacy .doc (none of them fails: unreadable content is judged by file name only).
 	var files, paths []string
 	truth := map[string]struct{ d, t, dt string }{}
 	expectErr := map[string]bool{}
@@ -224,11 +224,11 @@ func main() {
 	check("R01 POST /v1/imports accepted (202)", code == 202, code, string(d))
 	var j job
 	_ = json.Unmarshal(d, &j)
-	check("R01 task total_files counts every file incl. rejected", j.TotalFiles == len(files), j.TotalFiles)
+	check("R01 task total_files counts every file", j.TotalFiles == len(files), j.TotalFiles)
 	j = waitFor(j.ID, "awaiting_review")
 	check("task reaches awaiting_review (not auto-archived)", j.Status == "awaiting_review", j.Status)
 	check("plan linked to task", j.PlanID != nil)
-	check("failed files counted (corrupt+encrypted+legacy)", j.FailureCount >= 3, j.FailureCount)
+	check("unreadable files (corrupt+encrypted) are NOT failures", j.FailureCount == 0, j.FailureCount)
 
 	_, d, _ = call("GET", "/v1/files?task_id="+j.ID+"&page_size=200", nil, nil)
 	var fp struct {
@@ -254,7 +254,8 @@ func main() {
 			continue
 		}
 		if expectErr[name] {
-			check("R02 error file reported: "+name, f["error"] != nil, f["error"])
+			content, _ := f["content"].(map[string]any)
+			check("R02 unreadable file kept as a filename-only item: "+name, f["error"] == nil && content != nil && content["basis"] == "filename_only" && f["review_required"] == true, f["error"], content)
 			continue
 		}
 		total++
@@ -276,7 +277,7 @@ func main() {
 		ev, _ := json.Marshal(f["evidence"])
 		check("R04 image identified via OCR with evidence", len(f["evidence"].([]any)) > 0, string(ev))
 	}
-	check("R02 legacy .doc rejected with explanation", byName["旧版文档.doc"] != nil && strings.Contains(fmt.Sprint(byName["旧版文档.doc"]["error"]), "UNSUPPORTED"), byName["旧版文档.doc"]["error"])
+	check("R02 legacy .doc is accepted (read by content, or by name when unreadable) and never a failure", byName["旧版文档.doc"] != nil && byName["旧版文档.doc"]["error"] == nil, byName["旧版文档.doc"]["error"])
 
 	// R06/R07: plan preview
 	_, d, _ = call("GET", "/v1/archive-plans/"+*j.PlanID, nil, nil)

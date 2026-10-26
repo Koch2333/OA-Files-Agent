@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, type StorageConnection, type StorageEntry, type StorageListing } from '../api'
 import { errMsg } from '../utils/useAsync'
 import { fmtBytes, fmtTime } from '../utils/format'
-import { crumbs, kindIcon, quotaHint, REMOTE_IMPORT_EXT } from '../utils/storage'
+import { crumbs, kindIcon, quotaHint, remoteImportable } from '../utils/storage'
 import Dialog from './Dialog.vue'
 import StateView from './StateView.vue'
 import Icon from './Icon.vue'
@@ -29,7 +29,7 @@ let seq = 0
 
 const conn = computed(() => usable.value.find((c) => c.id === connId.value) ?? null)
 const trail = computed(() => crumbs(path.value))
-const supported = (e: StorageEntry) => e.is_dir || REMOTE_IMPORT_EXT.test(e.name)
+const supported = (e: StorageEntry) => e.is_dir || remoteImportable(e.name)
 
 async function load() {
   if (!connId.value) return
@@ -95,7 +95,7 @@ function submit() { emit('import', { connectionId: connId.value, paths: [...sele
               <td><input v-if="selectable" type="checkbox" :checked="selected.has(e.path)" :disabled="!supported(e)" :aria-label="`选择 ${e.name}`" @change="toggle(e)" /></td>
               <td>
                 <button v-if="e.is_dir" class="linkbtn" type="button" @click="go(e.path)"><Icon name="folder" sm />{{ e.name }}</button>
-                <span v-else class="row" style="gap: 6px"><Icon name="description" sm />{{ e.name }}<span v-if="!supported(e)" class="chip attention">不支持</span></span>
+                <span v-else class="row" style="gap: 6px"><Icon name="description" sm />{{ e.name }}<span v-if="!supported(e)" class="chip attention">系统文件</span></span>
               </td>
               <td class="nowrap muted">{{ e.is_dir ? '—' : fmtBytes(e.size_bytes) }}</td>
               <td class="nowrap muted">{{ e.modified_at ? fmtTime(e.modified_at) : '—' }}</td>
@@ -110,7 +110,7 @@ function submit() { emit('import', { connectionId: connId.value, paths: [...sele
       <div class="row wrap">
         <span data-testid="remote-count">已选 <b>{{ selected.size }}</b> 项（{{ selFiles.length }} 个文件，{{ selDirs.length }} 个文件夹，文件夹递归导入）</span>
       </div>
-      <p class="muted small">不限制文件数量和大小；仅支持 docx/xlsx/pdf/png/jpg，格式不支持或空文件会作为失败项计入，不会让整批失败。超大文件只做元数据判断并标记为待人工审核。</p>
+      <p class="muted small">不限制文件数量、大小和格式；Word / Excel / PPT / PDF / 图片 / 文本 / 网页 / 邮件会识别内容，其他格式、空文件、加密或损坏的文件只按文件名处理，并标记为待人工审核，不会让整批失败。</p>
       <div v-if="conn && quotaHint(conn.kind)" class="banner info"><Icon name="info" sm />{{ quotaHint(conn.kind) }}</div>
       <div v-if="error" class="banner error" role="alert"><Icon name="error" sm /><div>{{ error }}</div></div>
     </template>

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "description": "Single source of truth for the file formats the product accepts. Edit ONLY this file, then run `python scripts/sync_formats.py` (copies to the worker, Go and frontend); `python scripts/sync_formats.py --check` (CI) fails when a copy is stale or a layer disagrees.",
+  "formats": [
+    {"ext": ".docx", "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "group": "word", "label": "Word", "extractor": "docx", "preview": "document", "icon": "description"},
+    {"ext": ".doc", "mime": "application/msword", "group": "word", "label": "Word 97-2003", "extractor": "doc", "preview": "document", "icon": "description", "legacy": true},
+    {"ext": ".odt", "mime": "application/vnd.oasis.opendocument.text", "group": "word", "label": "OpenDocument 文本", "extractor": "odt", "preview": "document", "icon": "description"},
+    {"ext": ".rtf", "mime": "application/rtf", "group": "word", "label": "RTF", "extractor": "rtf", "preview": "document", "icon": "description"},
+    {"ext": ".wps", "mime": "application/vnd.wps-office.wps", "group": "word", "label": "WPS 文字", "extractor": "ole", "preview": "document", "icon": "description", "best_effort": true},
+    {"ext": ".xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "group": "excel", "label": "Excel", "extractor": "xlsx", "preview": "spreadsheet", "icon": "table_chart"},
+    {"ext": ".xls", "mime": "application/vnd.ms-excel", "group": "excel", "label": "Excel 97-2003", "extractor": "xls", "preview": "spreadsheet", "icon": "table_chart", "legacy": true},
+    {"ext": ".ods", "mime": "application/vnd.oasis.opendocument.spreadsheet", "group": "excel", "label": "OpenDocument 表格", "extractor": "ods", "preview": "spreadsheet", "icon": "table_chart"},
+    {"ext": ".csv", "mime": "text/csv", "group": "excel", "label": "CSV", "extractor": "csv", "preview": "spreadsheet", "icon": "table_chart"},
+    {"ext": ".tsv", "mime": "text/tab-separated-values", "group": "excel", "label": "TSV", "extractor": "csv", "preview": "spreadsheet", "icon": "table_chart"},
+    {"ext": ".et", "mime": "application/vnd.wps-office.et", "group": "excel", "label": "WPS 表格", "extractor": "ole", "preview": "spreadsheet", "icon": "table_chart", "best_effort": true},
+    {"ext": ".pptx", "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "group": "powerpoint", "label": "PowerPoint", "extractor": "pptx", "preview": "document", "icon": "slideshow"},
+    {"ext": ".ppt", "mime": "application/vnd.ms-powerpoint", "group": "powerpoint", "label": "PowerPoint 97-2003", "extractor": "ppt", "preview": "document", "icon": "slideshow", "legacy": true},
+    {"ext": ".odp", "mime": "application/vnd.oasis.opendocument.presentation", "group": "powerpoint", "label": "OpenDocument 演示", "extractor": "odp", "preview": "document", "icon": "slideshow"},
+    {"ext": ".dps", "mime": "application/vnd.wps-office.dps", "group": "powerpoint", "label": "WPS 演示", "extractor": "ole", "preview": "document", "icon": "slideshow", "best_effort": true},
+    {"ext": ".pdf", "mime": "application/pdf", "group": "pdf", "label": "PDF", "extractor": "pdf", "preview": "pdf", "icon": "picture_as_pdf"},
+    {"ext": ".png", "mime": "image/png", "group": "image", "label": "PNG", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".jpg", "mime": "image/jpeg", "group": "image", "label": "JPG", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".jpeg", "mime": "image/jpeg", "group": "image", "label": "JPG", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".jfif", "mime": "image/jpeg", "group": "image", "label": "JPG", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".bmp", "mime": "image/bmp", "group": "image", "label": "BMP", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".tif", "mime": "image/tiff", "group": "image", "label": "TIFF", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".tiff", "mime": "image/tiff", "group": "image", "label": "TIFF", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".webp", "mime": "image/webp", "group": "image", "label": "WebP", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".gif", "mime": "image/gif", "group": "image", "label": "GIF", "extractor": "image", "preview": "image", "icon": "image"},
+    {"ext": ".txt", "mime": "text/plain", "group": "text", "label": "文本", "extractor": "text", "preview": "document", "icon": "article"},
+    {"ext": ".md", "mime": "text/markdown", "group": "text", "label": "Markdown", "extractor": "text", "preview": "document", "icon": "article"},
+    {"ext": ".html", "mime": "text/html", "group": "web", "label": "HTML", "extractor": "html", "preview": "document", "icon": "article"},
+    {"ext": ".htm", "mime": "text/html", "group": "web", "label": "HTML", "extractor": "html", "preview": "document", "icon": "article"},
+    {"ext": ".eml", "mime": "message/rfc822", "group": "mail", "label": "邮件 EML", "extractor": "eml", "preview": "document", "icon": "mail"},
+    {"ext": ".msg", "mime": "application/vnd.ms-outlook", "group": "mail", "label": "Outlook MSG", "extractor": "msg", "preview": "document", "icon": "mail"}
+  ],
+  "unsupported_hints": {
+    "legacy_word_95": "Word 6.0/95 及更早版本的文件不受支持，请用 Word 另存为 .docx 后导入",
+    "archive": "压缩包暂不支持，请解压后再导入",
+    "default": "暂不支持此文件格式"
+  }
+}

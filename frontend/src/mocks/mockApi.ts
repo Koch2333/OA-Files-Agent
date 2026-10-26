@@ -8,9 +8,11 @@ import {
   type LlmConfig, type LlmPreset, type OATemplate, type Page, type PickedFile, type TaskStatus, type ImportOptions,
 } from '../api/types'
 import { MockFs } from './mockFs'
+import { displayCategory, OTHER, categoryKey } from '../utils/classification'
 import { keyHint, validateBaseUrl } from '../utils/llm'
 import { mockPageUrl, mockPreview } from './mockPreview'
 import { basename } from '../utils/fsPaths'
+import { formatOf, isReadable } from '../utils/formats'
 import { MockStorage } from './mockStorage'
 import { createMockAuth, type MockAuthCtl } from './mockAuth'
 import { createMockAi, mockModelsGuard, mockTestFault } from './mockAi'
@@ -25,13 +27,10 @@ const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 864e5).toISOStr
 
 const DEPTS = ['财务部', '人事部', '采购部', '行政部']
 const TYPES = ['合同', '通知', '报表', '申请']
+const UNREADABLE_LABEL: Record<string, string> = { encrypted: '已加密', damaged: '文件损坏或无法解析', unsupported: '格式不支持读取内容', empty: '文件为空' }
 
 function sha(): string { return Array.from({ length: 64 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('') }
-function mimeOf(name: string) {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  return ({ docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg' } as Record<string, string>)[ext] ?? 'application/octet-stream'
-}
-const SUPPORTED = /\.(docx?|xlsx?|pdf|png|jpe?g)$/i
+function mimeOf(name: string) { return formatOf(name)?.mime ?? 'application/octet-stream' }
 
 interface TaskRuntime { events: AgentEvent[]; timers: number[]; listeners: Set<(e: AgentEvent) => void>; seq: number }
 
@@ -138,7 +137,7 @@ function seedAuto() {
     const id = uid(), name = review ? n : `${date}_${d}_${ty}_${n}`
     const f: FileRecord = { id, task_id: t.id, source_name: n, source_path: `采购/${n}`, mime_type: mimeOf(n), sha256: sha(), size_bytes: 64000, detected_department: review ? null : d, detected_type: review ? null : ty, detected_date: review ? null : date, evidence: [review ? '按任务说明：扫描件标记为待审核' : `文件名：${n}`], review_required: review, archive_status: review ? 'pending' : 'archived', error: null, ocr: null, created_at: t.created_at }
     files.set(id, f)
-    const item: ArchivePlanItem = { file_id: id, original_name: n, suggested_name: name, source_path: f.source_path, destination_path: review ? `归档/待审核/${n}` : `归档/${d}/2026/${ty}/${name}`, department: f.detected_department, document_type: f.detected_type, document_date: f.detected_date, warnings: review ? ['按任务说明标记为待审核'] : [], review_required: review }
+    const item: ArchivePlanItem = { file_id: id, original_name: n, suggested_name: name, source_path: f.source_path, destination_path: review ? `归档/待审核/${n}` : `归档/${d}/2026/${ty}/${name}`, department: review ? OTHER : f.detected_department, document_type: review ? OTHER : f.detected_type, document_date: f.detected_date, warnings: review ? ['按任务说明标记为待审核', '未能识别部门，已暂填「其他」，请确认或修改'] : [], review_required: review, fallback_fields: review ? ['department', 'document_type'] : [] }
     if (review) left.push(item)
     else {
       archivedItems.push(item)
@@ -156,6 +155,33 @@ function seedAuto() {
 }
 
 seedAuto()
+
+/** 一个等待审核的任务，含内容无法读取的文件（已加密 / 格式不识别）：它们不是失败项，只依据文件名判断（“仅依据文件名”标记）。 */
+function seedNameOnly() {
+  const t: ImportJob = { id: uid(), status: 'awaiting_review', total_files: 3, processed_files: 3, success_count: 3, failure_count: 0, plan_id: null, created_at: iso(0.1), updated_at: iso(0.1) }
+  tasks.set(t.id, t)
+  const items: ArchivePlanItem[] = []
+  for (const n of ['采购部_设备采购合同_2026-03-15.docx', '验收单_2026-04-02_加密.pdf', '场地图纸.dwg']) {
+    const id = uid()
+    const c = classify(n, `混合/${n}`, 48000)
+    const f: FileRecord = { id, task_id: t.id, source_name: n, source_path: `混合/${n}`, mime_type: mimeOf(n), sha256: sha(), size_bytes: 48000, detected_department: null, detected_type: null, detected_date: null, evidence: [], review_required: false, archive_status: 'pending', error: null, ocr: null, created_at: t.created_at, ...c } as FileRecord
+    files.set(id, f)
+    const dept = f.detected_department ?? OTHER, ty = f.detected_type ?? OTHER, date = f.detected_date ?? '未知日期'
+    const fb: ('department' | 'document_type')[] = []
+    if (!f.detected_department) fb.push('department')
+    if (!f.detected_type) fb.push('document_type')
+    const nameOnly = f.content?.basis === 'filename_only'
+    const sug = `${date}_${dept}_${ty}_${n}`
+    items.push({ file_id: id, original_name: n, suggested_name: sug, source_path: f.source_path, destination_path: `归档/${dept}/${date.slice(0, 4)}/${ty}/${sug}`, department: dept, document_type: ty, document_date: f.detected_date,
+      warnings: nameOnly ? ['字段置信度低或信息缺失，需人工确认'] : [], review_required: f.review_required || nameOnly || fb.length > 0 || !f.detected_date, fallback_fields: fb, basis: nameOnly ? 'filename_only' : 'content', basis_note: nameOnly ? f.evidence[0] ?? null : null })
+  }
+  const plan: ArchivePlan = { id: uid(), task_id: t.id, items, status: 'awaiting_review', version: 1, requires_approval: true, approved_by: null, approved_at: null, operation_id: null }
+  plans.set(plan.id, plan)
+  tasks.set(t.id, { ...t, plan_id: plan.id })
+  runtime.set(t.id, { events: [], timers: [], listeners: new Set(), seq: 0 })
+  emit(t.id, { phase: 'analyzing', event_type: 'file_classified', summary: '2 个文件内容无法读取，已按文件名处理（需人工审核）' })
+}
+seedNameOnly()
 
 /** 开发演示：`?mock_tasks=all` 为每种任务状态各建一个静态任务（含计划），用来查看 AgentProgress 的全部形态。 */
 function seedAllStatuses() {
@@ -242,15 +268,23 @@ function simulate(taskId: string, only?: Set<string>) {
   at(ms, () => {
     const items: ArchivePlanItem[] = allFs().filter((f) => !f.error).map((f) => {
       const date = f.detected_date ?? '未知日期'
-      const dept = f.detected_department ?? '待审核'
-      const ty = f.detected_type ?? '待审核'
+      // 计划层规则：无法识别的部门/类型暂填「其他」并标记为系统占位（fallback_fields），仍需人工确认；分析结果本身保持 null
+      const fb: ('department' | 'document_type')[] = []
+      if (!f.detected_department) fb.push('department')
+      if (!f.detected_type) fb.push('document_type')
+      const dept = f.detected_department ?? OTHER
+      const ty = f.detected_type ?? OTHER
       const name = `${date}_${dept}_${ty}_${f.source_name.split('/').pop()}`
       const warnings: string[] = []
       const flagged = !!tasks.get(taskId)?.instruction && /扫描件|待审核/.test(tasks.get(taskId)!.instruction!) && /pdf|image/.test(f.mime_type) && /扫描|\.(png|jpe?g)$/i.test(f.source_name)
       if (flagged) { files.set(f.id, { ...f, review_required: true }); warnings.push('按任务说明标记为待审核') }
       if (f.review_required) warnings.push('字段置信度低，需人工确认')
+      if (fb.includes('department')) warnings.push('未能识别部门，已暂填「其他」，请确认或修改')
+      if (fb.includes('document_type')) warnings.push('未能识别文件类型，已暂填「其他」，请确认或修改')
       if (ledger.some((l) => l.canonical_name === name)) warnings.push('目标文件名已存在，将自动追加序号')
-      return { file_id: f.id, original_name: f.source_name, suggested_name: name, source_path: f.source_path, destination_path: `归档/${dept}/${date.slice(0, 4)}/${ty}/${name}`, department: f.detected_department, document_type: f.detected_type, document_date: f.detected_date, warnings, review_required: f.review_required || flagged }
+      const nameOnly = f.content?.basis === 'filename_only'
+      return { file_id: f.id, original_name: f.source_name, suggested_name: name, source_path: f.source_path, destination_path: `归档/${dept}/${date.slice(0, 4)}/${ty}/${name}`, department: dept, document_type: ty, document_date: f.detected_date, warnings, review_required: f.review_required || flagged || fb.length > 0 || !f.detected_date || nameOnly, fallback_fields: fb,
+        basis: nameOnly ? 'filename_only' : 'content', basis_note: nameOnly ? f.evidence[0] ?? null : null }
     })
     const plan: ArchivePlan = { id: uid(), task_id: taskId, items, status: 'awaiting_review', version: 1, requires_approval: true, approved_by: null, approved_at: null, operation_id: null }
     plans.set(plan.id, plan)
@@ -284,8 +318,13 @@ function autoExecute(taskId: string, plan: ArchivePlan) {
   audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'plan.auto_execute', target: plan.id, summary: `全自动归档 ${done.length} 个文件，模型 ${t.llm_model}` })
 }
 
-function classify(name: string, path: string): Partial<FileRecord> {
-  if (!SUPPORTED.test(name)) return { error: `不支持的文件格式：.${name.split('.').pop()}`, detected_department: null, detected_type: null, detected_date: null, review_required: true, archive_status: 'failed' }
+/** 与后端一致：内容无法读取的文件不是“失败项”，而是只依据文件名判断（恒需人工审核，证据首条说明原因）。 */
+function classify(name: string, path: string, size = 1): Partial<FileRecord> {
+  let reason: string | null = null
+  if (size === 0) reason = 'empty'
+  else if (!isReadable(name)) reason = 'unsupported'
+  else if (/加密|encrypted/i.test(name)) reason = 'encrypted' // 演示：文件名含“加密/encrypted”视为密码保护
+  else if (/损坏|damaged/i.test(name)) reason = 'damaged'
   const full = name + path
   const dept = (/财|报销|发票|预算/.test(full) && DEPTS[0]) || (/人|薪|招聘|考勤/.test(full) && DEPTS[1]) || (/采购|供应|合同/.test(full) && DEPTS[2]) || (/通知|行政|办公/.test(full) && DEPTS[3]) || null
   const type = (/合同|协议/.test(full) && TYPES[0]) || (/通知|公告/.test(full) && TYPES[1]) || (/报表|统计|核算/.test(full) && TYPES[2]) || (/申请|报销/.test(full) && TYPES[3]) || null
@@ -295,8 +334,13 @@ function classify(name: string, path: string): Partial<FileRecord> {
   if (dept) evidence.push(`关键词映射部门：${dept}`)
   if (type) evidence.push(`关键词映射类型：${type}`)
   if (date) evidence.push(`日期来自文件名：${date}`)
+  if (reason) {
+    return { detected_department: dept, detected_type: type, detected_date: date, evidence: [`内容无法读取（${UNREADABLE_LABEL[reason]}），仅依据文件名判断`, ...evidence], review_required: true, error: null,
+      content: { status: 'unreadable', reason, basis: 'filename_only', format_mismatch: null } }
+  }
   if (/\.(png|jpe?g)$/i.test(name)) evidence.push('OCR：识别到 3 行文字，置信度 0.86')
-  return { detected_department: dept, detected_type: type, detected_date: date, evidence, review_required: !(dept && type && date) }
+  return { detected_department: dept, detected_type: type, detected_date: date, evidence, review_required: !(dept && type && date),
+    content: { status: 'ok', reason: null, basis: 'content', format_mismatch: /网页导出|web_export/i.test(name) && /\.xls$/i.test(name) ? 'html' : null } }
 }
 
 function paginate<T>(arr: T[], q?: { page?: number; page_size?: number }): Page<T> {
@@ -307,7 +351,7 @@ const textHit = (q: string | undefined, ...vals: (string | null)[]) => !q || val
 
 function filterLedger(q?: LedgerQuery) {
   let r = ledger.filter((l) => textHit(q?.q, l.original_name, l.canonical_name, l.department, l.document_type, l.archive_path)
-    && (!q?.department || l.department === q.department) && (!q?.type || l.document_type === q.type)
+    && (!q?.department || displayCategory(l.department) === displayCategory(q.department)) && (!q?.type || displayCategory(l.document_type) === displayCategory(q.type))
     && (!q?.date_from || l.document_date >= q.date_from) && (!q?.date_to || l.document_date <= q.date_to)
     && (!q?.decision || (l.decision ?? 'manual') === q.decision))
   const key = (q?.sort ?? 'executed_at') as keyof LedgerEntry
@@ -340,7 +384,7 @@ export const mockApi: Api = {
     runtime.set(id, { events: [], timers: [], listeners: new Set(), seq: 0 })
     for (const p of picked) {
       const fid = uid()
-      files.set(fid, { id: fid, task_id: id, source_name: p.file.name, source_path: p.relativePath, mime_type: p.file.type || mimeOf(p.file.name), sha256: sha(), size_bytes: p.file.size, detected_department: null, detected_type: null, detected_date: null, evidence: [], review_required: false, archive_status: 'pending', error: null, ocr: /\.(png|jpe?g)$/i.test(p.file.name) ? { used: true, quality: 'good', mean_confidence: 0.86, profile: 'default', attempts: 1, vision_used: false } : null, created_at: now(), ...classify(p.file.name, p.relativePath) })
+      files.set(fid, { id: fid, task_id: id, source_name: p.file.name, source_path: p.relativePath, mime_type: p.file.type || mimeOf(p.file.name), sha256: sha(), size_bytes: p.file.size, detected_department: null, detected_type: null, detected_date: null, evidence: [], review_required: false, archive_status: 'pending', error: null, ocr: /\.(png|jpe?g)$/i.test(p.file.name) ? { used: true, quality: 'good', mean_confidence: 0.86, profile: 'default', attempts: 1, vision_used: false } : null, created_at: now(), ...classify(p.file.name, p.relativePath, p.file.size) })
     }
     audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'import.create', target: id, summary: `导入 ${picked.length} 个文件` })
     emit(id, { phase: 'queued', event_type: 'task_created', summary: `任务已创建，共 ${picked.length} 个文件${resolved.automation === 'auto' ? '（全自动模式）' : ''}` })
@@ -371,7 +415,7 @@ export const mockApi: Api = {
     // 只重新处理失败的文件，已成功的识别结果保留；旧计划作废后重新生成
     const only = new Set(failedFiles.map((f) => f.id))
     if (!only.size) for (const f of files.values()) if (f.task_id === id && f.archive_status !== 'archived') only.add(f.id)
-    for (const fid of only) { const f = files.get(fid)!; files.set(fid, { ...f, error: null, llm_error: null, review_required: false, archive_status: 'pending', ...classify(f.source_name, f.source_path) }) }
+    for (const fid of only) { const f = files.get(fid)!; files.set(fid, { ...f, error: null, llm_error: null, review_required: false, archive_status: 'pending', ...classify(f.source_name, f.source_path, f.size_bytes) }) }
     if (t.plan_id) plans.delete(t.plan_id)
     setStatus(id, 'queued', { plan_id: null, processed_files: t.total_files - only.size, success_count: t.total_files - only.size, failure_count: 0 })
     audit.unshift({ id: uid(), timestamp: now(), actor: '演示用户', action: 'task.retry', target: id, summary: '重新排队任务' })
@@ -411,11 +455,26 @@ export const mockApi: Api = {
     for (const patch of patches) {
       const it = p.items.find((i) => i.file_id === patch.file_id)
       if (!it) continue
-      Object.assign(it, patch)
-      it.review_required = false
-      it.warnings = it.warnings.filter((w) => !w.includes('置信度'))
+      for (const k of ['department', 'document_type', 'document_date'] as const) {
+        const v = patch[k]
+        if (v === undefined) continue
+        const t = (v ?? '').trim()
+        if (k !== 'document_date' && t && (/[\\/:*?"<>|]/.test(t) || Array.from(t).length > 60 || !t.replace(/[. ]/g, ''))) throw new ApiError(422, 'INVALID_ARGUMENT', '部门/类型不能包含 \\ / : * ? " < > | 或超过 60 个字符')
+        it[k] = t || null
+        // 人工修订过的字段即视为已确认（即使仍填「其他」）；清空则重新暂填「其他」
+        if (k !== 'document_date') it.fallback_fields = (it.fallback_fields ?? []).filter((x) => x !== k)
+      }
+      if (patch.suggested_name) it.suggested_name = patch.suggested_name
+      if (patch.destination_path) it.destination_path = patch.destination_path
+      it.fallback_fields = it.fallback_fields ?? []
+      if (!it.department) { it.department = OTHER; it.fallback_fields.push('department') }
+      if (!it.document_type) { it.document_type = OTHER; it.fallback_fields.push('document_type') }
+      it.warnings = it.warnings.filter((w) => !w.includes('置信度') && !w.includes('已暂填'))
+      if (it.fallback_fields.includes('department')) it.warnings.push('未能识别部门，已暂填「其他」，请确认或修改')
+      if (it.fallback_fields.includes('document_type')) it.warnings.push('未能识别文件类型，已暂填「其他」，请确认或修改')
+      it.review_required = !it.document_date || it.fallback_fields.length > 0
       if (!patch.suggested_name || !patch.destination_path) {
-        const date = it.document_date ?? '未知日期', dept = it.department ?? '待审核', ty = it.document_type ?? '待审核'
+        const date = it.document_date ?? '未知日期', dept = it.department ?? OTHER, ty = it.document_type ?? OTHER
         const name = patch.suggested_name ?? `${date}_${dept}_${ty}_${it.original_name.split('/').pop()}`
         it.suggested_name = name
         it.destination_path = patch.destination_path ?? `归档/${dept}/${date.slice(0, 4)}/${ty}/${name}`
@@ -471,10 +530,33 @@ export const mockApi: Api = {
     audit.unshift({ id: uid(), timestamp: now(), actor: "演示用户", action: "operation.rollback", target: opId, summary: op.auto ? "撤销全自动归档" : "恢复归档操作" })
   },
 
-  async listLedger(q) { await delay(); return paginate(filterLedger(q), q) },
+  async getClassificationOptions(taskId) {
+    await delay(80)
+    const build = (builtin: string[], ledgerVals: string[], planVals: string[]) => {
+      const seen = new Map<string, { value: string; source: 'builtin' | 'ledger' | 'plan'; count: number }>()
+      const add = (v: string | null | undefined, source: 'builtin' | 'ledger' | 'plan', n: number) => {
+        const t = (v ?? '').normalize('NFC').trim()
+        if (!t || categoryKey(t) === categoryKey(OTHER) || t === '待审核') return
+        const cur = seen.get(categoryKey(t))
+        if (cur) cur.count += n; else seen.set(categoryKey(t), { value: t, source, count: n })
+      }
+      builtin.forEach((v) => add(v, 'builtin', 0))
+      const tally = (xs: string[]) => { const m = new Map<string, number>(); xs.forEach((x) => m.set(x, (m.get(x) ?? 0) + 1)); return [...m].sort((a, b) => b[1] - a[1]) }
+      tally(ledgerVals).forEach(([v, n]) => add(v, 'ledger', n))
+      tally(planVals).forEach(([v, n]) => add(v, 'plan', n))
+      return [...seen.values()].slice(0, 199).concat([{ value: OTHER, source: 'reserved' as never, count: 0 }])
+    }
+    const planItems = taskId ? [...plans.values()].filter((p) => p.task_id === taskId).flatMap((p) => p.items) : []
+    return {
+      departments: build(['财务部', '人事部', '采购部', '行政部'], ledger.map((l) => l.department), planItems.map((i) => i.department ?? '')),
+      types: build(['申请', '通知', '公告', '合同', '报告', '发票', '报表', '会议纪要', '制度', '方案', '请示', '批复', '清单'], ledger.map((l) => l.document_type), planItems.map((i) => i.document_type ?? '')),
+      reserved: OTHER,
+    }
+  },
+  async listLedger(q) { await delay(); return paginate(filterLedger(q).map((l) => ({ ...l, department: displayCategory(l.department), document_type: displayCategory(l.document_type) })), q) },
   async exportLedger(q) {
     await delay(400)
-    const rows = filterLedger({ ...q, page: undefined })
+    const rows = filterLedger({ ...q, page: undefined }).map((l) => ({ ...l, department: displayCategory(l.department), document_type: displayCategory(l.document_type) }))
     const head = ['原文件名', '规范文件名', '部门', '类型', '日期', '归档路径', 'SHA-256', '任务ID', '决策方式', '执行时间']
     const esc = (s: string) => `"${s.replace(/"/g, '""')}"`
     const csv = '﻿' + [head, ...rows.map((r) => [r.original_name, r.canonical_name, r.department, r.document_type, r.document_date, r.archive_path, r.sha256, r.task_id, r.decision === 'ai_auto' ? `全自动·${r.decision_model ?? ''}` : '人工审核', r.executed_at])].map((r) => r.map(esc).join(',')).join('\r\n')
@@ -583,10 +665,15 @@ export const mockApi: Api = {
     return mockPageUrl(name, page, maxSide)
   },
   async createFolder(path) { await delay(150); return mockFs.mkdir(path) },
-  async moveEntry(from, to) { await delay(200); return mockFs.move(from, to) },
+  async moveEntry(from, to, opts) { await delay(200); return mockFs.move(from, to, opts) },
+  async bulkMove(paths, targetDir, opts) { await delay(250); return mockFs.bulkMove(paths, targetDir, opts) },
+  async bulkTrash(paths) { await delay(250); return mockFs.bulkTrash(paths) },
+  async verifyFiles(paths) { await delay(400); return mockFs.verify(paths) },
+  downloadUrl() { return '#' },
+  async downloadSelection() { throw new ApiError(501, 'NOT_IMPLEMENTED', '演示模式无法下载文件') },
   async trashEntry(path) { await delay(200); return mockFs.trashEntry(path) },
   async listTrash() { await delay(150); return mockFs.listTrash() },
-  async restoreTrash(id) { await delay(200); return mockFs.restore(id) },
+  async restoreTrash(id, onConflict) { await delay(200); return mockFs.restore(id, onConflict) },
   async revealInExplorer() { await delay(100); throw new ApiError(501, 'NOT_IMPLEMENTED', '演示模式不支持在资源管理器中显示') },
 
   listStorageKinds: () => storage.listKinds(),
@@ -606,6 +693,6 @@ export const mockApi: Api = {
   ...mockDiag.api,
   ...createMockAuth((actor, action, target, summary) => { audit.unshift({ id: uid(), timestamp: now(), actor, action, target, summary }) }, authCtl),
 }
-const SUPPORTED_PREVIEW = /\.(docx?|xlsx?|pdf|png|jpe?g)$/i
+const SUPPORTED_PREVIEW = /\.[A-Za-z0-9]{1,10}$/ // 演示：任何带扩展名的归档路径都能得到预览应答（不可读格式返回“暂不支持预览”）
 const mockPreviewOf = mockPreview
 const pendingCorrections = new Map<string, CorrectionProposal>()

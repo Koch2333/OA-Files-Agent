@@ -53,6 +53,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/classification/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 人工修订时部门/类型的候选值（viewer 及以上）
+         * @description 自动生成，供下拉框使用，仍允许手工输入。合并顺序：内置词表 → 台账中已用过的值（使用次数多者在前）→ 指定任务计划中出现的值；
+         *     按 NFC、去首尾空白、不区分大小写去重（次数累加，保留先出现的写法），非法字符的值被忽略，最多 200 项；保留值「其他」固定在末尾。
+         */
+        get: operations["getClassificationOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/imports": {
         parameters: {
             query?: never;
@@ -68,7 +89,7 @@ export interface paths {
          *     随后按相同顺序重复 `files` 字段。**没有单文件、整批或请求体大小上限**：服务端把每个文件流式写入磁盘（恒定内存，边写边算 SHA-256）。
          *     仅有的保护：磁盘剩余空间不足时 507 `INSUFFICIENT_STORAGE`（“需要 X，剩余 Y”），以及管理员可选的安全阀 `OA_MAX_UPLOAD_BYTES` / `OA_MAX_BATCH_FILES`（默认 0 = 不限制，见 `GET /v1/imports/config`）。
          *     超大文件或大批量请改用可续传的分片上传（`/v1/imports/uploads`），本机桌面端可用 `POST /v1/imports/from-paths`。
-         *     格式不支持/空文件作为失败项计入任务，不会让整批失败。可选 `Idempotency-Key`：相同键+相同内容返回同一任务，内容不同返回 409。
+         *     任何格式（含空文件）都会被接收：内容无法读取的文件（格式不识别、加密、损坏、空、过大…）在分析阶段只依据文件名判断，标记 basis=filename_only 且恒需人工审核，不再是失败项；接收阶段只有路径非法、超过管理员可选的 `OA_MAX_UPLOAD_BYTES`、读取失败等才会作为失败项（不让整批失败）。可选 `Idempotency-Key`：相同键+相同内容返回同一任务，内容不同返回 409。
          *     可选查询参数 `template_id` 指定 OA 模板，否则按优先级自动匹配。
          */
         post: operations["createImport"];
@@ -485,9 +506,13 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 重命名或移动文件/文件夹（不覆盖；台账同步）
-         * @description `to` 是目标的完整相对路径（重命名＝同目录换名，移动＝换目录）。目标已存在返回 409，不会覆盖；不能把文件夹移入自身。
-         *     台账中受影响的记录（路径、规范文件名）同步更新。
+         * 重命名或移动文件/文件夹（永不静默覆盖；台账同步；冲突策略）
+         * @description `to` 是目标的完整相对路径（重命名＝同目录换名，移动＝换目录）。不能把文件夹移入自身。
+         *     台账中受影响的记录（路径、规范文件名）同步更新，任务相关文件移动前后按 SHA-256 校验（见 `hash_status`）。
+         *     冲突判定基于内容哈希：同名且哈希相同 = `duplicate`（不重复放入，源文件保留）；同名但内容不同 = 冲突；
+         *     名称不同但目标文件夹内已有同哈希的已归档文件 = `duplicate_content` 警告。`on_conflict` 默认 `ask`：
+         *     有冲突时返回 409 `ALREADY_EXISTS` 且 `error.details.conflicts` 为 `FsConflict[]`，不做任何改动；
+         *     `skip` 跳过，`rename` 保留两者（追加 ` (2)`），`replace` 旧文件先进回收站再放入新文件。`resolutions`（键为 `from`）可逐项覆盖。
          */
         post: operations["moveEntry"];
         delete?: never;
@@ -522,8 +547,102 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 从回收站恢复到原位置（原位置被占用则自动加序号） */
+        /**
+         * 从回收站恢复到原位置（无请求体：原位置被占用则自动加序号；带 on_conflict：按冲突策略）
+         * @description 带 `on_conflict` 时与移动相同的内容哈希判定：同名同哈希 = `duplicate`（项目留在回收站）；同名不同内容、文件与文件夹同名、
+         *     或相同内容已归档在别处（`duplicate_content`）时，`ask` 返回 409 与 `error.details.conflicts`，不做改动。文件夹不会被合并或替换。
+         */
         post: operations["restoreTrash"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 下载文件夹（自动打包 ZIP）或单个文件
+         * @description 文件夹 → 流式生成的 ZIP（服务端边读边写，不落临时文件，无大小上限，必要时 ZIP64），文件名 `<文件夹名>.zip`（RFC 5987 UTF-8）。
+         *     单个文件 → 与 `/v1/fs/content?download=1` 相同。ZIP 末尾附 `MANIFEST.sha256`（`sha256sum -c` 格式，路径相对压缩包根），
+         *     哈希在写入条目的同一遍读取中计算；与台账哈希不一致的任务相关文件另记入 `MANIFEST-NOTES.txt`。
+         *     条目名由校验过的相对路径重建，不跟随符号链接，不含 `.` 开头的内部目录，排序确定。客户端中断即停止工作。
+         */
+        get: operations["downloadFolder"];
+        put?: never;
+        /**
+         * 多选下载（文件与文件夹混合 → 一个 ZIP）
+         * @description 与 GET 相同；多项或含文件夹时文件名为 `oa-files-<时间戳>.zip`。选中文件夹内的项目不会重复打包。
+         */
+        post: operations["downloadSelection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重新计算任务相关文件的 SHA-256 并与台账比对
+         * @description 对所选文件，以及所选文件夹下台账中的全部文件，流式重新计算哈希（常量内存，可取消）。结果：match / mismatch（系统外被修改）/
+         *     missing（台账有记录但磁盘上没有）/ not_task（显式选中的非任务文件，不计算）。只读。
+         */
+        post: operations["verifyFiles"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/bulk/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量移动到一个文件夹（逐项结果；冲突策略）
+         * @description 每项保留原名放入 `target_dir`。先做全有或全无的预检：`on_conflict=ask`（默认）且存在冲突时返回 409 `NAME_CONFLICT`，
+         *     `error.details.conflicts` 为 `FsConflict[]`，磁盘与台账均不变。否则逐项执行并返回逐项结果（部分失败不影响其余项）。
+         *     移入已存在的同名文件夹时按项合并（同一策略）；文件与文件夹同名为类型冲突，永不替换。`resolutions`（键为所选项路径）逐项覆盖策略。
+         */
+        post: operations["bulkMove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fs/bulk/trash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 批量删除到回收站（逐项结果）
+         * @description 与单项删除相同的语义（可恢复、台账标记已移除），但一次调用返回逐项结果；已包含在所选文件夹中的项目记为 skipped。
+         */
+        post: operations["bulkTrash"];
         delete?: never;
         options?: never;
         head?: never;
@@ -866,7 +985,7 @@ export interface paths {
         put?: never;
         /**
          * 从远端存储导入文件/文件夹并创建任务
-         * @description `items` 的每一项是远端相对路径（文件或文件夹，文件夹递归；最多 5000 项，展开后的文件总数不设上限）。与本机上传规则一致：没有单文件/整批大小上限（仅磁盘空间检查与管理员可选的 `OA_MAX_UPLOAD_BYTES`/`OA_MAX_BATCH_FILES`）；格式不支持/空文件作为失败项计入，不让整批失败。
+         * @description `items` 的每一项是远端相对路径（文件或文件夹，文件夹递归；最多 5000 项，展开后的文件总数不设上限）。与本机上传规则一致：没有单文件/整批大小上限（仅磁盘空间检查与管理员可选的 `OA_MAX_UPLOAD_BYTES`/`OA_MAX_BATCH_FILES`）；任何格式（含空文件）都会被接收，内容无法读取的文件只依据文件名判断（basis=filename_only，恒需人工审核）；仅路径非法、超过可选上限、远端读取失败才作为失败项，不让整批失败。
          *     文件按相对路径保留目录层级（相对于所选项目的上级）。支持 `Idempotency-Key`。
          */
         post: operations["createRemoteImport"];
@@ -1001,7 +1120,7 @@ export interface paths {
         put?: never;
         /**
          * 把批次中已完成的文件提交为一个任务
-         * @description 与 multipart 导入规则相同：格式不支持/空文件作为失败项计入任务。仍有未完成的上传时返回 409 `UPLOADS_INCOMPLETE`（不会静默丢文件）。
+         * @description 与 multipart 导入规则相同：任何格式（含空文件）都被接收，内容无法读取的文件只依据文件名判断。仍有未完成的上传时返回 409 `UPLOADS_INCOMPLETE`（不会静默丢文件）。
          *     支持 `Idempotency-Key`：相同键重试返回同一任务。请求体可省略。
          */
         post: operations["commitImportBatch"];
@@ -2264,6 +2383,8 @@ export interface components {
             archive_status: "pending" | "archived" | "failed";
             /** @description 失败原因，形如 “[UNSUPPORTED_FORMAT] …” 或中文说明 */
             error: string | null;
+            /** @description 内容可读性（识别前、或因其它原因失败的文件为 null/缺省）。basis=filename_only 的文件内容无法读取，只依据文件名判断且恒为 review_required。 */
+            content?: null | components["schemas"]["ContentInfo"];
             /** @description 因大模型服务商调用失败而失败时的结构化原因（其它失败为 null/缺省）。不含密钥、请求或文档内容。 */
             llm_error?: null | {
                 /** @enum {string} */
@@ -2294,6 +2415,19 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        ContentInfo: {
+            /** @enum {string} */
+            status: "ok" | "partial" | "unreadable";
+            /**
+             * @description unreadable：encrypted | damaged | unsupported | too_large | timeout | ocr_empty | ocr_unavailable | empty；
+             *     partial：capped（行/页/字数上限）| damaged（部分结构损坏，已尽力恢复）| encoding（文本编码为推测结果）；ok 为 null。
+             */
+            reason: string | null;
+            /** @enum {string} */
+            basis: "content" | "filename_only";
+            /** @description 扩展名与内容不符时的真实格式（如 html：网页导出另存为 .xls）；否则 null */
+            format_mismatch: string | null;
+        };
         PlanItem: {
             /** Format: uuid */
             file_id: string;
@@ -2308,6 +2442,18 @@ export interface components {
             document_date: string | null;
             warnings: string[];
             review_required: boolean;
+            /**
+             * @description 仍是系统暂填占位值「其他」的字段（部门/类型无法识别时由计划层确定性地填入，并非模型判断）。这些条目保持 review_required=true、
+             *     不能被批准；人工修订该字段（即使仍填「其他」，即“确认”）后移出此列表。缺省视为空。
+             */
+            fallback_fields?: ("department" | "document_type")[];
+            /**
+             * @description 判断依据。filename_only = 文件内容无法读取（已加密/损坏/格式不识别/过大/超时/OCR 无文字/空文件），部门、类型、日期只来自文件名；该条目恒为 review_required。缺省视为 content。
+             * @enum {string}
+             */
+            basis?: "content" | "filename_only";
+            /** @description basis=filename_only 时的说明，如 “内容无法读取（已加密），仅依据文件名判断”；否则 null */
+            basis_note?: string | null;
         };
         ArchivePlan: {
             /** Format: uuid */
@@ -2476,6 +2622,13 @@ export interface components {
                 page_size: number;
             };
         };
+        ClassificationOption: {
+            value: string;
+            /** @enum {string} */
+            source: "builtin" | "ledger" | "plan" | "reserved";
+            /** @description 在台账与所选任务计划中的使用次数 */
+            count: number;
+        };
         LedgerPageEnvelope: {
             data: {
                 items: components["schemas"]["LedgerEntry"][];
@@ -2496,6 +2649,16 @@ export interface components {
             name: string;
             /** @description 相对归档根目录，正斜杠 */
             path: string;
+            /** @description 台账中有记录（任务相关文件）；文件夹恒为 false */
+            task_related: boolean;
+            /** @description 台账记录的 SHA-256（仅任务相关文件；列表不现场计算哈希） */
+            sha256?: string;
+            /**
+             * @description not_task 非任务文件（及文件夹）；unverified 台账有哈希但尚未重新校验；verified 已重新计算且与台账一致（大小与修改时间未变时有效）；
+             *     mismatch 磁盘内容或大小与台账不一致，即在系统外被修改。校验用 `POST /v1/fs/verify`。
+             * @enum {string}
+             */
+            hash_status: "not_task" | "unverified" | "verified" | "mismatch";
             is_dir: boolean;
             /** @description 文件夹为 0 */
             size_bytes: number;
@@ -2535,6 +2698,90 @@ export interface components {
             size_bytes: number;
             /** Format: date-time */
             deleted_at: string;
+        };
+        /**
+         * @description ask 不改动并返回冲突列表；skip 跳过；rename 保留两者（` (2)`、` (3)`）；replace 旧文件先进回收站（从不硬删除）。
+         * @enum {string}
+         */
+        ConflictPolicy: "ask" | "skip" | "rename" | "replace";
+        /**
+         * @description duplicate = 目标已有相同内容（同名同哈希），未重复放入，源文件保留；partial = 文件夹合并时部分项被跳过或失败。
+         * @enum {string}
+         */
+        FsItemStatus: "moved" | "renamed" | "replaced" | "skipped" | "duplicate" | "partial" | "failed";
+        FsFileInfo: {
+            path: string;
+            name: string;
+            is_dir: boolean;
+            size_bytes: number;
+            /** Format: date-time */
+            modified_at: string;
+            sha256?: string;
+            task_related: boolean;
+        };
+        FsConflict: {
+            /** @description 所选项的路径（`resolutions` 的键；还原时为回收站项 id） */
+            item: string;
+            /** @enum {string} */
+            kind: "name_exists" | "type_conflict" | "folder_exists" | "duplicate_content";
+            name: string;
+            incoming: components["schemas"]["FsFileInfo"];
+            existing?: components["schemas"]["FsFileInfo"];
+            /** @description SHA-256 相同 */
+            identical: boolean;
+            message: string;
+            /** @description 对该冲突有意义的处理方式；duplicate_content 的 rename 表示“仍然放入” */
+            choices: ("skip" | "rename" | "replace")[];
+        };
+        FsCounts: {
+            moved: number;
+            renamed: number;
+            replaced: number;
+            skipped: number;
+            duplicate: number;
+            failed: number;
+        };
+        FsItemResult: {
+            path: string;
+            status: components["schemas"]["FsItemStatus"];
+            final_path?: string;
+            code?: string;
+            message?: string;
+            ledger_updated: number;
+            /**
+             * @description modified_outside = 移动前磁盘哈希与台账不一致（文件在系统外被修改），已标记并写入审计
+             * @enum {string}
+             */
+            hash_status: "verified" | "modified_outside" | "not_task";
+            modified_outside?: string[];
+            /** @description 已有相同内容的文件路径 */
+            duplicate_of?: string;
+            counts: components["schemas"]["FsCounts"];
+        };
+        FsBatchResult: {
+            items: components["schemas"]["FsItemResult"][];
+            summary: components["schemas"]["FsCounts"];
+            conflicts: components["schemas"]["FsConflict"][];
+        };
+        FsFileCheck: {
+            path: string;
+            /** @enum {string} */
+            status: "match" | "mismatch" | "missing" | "not_task";
+            expected_sha256?: string;
+            actual_sha256?: string;
+            size_bytes: number;
+            ledger_id?: string;
+            message?: string;
+        };
+        FsVerifyReport: {
+            /** @description 不一致/缺失/非任务项全部列出；一致项最多列出 2000 条 */
+            items: components["schemas"]["FsFileCheck"][];
+            checked: number;
+            match: number;
+            mismatch: number;
+            missing: number;
+            not_task: number;
+            truncated: boolean;
         };
         LlmPreset: {
             /** @description deepseek / qwen / qwen-intl / openai / ollama / custom */
@@ -3154,7 +3401,10 @@ export interface components {
             disk_free_bytes: number | null;
             /** @description 当前调用方能否使用 POST /v1/imports/from-paths（local 模式且来自本机） */
             local_path_import: boolean;
+            /** @description 内容可被读取的扩展名（单一来源 contracts/formats.json）。其它扩展名同样被接收，只按文件名归档（见 accepts_any_extension） */
             supported_extensions: string[];
+            /** @description 恒为 true：任何扩展名（含空文件）都会被接收；内容无法读取的文件只依据文件名判断并进入人工审核 */
+            accepts_any_extension?: boolean;
         };
         UploadSession: {
             /** @description 上传 id（"<batch>_<file>"） */
@@ -3175,7 +3425,7 @@ export interface components {
             complete: boolean;
             /** @enum {string} */
             source: "upload" | "path";
-            /** @description 接收阶段被拒绝时的错误码（如 UNSUPPORTED_FORMAT、EMPTY_FILE、READ_FAILED） */
+            /** @description 接收阶段被拒绝时的错误码（如 READ_FAILED；格式不识别与空文件不再被拒绝，而是按文件名处理） */
             code?: string;
             message?: string;
             /** Format: int64 */
@@ -3540,6 +3790,37 @@ export interface operations {
             200: components["responses"]["ProviderList"];
         };
     };
+    getClassificationOptions: {
+        parameters: {
+            query?: {
+                /** @description 可选；同时合并该任务计划中的值 */
+                task_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Options */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            departments: components["schemas"]["ClassificationOption"][];
+                            types: components["schemas"]["ClassificationOption"][];
+                            /** @description 保留值，固定为「其他」 */
+                            reserved: string;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
     createImport: {
         parameters: {
             query?: {
@@ -3886,7 +4167,9 @@ export interface operations {
                 page_size?: components["parameters"]["PageSize"];
                 /** @description 关键词（文件名/部门/类型/路径/日期，不区分大小写，`%` `_` 按字面匹配） */
                 q?: string;
+                /** @description 精确匹配；取「其他」时同时匹配显式的「其他」与空值/「待审核」（读出时这些都显示为「其他」，不改写存量数据） */
                 department?: string;
+                /** @description 同 department：「其他」匹配显式「其他」与空值/「待审核」 */
                 type?: string;
                 date_from?: string;
                 date_to?: string;
@@ -4249,11 +4532,15 @@ export interface operations {
                 "application/json": {
                     from: string;
                     to: string;
+                    on_conflict?: components["schemas"]["ConflictPolicy"];
+                    resolutions?: {
+                        [key: string]: components["schemas"]["ConflictPolicy"];
+                    };
                 };
             };
         };
         responses: {
-            /** @description Moved */
+            /** @description Moved, or skipped / duplicate (see status) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4261,8 +4548,15 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: {
-                            entry: components["schemas"]["FsEntry"];
+                            entry?: components["schemas"]["FsEntry"];
                             ledger_updated: number;
+                            status: components["schemas"]["FsItemStatus"];
+                            final_path?: string;
+                            /** @enum {string} */
+                            hash_status?: "verified" | "modified_outside" | "not_task";
+                            modified_outside?: string[];
+                            duplicate_of?: string;
+                            message?: string;
                         };
                     };
                 };
@@ -4333,7 +4627,13 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    on_conflict?: components["schemas"]["ConflictPolicy"];
+                };
+            };
+        };
         responses: {
             /** @description Restored */
             200: {
@@ -4345,12 +4645,169 @@ export interface operations {
                         data: {
                             path: string;
                             ledger_updated: number;
+                            /** @enum {string} */
+                            status?: "restored" | "renamed" | "replaced" | "skipped" | "duplicate";
+                            /** @enum {string} */
+                            hash_status?: "verified" | "modified_outside" | "not_task";
+                            duplicate_of?: string;
+                            message?: string;
                         };
                     };
                 };
             };
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    downloadFolder: {
+        parameters: {
+            query: {
+                /** @description 可重复传入多个 path（多选下载的链接形式） */
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ZIP stream (or the file) */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                    "application/octet-stream": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    downloadSelection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    paths: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description ZIP stream (or the single file) */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    verifyFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    paths: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Verification report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FsVerifyReport"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    bulkMove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    paths: string[];
+                    /** @description 目标文件夹；空 = 归档根目录 */
+                    target_dir: string;
+                    on_conflict?: components["schemas"]["ConflictPolicy"];
+                    resolutions?: {
+                        [key: string]: components["schemas"]["ConflictPolicy"];
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Per-item results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FsBatchResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    bulkTrash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    paths: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Per-item results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FsBatchResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
         };
     };
     revealInExplorer: {

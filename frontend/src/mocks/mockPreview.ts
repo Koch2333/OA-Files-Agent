@@ -1,5 +1,6 @@
 /** 演示用文档预览：按扩展名生成结构化内容；PDF/图片的页图是内联 SVG，演示模式下也能直接看到。 */
 import type { Preview } from '../api/types'
+import { formatOf } from '../utils/formats'
 
 const ext = (name: string) => name.split('.').pop()?.toLowerCase() ?? ''
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
@@ -28,7 +29,21 @@ const sheetRows = (n: number, cols: string[]) => [cols, ...Array.from({ length: 
 export function mockPreview(name: string, size: number): Preview {
   const e = ext(name)
   if (e === 'pdf') return base(name, size, { kind: 'pdf', mime_type: 'application/pdf', pages: 3, page_url: '/mock/preview/page?page={page}' })
-  if (e === 'png' || e === 'jpg' || e === 'jpeg') return base(name, size, { kind: 'image', mime_type: e === 'png' ? 'image/png' : 'image/jpeg', pages: 1, page_url: '/mock/preview/page?page={page}' })
+  const fmt = formatOf(name)
+  if (fmt?.group === 'image') return base(name, size, { kind: 'image', mime_type: fmt.mime, pages: e === 'tif' || e === 'tiff' ? 2 : 1, page_url: '/mock/preview/page?page={page}' })
+  if (fmt && (fmt.group === 'word' || fmt.group === 'powerpoint' || fmt.group === 'text' || fmt.group === 'web' || fmt.group === 'mail') && e !== 'docx') {
+    const slides = fmt.group === 'powerpoint'
+    return base(name, size, {
+      kind: 'document', mime_type: fmt.mime,
+      warnings: fmt.legacy ? ['旧版 Office 文件由内置解析器读取，版式与图片不会显示（演示数据）'] : [],
+      blocks: slides
+        ? [{ type: 'heading', level: 2, text: '幻灯片 1' }, { type: 'heading', level: 3, text: '2026 年度工作汇报' }, { type: 'paragraph', align: 'left', runs: [{ text: '第一点：采购进度' }] }, { type: 'heading', level: 2, text: '幻灯片 2' }, { type: 'paragraph', align: 'left', runs: [{ text: '备注：讲稿内容（演示数据）' }] }]
+        : [{ type: 'heading', level: 1, text: '关于采购设备的通知' }, { type: 'paragraph', align: 'left', runs: [{ text: '（演示数据）这是由 ' }, { text: fmt.label, bold: true }, { text: ' 解析出的文本，旧版格式与新格式使用同一套结构化预览。' }] }, { type: 'table', rows: [['项目', '数量'], ['笔记本电脑', '20']] }],
+    })
+  }
+  if (fmt?.preview === 'spreadsheet' && e !== 'xlsx') {
+    return base(name, size, { kind: 'spreadsheet', mime_type: fmt.mime, sheets: [{ name: 'Sheet1', rows: sheetRows(8, ['序号', '项目', '数量', '单价']), rows_total: 8, cols_total: 4, truncated: false }] })
+  }
   if (e === 'docx') {
     return base(name, size, {
       kind: 'document', mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -58,6 +73,5 @@ export function mockPreview(name: string, size: number): Preview {
       ],
     })
   }
-  const old = e === 'doc' || e === 'xls'
-  return base(name, size, { message: old ? `旧版 .${e} 文件无法直接预览，需先转换为 .${e}x 后再查看。` : `暂不支持预览 .${e || '该'} 格式的文件。` })
+  return base(name, size, { message: `暂不支持预览 .${e || '该'} 格式的文件，可下载后查看；文件仍可按文件名归档。` })
 }

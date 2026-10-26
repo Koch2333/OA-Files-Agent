@@ -1,0 +1,210 @@
+{
+  "generated": "2026-10-26",
+  "note": "Provenance: office-produced = saved by genuine Microsoft Office; generated = built by script/library; SYNTHESISED = hand-built, never opened by the real application. No fixture came from a third-party real-world document.",
+  "files": [
+    {
+      "file": "text_utf8.txt",
+      "provenance": "generated",
+      "detail": "UTF-8 without BOM"
+    },
+    {
+      "file": "text_utf8_bom.txt",
+      "provenance": "generated",
+      "detail": "UTF-8 with BOM"
+    },
+    {
+      "file": "text_utf16.txt",
+      "provenance": "generated",
+      "detail": "UTF-16 LE with BOM"
+    },
+    {
+      "file": "text_gbk.txt",
+      "provenance": "generated",
+      "detail": "GBK, no BOM (typical old Chinese export)"
+    },
+    {
+      "file": "text_gb18030.txt",
+      "provenance": "generated",
+      "detail": "GB18030, no BOM"
+    },
+    {
+      "file": "notes.md",
+      "provenance": "generated",
+      "detail": "Markdown"
+    },
+    {
+      "file": "data_utf8.csv",
+      "provenance": "generated",
+      "detail": "CSV UTF-8 BOM"
+    },
+    {
+      "file": "data_gbk.csv",
+      "provenance": "generated",
+      "detail": "CSV GBK (Excel on Chinese Windows)"
+    },
+    {
+      "file": "data.tsv",
+      "provenance": "generated",
+      "detail": "TSV"
+    },
+    {
+      "file": "web_export.xls",
+      "provenance": "generated",
+      "detail": "HTML table saved with an .xls extension (web system export)",
+      "really": "html",
+      "extension_mismatch": true
+    },
+    {
+      "file": "page.html",
+      "provenance": "generated",
+      "detail": "HTML with script/style"
+    },
+    {
+      "file": "disguised_rtf.doc",
+      "provenance": "generated",
+      "detail": "RTF content saved as .doc",
+      "really": "rtf",
+      "extension_mismatch": true
+    },
+    {
+      "file": "disguised_docx.doc",
+      "provenance": "generated",
+      "detail": "DOCX content saved as .doc (common OA export)",
+      "really": "docx",
+      "extension_mismatch": true
+    },
+    {
+      "file": "disguised_pdf.txt",
+      "provenance": "generated",
+      "detail": "small PDF (Latin text) saved as .txt",
+      "really": "pdf",
+      "extension_mismatch": true
+    },
+    {
+      "file": "disguised_doc.docx",
+      "provenance": "generated",
+      "detail": "Word 97-2003 content saved as .docx",
+      "really": "doc",
+      "extension_mismatch": true
+    },
+    {
+      "file": "mail.eml",
+      "provenance": "generated",
+      "detail": "multipart e-mail with a UTF-8 base64 body and one (unparsed) attachment"
+    },
+    {
+      "file": "mail.msg",
+      "provenance": "SYNTHESISED",
+      "detail": "hand-built OLE2 container with the Outlook property streams read by the parser; NOT produced by Outlook"
+    },
+    {
+      "file": "scan.bmp",
+      "provenance": "generated",
+      "detail": "BMP rendered with Pillow"
+    },
+    {
+      "file": "scan.webp",
+      "provenance": "generated",
+      "detail": "WebP rendered with Pillow"
+    },
+    {
+      "file": "scan.gif",
+      "provenance": "generated",
+      "detail": "GIF (single frame)"
+    },
+    {
+      "file": "scan.jfif",
+      "provenance": "generated",
+      "detail": "JPEG saved as .jfif"
+    },
+    {
+      "file": "scan_2pages.tif",
+      "provenance": "generated",
+      "detail": "two-page TIFF"
+    },
+    {
+      "file": "word97_report.doc",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): Word 97-2003 (nFib 0x0112 file written by Word 16 'Word 97-2003 Document')",
+      "expected_error": null
+    },
+    {
+      "file": "word97_latin.doc",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): Word 97-2003, ASCII/cp1252 only (compressed pieces)",
+      "expected_error": null
+    },
+    {
+      "file": "word97_edited.doc",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): Word 97-2003 re-opened and edited (several pieces)",
+      "expected_error": null
+    },
+    {
+      "file": "word97_encrypted.doc",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): Word 97-2003 with an open password (RC4/CryptoAPI)",
+      "expected_error": "ENCRYPTED"
+    },
+    {
+      "file": "excel97_purchase.xls",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): BIFF8: 3 sheets (one hidden), dates, formulas, merged cells, error cell",
+      "expected_error": null
+    },
+    {
+      "file": "excel97_encrypted.xls",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): BIFF8 with an open password",
+      "expected_error": "ENCRYPTED"
+    },
+    {
+      "file": "ppt97_deck.ppt",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): PowerPoint 97-2003: 2 slides, notes, textbox, table",
+      "expected_error": null
+    },
+    {
+      "file": "ppt97_encrypted.ppt",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): PowerPoint 97-2003 with an open password",
+      "expected_error": "ENCRYPTED"
+    },
+    {
+      "file": "word_report.rtf",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): RTF written by Word (Chinese, code page 936, table, list)",
+      "expected_error": null
+    },
+    {
+      "file": "word_report.odt",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): OpenDocument text written by Word",
+      "expected_error": null
+    },
+    {
+      "file": "word_report.html",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): Filtered HTML written by Word (GB2312)",
+      "expected_error": null
+    },
+    {
+      "file": "excel_purchase.ods",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): OpenDocument spreadsheet written by Excel",
+      "expected_error": null
+    },
+    {
+      "file": "deck.odp",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): OpenDocument presentation written by PowerPoint",
+      "expected_error": null
+    },
+    {
+      "file": "deck.pptx",
+      "provenance": "office-produced",
+      "detail": "Microsoft Office 16 via COM (make_office_fixtures.ps1): PPTX written by PowerPoint",
+      "expected_error": null
+    }
+  ]
+}

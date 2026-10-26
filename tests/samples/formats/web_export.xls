@@ -1,0 +1,1 @@
+<html><head><meta charset="utf-8"><title>采购汇总</title><style>td{color:red}</style></head><body><script>alert('never executed')</script><table><tr><td>设备名称</td><td>数量</td></tr><tr><td>笔记本电脑</td><td>20</td></tr></table></body></html>

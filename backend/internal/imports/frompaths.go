@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"oa-agent/backend/internal/formats"
 	"os"
 	"path"
 	"path/filepath"
@@ -330,8 +331,8 @@ func (s *Service) walkDir(ctx context.Context, p *PathImport, dir, rel string, a
 			}
 			s.walkDir(ctx, p, full, rel+"/"+name, append(ancestors[:len(ancestors):len(ancestors)], info), depth+1, opt, out)
 		case mode.IsRegular():
-			if _, ok := mimeTypes[strings.ToLower(path.Ext(name))]; !ok {
-				p.add(PathResult{Path: full, Status: "skipped", Code: "UNSUPPORTED_FORMAT", Message: "格式不支持，未导入", Size: info.Size()})
+			if formats.IsJunk(name) { // Thumbs.db, desktop.ini, ~$lock files ...: housekeeping, not documents
+				p.add(PathResult{Path: full, Status: "skipped", Code: "JUNK", Message: "系统/临时文件，已跳过", Size: info.Size()})
 				continue
 			}
 			*out = append(*out, pathFile{abs: full, rel: rel + "/" + name, size: info.Size()})
@@ -362,7 +363,6 @@ func (s *Service) copyOne(ctx context.Context, p *PathImport, dir, batchID, owne
 		}
 	}
 	name := path.Base(rel)
-	ext := strings.ToLower(path.Ext(name))
 	fid, err := NewID()
 	if err != nil {
 		p.add(PathResult{Path: f.abs, Status: "failed", Code: "INTERNAL", Message: "内部错误"})
@@ -373,14 +373,6 @@ func (s *Service) copyOne(ctx context.Context, p *PathImport, dir, batchID, owne
 		m := sessionMeta{Session: Session{ID: batchID + "_" + fid, BatchID: batchID, Name: name, RelPath: rel, Size: size, Complete: true, Source: "path", CreatedAt: now, UpdatedAt: now, Code: code, Message: msg}, OwnerName: owner}
 		_ = writeJSONAtomic(filepath.Join(dir, fid+".json"), m)
 		p.add(PathResult{Path: f.abs, Status: "failed", Code: code, Message: msg, Size: size})
-	}
-	if _, ok := mimeTypes[ext]; !ok {
-		reject("UNSUPPORTED_FORMAT", "暂不支持此文件格式", f.size)
-		return false
-	}
-	if f.size == 0 {
-		reject("EMPTY_FILE", "文件为空", 0)
-		return false
 	}
 	if s.Limits.TooLarge(f.size) {
 		reject("FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes), f.size)
@@ -422,11 +414,6 @@ func (s *Service) copyOne(ctx context.Context, p *PathImport, dir, batchID, owne
 		if ctx.Err() == nil {
 			reject("READ_FAILED", "复制时读取失败："+describeFSError(copyErr), f.size)
 		}
-		return false
-	}
-	if n == 0 {
-		os.Remove(partial)
-		reject("EMPTY_FILE", "文件为空", 0)
 		return false
 	}
 	final := filepath.Join(dir, fid+safeExt(name))

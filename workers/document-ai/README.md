@@ -10,18 +10,25 @@ Loopback, Bearer-token HTTP worker implementing the "Worker 协议" in `docs/bac
     .venv\Scripts\python.exe server.py          (optional: OA_WORKER_PORT, OA_EXTRACT_TIMEOUT seconds, default 60)
 
 Tests: `.venv\Scripts\python.exe -m unittest -v test_server` (about 1 minute; OCR models load per child process).
-Fixtures: `.venv\Scripts\python.exe make_samples.py` regenerates `tests/samples/` and `manifest.json`.
+Fixtures: `.venv\Scripts\python.exe make_samples.py` regenerates `tests/samples/` and `manifest.json`; `make_format_samples.py` writes the script-built files of `tests/samples/formats/` and `formats-manifest.json`; `make_office_fixtures.ps1` (Windows + Office, COM) regenerates the genuine Office-produced ones.
 
 ## Design
 - `server.py`: auth, path/size checks (realpath inside `OA_SPOOL_ROOT`, 20 MiB cap), error mapping. Never logs text or paths.
 - `extract_core.py`: runs in a child process per request (`python -I`), killed on timeout (504); crash or garbage output gives 422 UNREADABLE_FILE. `/healthz` capabilities come from a cached import probe in a child.
-- Formats: docx (python-docx, body order incl. tables, headers/footers), xlsx (openpyxl read_only, 5000 rows/sheet cap), PDF (PyMuPDF text per page; pages with < 20 native chars are rendered at 200 dpi and OCRed, max 50 OCR pages), png/jpg/jpeg (OCR). Text cap 200000 chars.
+- Formats (single table: `contracts/formats.json` -> generated `formats_data.py`, see `scripts/sync_formats.py`): docx (python-docx, body order incl. tables, headers/footers), xlsx (openpyxl read_only, 5000 rows/sheet cap), PDF (PyMuPDF text per page; pages with < 20 native chars are rendered at 200 dpi and OCRed, max 50 OCR pages), images png/jpg/jpeg/jfif/bmp/tif(f, multi-page)/webp/gif (OCR; Pillow decodes the formats OpenCV cannot). Text cap 200000 chars.
+- Additional readers (all read-only, no macros/links/objects executed, size/expansion/time caps, structured failures):
+  - `ole_formats.py`: `.doc` (hand-written: FIB + piece table + PAPX table flags, compressed and UTF-16 pieces, header/footer/footnote/textbox stories, fallback scan -> `partial`), `.ppt` (hand-written: record tree + persist directory, slide text, notes), `.xls` (xlrd >= 2: cached formula values, dates, hidden sheets), `.msg` (properties via olefile). OLE access goes through olefile with a bounded wrapper (declared stream sizes are not trusted, cumulative read cap); the SummaryInformation parser is our own (olefile's `get_metadata` can spin on hostile input).
+  - `zip_formats.py`: OpenDocument (.odt/.ods/.odp) and .pptx with the stdlib only; zip bomb limits; DTD/entity declarations are refused before parsing.
+  - `text_formats.py`: txt/md/csv/tsv with encoding detection (BOM, UTF-16, strict UTF-8, GB18030, Big5, then cp1252 flagged `LOW_CONFIDENCE_TEXT`), HTML (visible text only), RTF (own reader), .eml (stdlib email).
+  - `sniff.py`: the extension is only a claim. Magic bytes / container members decide the reader; a mismatch is reported (`detected_format`, `extension_mismatch`, warning `FORMAT_MISMATCH:<fmt>`) and the real format is read (e.g. an HTML table saved as `.xls`). Unknown binary -> `UNSUPPORTED_FORMAT`; Office names with unrecognisable bytes -> `UNREADABLE_FILE`; archives are not opened.
+  - `.wps/.et/.dps` are read only when their content is Office-compatible (OLE .doc/.xls/.ppt or OOXML/ODF); native Kingsoft files are `UNSUPPORTED_FORMAT`.
+- Extract result additions: `content_status` (`ok|partial|unreadable`), `content_reason` (`capped|damaged|encoding|ocr_empty`), `detected_format`, `extension_mismatch`. Files that cannot be read at all stay structured errors (HTTP 422/413/504 with `ENCRYPTED`, `UNREADABLE_FILE`, `UNSUPPORTED_FORMAT`, `FILE_TOO_LARGE`, `EXTRACT_TIMEOUT`); the Go pipeline turns every one of them (and `ocr_empty`) into a filename-only analysis instead of a failed file.
 
 ## Deviation from PaddleOCR
 OCR uses `rapidocr-onnxruntime` (PaddleOCR PP-OCR detection/recognition models exported to ONNX, run by onnxruntime), because PaddlePaddle itself is heavy and awkward on Windows. Chinese and English are supported by the bundled models. Native pages have `confidence` 1.0; OCR pages report the mean line confidence.
 
 ## Limits
-Legacy .doc/.xls are UNSUPPORTED_FORMAT. Password-protected OOXML (OLE wrapper) maps to ENCRYPTED. Handwriting and low-quality scans are not tuned.
+Password-protected Office files (OOXML OLE wrapper, .doc/.xls/.ppt encryption, ODF encryption) map to ENCRYPTED. Word 6.0/95 files are UNSUPPORTED_FORMAT. Legacy .doc/.ppt readers are validated against genuine Microsoft Office 16 output only (see `tests/samples/formats/formats-manifest.json`); real-world files from other producers may be read partially (`partial`). Handwriting and low-quality scans are not tuned.
 
 ## OCR rescue / render / preview (see `docs/ocr-rescue-design.md`)
 - `POST /v1/extract` accepts optional `ocr_profile` (`default|enhanced|rotate|deskew|high_dpi|binarize`, unknown -> 400) and `pages` (<= 50 integers >= 1; out of range -> 400; only those pages are OCRed). The response has `quality` (null when no OCR ran): mean_confidence, low_confidence_ratio (line confidence < 0.6), chars, cjk_ratio, noise_ratio, lines, profile, rotation (degrees clockwise applied), weak_pages, low_confidence_lines (<= 10, text <= 80 chars). Non-default profiles cap images at 25 megapixels (PDF dpi is lowered accordingly).

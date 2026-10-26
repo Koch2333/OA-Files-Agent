@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"oa-agent/backend/internal/formats"
 	"strconv"
 	"time"
 
@@ -85,14 +86,17 @@ func nullable[T comparable](v T) any {
 func (s *Server) importConfig(w http.ResponseWriter, r *http.Request) {
 	lim := s.d.Imports.Limits
 	out := map[string]any{
-		"chunk_size":           imports.DefaultChunkBytes,
-		"max_upload_bytes":     nullable(lim.MaxUploadBytes),
-		"max_batch_files":      nullable(lim.MaxBatchFiles),
-		"session_ttl_seconds":  int64(lim.SessionTTL.Seconds()),
-		"disk_reserve_bytes":   lim.DiskReserve,
-		"local_path_import":    s.localPathAllowed(r),
-		"supported_extensions": []string{".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg"},
-		"disk_free_bytes":      nil,
+		"chunk_size":          imports.DefaultChunkBytes,
+		"max_upload_bytes":    nullable(lim.MaxUploadBytes),
+		"max_batch_files":     nullable(lim.MaxBatchFiles),
+		"session_ttl_seconds": int64(lim.SessionTTL.Seconds()),
+		"disk_reserve_bytes":  lim.DiskReserve,
+		"local_path_import":   s.localPathAllowed(r),
+		// supported_extensions: formats whose CONTENT can be read. Any other file is still accepted and archived by its
+		// name only (accepts_any_extension).
+		"supported_extensions":  formats.Extensions(),
+		"accepts_any_extension": true,
+		"disk_free_bytes":       nil,
 	}
 	if free, err := lim.Free(s.d.Imports.Root); err == nil {
 		out["disk_free_bytes"] = free

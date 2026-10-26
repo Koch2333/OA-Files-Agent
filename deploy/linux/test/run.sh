@@ -23,8 +23,9 @@ new_sandbox() { # sets SB, prepares mini repo + shims
     make_shims
     export FAKE_SB="$SB" FAKE_EXAMPLE="$LINUX/docker-compose.mounts.example.yml"
     # detection / state-file overrides honoured by install.sh in test mode (a sandbox never sees the real /etc, /run or /opt)
+    export OA_TICK=0.1   # poll interval of the Docker install loop (default 1 s)
     export OA_INSTALL_STATE="$SB/etc/install.json" OA_INSTALL_DEFAULT_DIR="$SB/nodefault" OA_SYSTEMD_RUN_DIR="$SB" OA_TEST_PKG_STATE="$SB/state/pkg-installed"
-    unset OA_TEST_MISSING_CMDS FAKE_NO_HUB FAKE_PS_EXTRA FAKE_COMPOSE_LS FAKE_COMPOSE_V1 FAKE_DOCKER_ENABLED FAKE_UNITS FAKE_DOCKER_DOWN FAKE_DOCKER_HOST FAKE_CTX_HOST FAKE_PODMAN FAKE_COMPOSE_VERSION FAKE_CHECK_RC FAKE_CHECK_OUT FAKE_INIT_OUT FAKE_INIT_RC FAKE_APPLY_RC FAKE_IPT_DROP 2>/dev/null || true
+    unset FAKE_GETDOCKER_HANG FAKE_GETDOCKER_HANG_ONCE FAKE_GETDOCKER_SLEEP FAKE_PS_PROCS FAKE_PS_LATE FAKE_PS_LATE_FROM FAKE_LOCK_RELEASE_AFTER OA_TEST_ENVKIND OA_DOCKER_TIMEOUT OA_HEARTBEAT OA_LOCK_WAIT OA_APT_PARTIAL OA_DPKG_LOG OA_APT_TERM_LOG OA_TEST_MISSING_CMDS FAKE_GEO FAKE_OFFICIAL_DOWN FAKE_MIRROR_DOWN FAKE_MIRROR_FAST FAKE_RMIRROR_DOWN OA_TEST_TZ FAKE_NO_HUB FAKE_PS_EXTRA FAKE_COMPOSE_LS FAKE_COMPOSE_V1 FAKE_DOCKER_ENABLED FAKE_UNITS FAKE_DOCKER_DOWN FAKE_DOCKER_HOST FAKE_CTX_HOST FAKE_PODMAN FAKE_COMPOSE_VERSION FAKE_CHECK_RC FAKE_CHECK_OUT FAKE_INIT_OUT FAKE_INIT_RC FAKE_APPLY_RC FAKE_IPT_DROP 2>/dev/null || true
     unset FAKE_PORTS FAKE_UNHEALTHY FAKE_NO_COMPOSE FAKE_UFW FAKE_PULL_FAIL FAKE_COMPOSE_PULL_FAIL FAKE_LOGIN_FAIL FAKE_BUNDLE FAKE_KERNEL FAKE_SELINUX FAKE_NTP FAKE_CGROUP FAKE_DOCKER_VERSION FAKE_PULL_FLAKY FAKE_FAIL_IMAGE FAKE_MISSING_IMAGE FAKE_ECS_REGION FAKE_ECS_EIP FAKE_PUBLIC_IP FAKE_GETDOCKER_FAIL FAKE_GETDOCKER_BADMIRROR FAKE_NO_REGISTRY FAKE_IPS4 FAKE_IPS6 FAKE_DOCKER_ROOT FAKE_DOCKER_SECOPT FAKE_SAVE_FAIL FAKE_IMG_ARCH FAKE_LOAD_FAIL FAKE_PKG_FAIL FAKE_BUILD_FLAKY 2>/dev/null || true
 }
 
@@ -78,6 +79,10 @@ case "${1:-}" in
       IFS= read -r pw; echo "$pw" >"$SB/state/db-stdin-last"; echo "$pw" >>"$SB/state/db-stdin-all"
       mode="$(cat "$SB/state/dbmode" 2>/dev/null || echo ok-empty)"; T=$'\t'
       chk() { printf 'CHECK\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"; }
+      case " $* " in *" OA_LANG=en "*) # the real tool prints English titles/details with OA_LANG=en
+        chk() { case "$2" in connect) t=Connection ;; version) t="Server version" ;; perm_schema) t=Permissions ;; isolation) t="Isolation (dedicated database/schema)" ;; *) t="$3" ;; esac
+          d="$4"; case "$d" in 延迟*) d="latency 3 ms" ;; CREATE*) d="CREATE privilege present" ;; 仅包含*) d="only OA Agent tables (dedicated database)" ;; public*) d="public contains tables that do not belong to OA Agent (orders, customers)" ;; esac
+          printf 'CHECK\t%s\t%s\t%s\t%s\n' "$1" "$2" "$t" "$d"; } ;; esac
       if [ "$mode" = down ] || { [ "$mode" = wrongpw ] && [ "$pw" != right ]; }; then
         chk fail connect 连接数据库 'password authentication failed for user "oa"'; printf 'INFO\tprovider\tpostgres\nRESULT\tfail\tcannot connect\n'; exit 1
       fi
@@ -138,13 +143,17 @@ echo "curl $*" >>"$FAKE_SB/calls.log"
 out=''; url=''; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac; shift; done
 case "$url" in
   *get.docker.com*) [ -z "${FAKE_GETDOCKER_FAIL:-}" ] || exit 22
-    printf '#!/bin/sh\necho "get-docker.sh $*" >>"$FAKE_SB/calls.log"\nif [ -n "$FAKE_GETDOCKER_BADMIRROR" ] && [ "$2" != AzureChinaCloud ]; then echo mirror-failed >&2; exit 1; fi\ncp "$FAKE_SB/shim/docker.real" "$FAKE_SB/shim/docker"\n' >"$out"; exit 0 ;;
+    printf '#!/bin/sh\necho "get-docker.sh $* DOWNLOAD_URL=${DOWNLOAD_URL:-}" >>"$FAKE_SB/calls.log"\nif [ -n "$FAKE_GETDOCKER_HANG" ]; then exec sleep 987; fi\nif [ -n "$FAKE_GETDOCKER_HANG_ONCE" ] && [ ! -e "$FAKE_SB/state/hung" ]; then touch "$FAKE_SB/state/hung"; exec sleep 987; fi\nsleep "${FAKE_GETDOCKER_SLEEP:-0}"\nif [ -n "$FAKE_GETDOCKER_BADMIRROR" ] && [ "$2" != AzureChinaCloud ]; then echo mirror-failed >&2; exit 1; fi\ncp "$FAKE_SB/shim/docker.real" "$FAKE_SB/shim/docker"\n' >"$out"; exit 0 ;;
   *127.0.0.1*healthz*) exit 0 ;;
   *100.100.100.200*region-id) [ -n "${FAKE_ECS_REGION:-}" ] || exit 28; printf '%s' "$FAKE_ECS_REGION"; exit 0 ;;
   *100.100.100.200*eipv4) [ -n "${FAKE_ECS_EIP:-}" ] || exit 28; printf '%s' "$FAKE_ECS_EIP"; exit 0 ;;
   *api.ipify.org*) [ -n "${FAKE_PUBLIC_IP:-}" ] || exit 6; printf '%s' "$FAKE_PUBLIC_IP"; exit 0 ;;
+  *ipinfo.io*) case "${FAKE_GEO-US}" in timeout) exit 28 ;; blocked) exit 7 ;; *) printf '%s\n' "${FAKE_GEO-US}" ;; esac; exit 0 ;;
+  *download.docker.com/linux/*) [ -z "${FAKE_OFFICIAL_DOWN:-}" ] || exit 28; printf '200 0.05'; exit 0 ;;
+  *docker-ce/linux/*) for t in ${FAKE_MIRROR_DOWN:-}; do case "$url" in *"$t"*) exit 28 ;; esac; done
+    case "$url" in *"${FAKE_MIRROR_FAST:-@@@}"*) printf '200 0.01' ;; *) printf '200 0.05' ;; esac; exit 0 ;;
   *registry-1.docker.io*) [ -z "${FAKE_NO_HUB:-}" ] || exit 28; printf 401; exit 0 ;;
-  */v2/) [ -z "${FAKE_NO_REGISTRY:-}" ] || exit 6; printf 401; exit 0 ;;
+  */v2/) [ -z "${FAKE_NO_REGISTRY:-}" ] || exit 6; for t in ${FAKE_RMIRROR_DOWN:-}; do case "$url" in *"$t"*) exit 28 ;; esac; done; printf 401; exit 0 ;;
 esac
 exit 22
 SH
@@ -169,6 +178,16 @@ esac
 exit 0
 SCSH
     printf '#!/usr/bin/env bash\n[ -n "$FAKE_COMPOSE_V1" ] || exit 127\necho "$FAKE_COMPOSE_V1"\n' >"$s/docker-compose"
+    cat >"$s/ps" <<'PSSH'
+#!/usr/bin/env bash
+# FAKE_PS_PROCS="pid etime command;..." ; FAKE_LOCK_RELEASE_AFTER=N: the processes disappear after N calls; FAKE_PS_LATE (lines) appear from call FAKE_PS_LATE_FROM on
+n=$(cat "$FAKE_SB/state/ps-calls" 2>/dev/null || echo 0); echo $((n + 1)) >"$FAKE_SB/state/ps-calls"
+echo "  PID     ELAPSED COMMAND"
+if [ -n "${FAKE_LOCK_RELEASE_AFTER:-}" ] && [ "$n" -ge "$FAKE_LOCK_RELEASE_AFTER" ]; then exit 0; fi
+printf '%s\n' "${FAKE_PS_PROCS:-}" | tr ';' '\n' | grep -v '^$'
+if [ -n "${FAKE_PS_LATE:-}" ] && [ "$n" -ge "${FAKE_PS_LATE_FROM:-3}" ]; then printf '%s\n' "$FAKE_PS_LATE" | tr ';' '\n'; fi
+exit 0
+PSSH
     printf '#!/usr/bin/env bash\necho "ufw $*" >>"$FAKE_SB/calls.log"\n[ "$1" = status ] && [ -n "${FAKE_UFW:-}" ] && echo "Status: active"\nexit 0\n' >"$s/ufw"
     printf '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfake 999999999 1 500000000 1pct /\\n"\n' >"$s/df"
     printf '#!/usr/bin/env bash\n[ "$1" = -I ] && echo 192.0.2.10 || echo testhost\n' >"$s/hostname"
@@ -852,10 +871,10 @@ t_pull_retry() {
 t_docker_install_chain() {
     # official script, Aliyun mirror first; a failing mirror falls through to AzureChinaCloud
     NO_DOCKER=1 new_sandbox dc1; FAKE_GETDOCKER_BADMIRROR=1 run_install --yes --dir "$SB/oa" --install-docker --mirror cn; assert_rc 0
-    assert_order "$SB/calls.log" 'get-docker.sh --mirror Aliyun' 'get-docker.sh --mirror AzureChinaCloud'; assert_has "$SB/out.txt" 'trying the next one'
+    assert_order "$SB/calls.log" 'get-docker.sh --mirror Aliyun' 'get-docker.sh --mirror AzureChinaCloud'; assert_has "$SB/out.txt" 'The installation source aliyun failed'
     assert_not "$SB/calls.log" '^apt-get install'
     # without --mirror cn: one plain attempt
-    NO_DOCKER=1 new_sandbox dc2; run_install --yes --dir "$SB/oa" --install-docker; assert_rc 0; assert_has "$SB/calls.log" 'get-docker.sh $'; assert_not "$SB/calls.log" '--mirror'
+    NO_DOCKER=1 new_sandbox dc2; run_install --yes --dir "$SB/oa" --install-docker; assert_rc 0; assert_has "$SB/calls.log" 'get-docker.sh  ?DOWNLOAD_URL=$'; assert_not "$SB/calls.log" '--mirror'
     # download of the script keeps failing: retries, then distribution packages (apt)
     NO_DOCKER=1 new_sandbox dc3; FAKE_GETDOCKER_FAIL=1 run_install --yes --dir "$SB/oa" --install-docker; assert_rc 0
     assert_count "$SB/calls.log" '^curl .*https://get.docker.com' 3; assert_has "$SB/out.txt" 'falling back to distribution packages'
@@ -1272,7 +1291,7 @@ t_review_edit_cancel() {
     # edit the access question: set a domain
     new_sandbox rv2; answers "$SB/oa" 18090 '' 1 '' n '' default e 3 oa.example.com '' y; tty_install --dir "$SB/oa"; assert_rc 0; assert_eq "$(envv OA_DOMAIN)" oa.example.com domain; assert_eq "$(envv OA_BIND_ADDR)" 127.0.0.1 bind
     # edit the database: switch to bundled again is allowed; invalid review input is re-asked
-    new_sandbox rv3; answers "$SB/oa" 18090 '' 1 '' n '' default zzz e 9 y; tty_install --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'enter Y, e or c'; assert_has "$SB/out.txt" 'enter 1-7'; assert_count "$SB/out.txt" 'Review your settings' 3
+    new_sandbox rv3; answers "$SB/oa" 18090 '' 1 '' n '' default zzz e 10 y; tty_install --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'enter Y, e or c'; assert_has "$SB/out.txt" 'enter 1-9'; assert_count "$SB/out.txt" 'Review your settings' 3
     # cancel: exit 4 and NOTHING exists afterwards
     new_sandbox rv4; local before; before="$(snap_tree)"; answers "$SB/oa" 18090 '' 1 '' n '' default c; tty_install --dir "$SB/oa"; assert_rc 4; assert_has "$SB/out.txt" 'Cancelled: nothing was changed'
     assert_nofile "$SB/oa"; assert_nofile "$SB/etc/install.json"; assert_eq "$(snap_tree | grep -v '^./install.log$')" "$(echo "$before" | grep -v '^./install.log$')" "cancel changed nothing"; assert_not "$SB/calls.log" 'compose\[|^apt-get|^docker pull'
@@ -1478,6 +1497,267 @@ t_summary_report() {
     assert_has "$SB/out.txt" 'What was detected and done'; assert_has "$SB/out.txt" 'installed: Installed Docker Engine and Compose v2'; assert_has "$SB/out.txt" 'State file: +'"$SB"'/etc/install.json'
     assert_has "$SB/out.txt" 'Running this script again'; assert_has "$SB/out.txt" 'Database: +bundled PostgreSQL'
     new_sandbox sr2; run_install --yes --dir "$SB/oa"; assert_has "$SB/out.txt" 'already present, skipped: Docker Engine 26.1.0'; assert_has "$SB/out.txt" 'already present, skipped: Compose plugin 2.29.0'; assert_not "$SB/out.txt" 'installed: Installed Docker'
+}
+
+
+# ---------------------------------------------------------------------------------------------- language + Docker source (follow-up)
+run_install_nolang() { # like run_install but WITHOUT --lang: the language comes from the locale / OA_LANG / the question
+    OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
+        OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_RETRY_BASE=0 OA_INSTALL_LOCK="$SB/lock" OA_DAEMON_JSON="$SB/daemon.json" OA_TEST_DOCKER_SHIM="$SB/shim/docker" \
+        OA_BUILD_FROM_SOURCE="${OA_BUILD_FROM_SOURCE:-1}" PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" "$@" >"$SB/out.txt" 2>&1
+    RC=$?
+}
+# lrun LOCALE-ENV... -- args: run without --lang under the given locale variables (all others cleared)
+lrun() {
+    local envs=() e
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+    ( unset OA_LANG; export LC_ALL='' LC_MESSAGES='' LANGUAGE='' LANG=''; for e in "${envs[@]}"; do declare -x "$e"; done; run_install_nolang "$@"; echo "$RC" >"$SB/rc" )
+    RC="$(cat "$SB/rc")"
+}
+
+t_language_default() {
+    new_sandbox ld; local c
+    for c in zh_CN.UTF-8 ZH_TW zh-Hans zh_HK.utf8; do lrun LANG=$c -- --check --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" '界面语言：中文'; assert_has "$SB/out.txt" '检测：这台服务器上已经有什么'; done
+    for c in en_US.UTF-8 C POSIX C.UTF-8 de_DE.UTF-8; do lrun LANG=$c -- --check --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'Language: English \(from the system locale; change it with --lang zh\|en\)'; done
+    lrun LANG=C LANGUAGE=zh_CN:en -- --check --dir "$SB/oa"; assert_has "$SB/out.txt" '界面语言：中文'
+    lrun LANG=zh_CN.UTF-8 LC_ALL=en_US.UTF-8 -- --check --dir "$SB/oa"; assert_has "$SB/out.txt" 'Language: English'
+    printf 'LANG=zh_CN.UTF-8\n' >"$SB/locale.default"; OA_TEST_LOCALE_FILES="$SB/locale.default" lrun LANG=C -- --check --dir "$SB/oa"; assert_has "$SB/out.txt" '界面语言：中文'
+    printf 'LANG="C.UTF-8"\n' >"$SB/locale.default"; OA_TEST_LOCALE_FILES="$SB/locale.default" lrun LANG=C -- --check --dir "$SB/oa"; assert_has "$SB/out.txt" 'Language: English'
+    # explicit choices skip the message and the question
+    lrun LANG=zh_CN.UTF-8 -- --check --lang en --dir "$SB/oa"; assert_has "$SB/out.txt" 'Detection: what is already on this server'; assert_not "$SB/out.txt" '界面语言|Language: '
+    lrun LANG=C OA_LANG=zh -- --check --dir "$SB/oa"; assert_has "$SB/out.txt" '检测：这台服务器上已经有什么'; assert_not "$SB/out.txt" 'Language: '
+    lrun LANG=C -- --check --lang xx --dir "$SB/oa"; assert_rc 2
+    # --help follows --lang and the locale
+    lrun LANG=zh_CN.UTF-8 -- --help; assert_has "$SB/out.txt" '用法: install.sh'; lrun LANG=C -- --help; assert_has "$SB/out.txt" 'Usage: install.sh'; lrun LANG=C -- --lang zh --help; assert_has "$SB/out.txt" '用法: install.sh'
+}
+
+t_language_question() {
+    # interactive, no --lang: the FIRST thing asked, default from the locale, read from the terminal device
+    new_sandbox lq1; answers '' "$SB/oa" 18090 '' 1 '' n '' default y; OA_INSTALL_TTY="$SB/answers" lrun LANG=zh_CN.UTF-8 OA_INSTALL_TTY="$SB/answers" -- --dir "$SB/oa" --port 18090; assert_rc 0
+    assert_has "$SB/out.txt" '请选择语言 / Select language:'; assert_order "$SB/out.txt" 'Select language' '企业 OA 文件智能归档'; assert_has "$SB/out.txt" '配置向导'; assert_has "$SB/out.txt" '请复核全部设置'; assert_eq "$(envv OA_LANG)" zh "OA_LANG in .env"
+    new_sandbox lq2; answers 2 "$SB/oa" 18090 '' 1 '' n '' default y; lrun LANG=zh_CN.UTF-8 OA_INSTALL_TTY="$SB/answers" -- --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'Configuration wizard'; assert_has "$SB/out.txt" 'Review your settings'; assert_not "$SB/out.txt" '配置向导'; assert_eq "$(envv OA_LANG)" en "OA_LANG en"
+    new_sandbox lq3; answers '' "$SB/oa" 18090 '' 1 '' n '' default y; lrun LANG=C OA_INSTALL_TTY="$SB/answers" -- --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'Configuration wizard'
+    new_sandbox lq4; answers x 3 中文 "$SB/oa" 18090 '' 1 '' n '' default y; lrun LANG=C OA_INSTALL_TTY="$SB/answers" -- --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" '请输入 1 或 2 / enter 1 or 2'; assert_has "$SB/out.txt" '配置向导'
+    # explicit flag or OA_LANG: the question is not asked
+    new_sandbox lq5; answers "$SB/oa" 18090 '' 1 '' n '' default y; lrun LANG=C OA_INSTALL_TTY="$SB/answers" -- --lang en --dir "$SB/oa"; assert_not "$SB/out.txt" 'Select language'
+    # the review screen can change the language (setting 9) and everything after it follows
+    new_sandbox lq6; answers "$SB/oa" 18090 '' 1 '' n '' default e 9 1 y; run_install --dir "$SB/oa" 2>/dev/null; OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" '9\) Language'; assert_has "$SB/out.txt" '请选择语言 / Select language:'; assert_has "$SB/out.txt" '安装完成'
+    # no terminal and no --yes: the refusal message is in the locale language
+    new_sandbox lq7; lrun LANG=zh_CN.UTF-8 OA_INSTALL_TTY=/nonexistent -- --dir "$SB/oa" </dev/null; assert_rc 2; assert_has "$SB/out.txt" '没有可用的终端来回答安装问题'
+    # oa-agentctl.sh follows the language stored in .env (OA_LANG in the environment wins)
+    new_sandbox lq8; answers 1 "$SB/oa" 18090 '' 1 '' n '' default y; lrun LANG=C OA_INSTALL_TTY="$SB/answers" -- --dir "$SB/oa"; assert_rc 0
+    env -u OA_LANG LANG=C LC_ALL= PATH="$SB/shim:$PATH" bash "$SB/bin/oa-agentctl.sh" --dir "$SB/oa" status >"$SB/ctl.txt" 2>&1; assert_has "$SB/ctl.txt" '数据库'
+    OA_LANG=en PATH="$SB/shim:$PATH" bash "$SB/bin/oa-agentctl.sh" --dir "$SB/oa" status >"$SB/ctl.txt" 2>&1; assert_has "$SB/ctl.txt" 'Database:'
+}
+
+# lang_leaks FILE LANG: leftover other-language text. en: any CJK character. zh: lines of 4+ English words without any CJK (minus commands,
+# URLs, config snippets and product/help lines that are meant to stay as they are)
+lang_leaks() {
+    if [ "$2" = en ]; then LC_ALL=C.UTF-8 grep -nP '[\x{4e00}-\x{9fff}\x{3000}-\x{303f}\x{ff00}-\x{ffef}]' "$1" | grep -v -e 'Select language' -e 'incomplete (truncated' || true
+    else LC_ALL=C.UTF-8 grep -nP '^(?!.*[\x{4e00}-\x{9fff}])(?=.*\b[A-Za-z]{2,}\b \b[A-Za-z]{2,}\b \b[A-Za-z]{2,}\b \b[A-Za-z]{2,}\b)' "$1" \
+        | grep -v -E 'https?://|sudo |docker |oa-agentctl|install\.sh|^[0-9]+:\s*(server|listen|location|client_max|proxy_|reverse_proxy|flush_interval|transport|response_header|#|\}|\{)|^[0-9]+:\s+(ssl_|\$DOMAIN)|^[0-9]+:\s*[a-z_]+ ' || true; fi
+}
+t_language_clean() {
+    local L f
+    for L in en zh; do
+        # one full wizard run (bundled database, a proxy-held 80/443, mirror hint, docker missing -> install) + the other screens
+        NO_DOCKER=1 new_sandbox lc_$L; make_bundle
+        answers "$SB/oa" 18090 oa.example.com 1 1 '' n '' cn y 1 "" 1 y
+        FAKE_PORTS='80=nginx 443=nginx' FAKE_NO_HUB=1 OA_INSTALL_TTY="$SB/answers" run_install --lang "$L" --dir "$SB/oa" --install-docker --registry "$REG" --image-tag sha-abc1234; assert_rc 0
+        f="$SB/out.txt"; assert_eq "$(lang_leaks "$f" "$L" | head -n 5)" '' "leftover text in the $L wizard run"
+        for a in "--check --dir $SB/oa3" "--status --dir $SB/oa" "--yes --dir $SB/oa"; do
+            # shellcheck disable=SC2086
+            run_install --lang "$L" $a; f="$SB/out.txt"; assert_eq "$(lang_leaks "$f" "$L" | head -n 5)" '' "leftover text in $L: $a"
+        done
+        # the existing-install menu and the external database path
+        answers 5; tty_install --lang "$L" --dir "$SB/oa" 2>/dev/null; OA_INSTALL_TTY="$SB/answers" run_install --lang "$L" --dir "$SB/oa"; assert_eq "$(lang_leaks "$SB/out.txt" "$L" | head -n 5)" '' "leftover text in the $L menu"
+        new_sandbox lc2_$L; make_bundle; answers "$SB/oa" 18090 '' 2 db.example.com '' '' '' require Sup3rSecretPw '' n '' default '' '' y y
+        OA_INSTALL_TTY="$SB/answers" run_install --lang "$L" --dir "$SB/oa" --registry "$REG"; assert_rc 0; assert_has "$SB/calls.log" "-e OA_LANG=$L"
+        assert_eq "$(lang_leaks "$SB/out.txt" "$L" | head -n 5)" '' "leftover text in the $L external-database run"
+        new_sandbox lc3_$L; run_install --lang "$L" --yes --dir "$SB/oa" --behind-proxy --domain oa.example.com; assert_eq "$(lang_leaks "$SB/out.txt" "$L" | head -n 5)" '' "leftover text in the $L proxy summary"
+    done
+}
+
+t_docker_source() {
+    # validation and the legacy alias
+    new_sandbox ds0; run_install --yes --dir "$SB/oa" --docker-source 'ftp://x'; assert_rc 2; run_install --yes --dir "$SB/oa" --docker-source 'http://mirror.example.com/docker-ce'; assert_rc 2; run_install --yes --dir "$SB/oa" --mirror foo; assert_rc 2
+    # every explicit source: the exact command line and DOWNLOAD_URL/--mirror mechanics (checked against the get.docker.com script text);
+    # an explicit source never asks the country lookup anything
+    local spec tok want url
+    for spec in 'official||' 'aliyun|--mirror Aliyun|' 'azure|--mirror AzureChinaCloud|' 'tuna||https://mirrors.tuna.tsinghua.edu.cn/docker-ce' 'ustc||https://mirrors.ustc.edu.cn/docker-ce' 'tencent||https://mirrors.cloud.tencent.com/docker-ce' 'https://docker.example.com/docker-ce||https://docker.example.com/docker-ce'; do
+        tok="${spec%%|*}"; want="${spec#*|}"; url="${want#*|}"; want="${want%%|*}"
+        NO_DOCKER=1 new_sandbox "ds_${tok//[^a-z]/}"; FAKE_GEO=CN run_install --yes --install-docker --dir "$SB/oa" --docker-source "$tok"; assert_rc 0
+        assert_has "$SB/calls.log" "^get-docker.sh ${want} ?DOWNLOAD_URL=$url\$"; assert_has "$SB/out.txt" 'Running: .*sh get-docker.sh'; assert_has "$SB/out.txt" 'from https://get.docker.com'; assert_has "$SB/out.txt" 'third-party'
+        assert_not "$SB/calls.log" 'ipinfo.io'; assert_count "$SB/calls.log" '^get-docker.sh' 1
+        [ -z "$url" ] || assert_has "$SB/out.txt" "Running: DOWNLOAD_URL=$url sh get-docker.sh"
+    done
+    # explicit source failing: no silent source hopping under --yes, the distribution packages follow as before
+    NO_DOCKER=1 new_sandbox ds1; FAKE_GETDOCKER_BADMIRROR=1 run_install --yes --install-docker --dir "$SB/oa" --docker-source aliyun; assert_rc 0
+    assert_count "$SB/calls.log" '^get-docker.sh' 1; assert_has "$SB/calls.log" '^apt-get install'; assert_has "$SB/out.txt" 'The installation source aliyun failed'
+    # explicit source failing, interactive: asked whether to try the others; yes -> they are tried, no -> distribution packages
+    NO_DOCKER=1 new_sandbox ds4; answers "$SB/oa" 18090 '' 1 '' n '' default y y y; FAKE_GETDOCKER_BADMIRROR=1 OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker --docker-source tuna; assert_rc 0
+    assert_has "$SB/out.txt" 'Try the other built-in installation sources in turn'; assert_has "$SB/calls.log" 'get-docker.sh --mirror AzureChinaCloud'
+    NO_DOCKER=1 new_sandbox ds5; answers "$SB/oa" 18090 '' 1 '' n '' default y n y; FAKE_GETDOCKER_BADMIRROR=1 OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker --docker-source tuna; assert_rc 0
+    assert_count "$SB/calls.log" '^get-docker.sh' 1; assert_has "$SB/calls.log" '^apt-get install'
+    # config file, environment and print-config
+    NO_DOCKER=1 new_sandbox ds10; printf 'docker_source=ustc\ninstall_docker=yes\n' >"$SB/d.conf"; chmod 600 "$SB/d.conf"; run_install --yes --dir "$SB/oa" --config "$SB/d.conf"; assert_rc 0; assert_has "$SB/calls.log" 'DOWNLOAD_URL=https://mirrors.ustc.edu.cn/docker-ce'
+    NO_DOCKER=1 new_sandbox ds11; OA_INSTALL_DOCKER_SOURCE=aliyun run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/calls.log" 'get-docker.sh --mirror Aliyun'
+    # the review screen edit (setting 8): menu, custom URL validation, then the consent shows the exact command
+    NO_DOCKER=1 new_sandbox ds6; answers "$SB/oa" 18090 '' 1 '' n '' default e 8 4 1 y y
+    OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 0
+    assert_has "$SB/out.txt" 'Docker installation source \(the default, automatic'; assert_has "$SB/out.txt" '8\) automatic \(default\)'
+    assert_has "$SB/out.txt" '8\) Docker +will be installed; Docker installation source: as you specified: Tsinghua TUNA'
+    assert_has "$SB/out.txt" 'About to run \(needs network and root\): DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce sh get-docker.sh'; assert_has "$SB/calls.log" 'get-docker.sh  ?DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce'
+    NO_DOCKER=1 new_sandbox ds7; answers "$SB/oa" 18090 '' 1 '' n '' default e 8 7 'http://x.example.com' 'https://bad host' 'https://docker.example.com/docker-ce' 1 y y y
+    OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 0; assert_count "$SB/out.txt" 'an https:// URL is required' 2; assert_has "$SB/calls.log" 'DOWNLOAD_URL=https://docker.example.com/docker-ce'
+    NO_DOCKER=1 new_sandbox ds8; answers "$SB/oa" 18090 '' 1 '' n '' default y n; OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 4; assert_not "$SB/calls.log" 'get-docker'
+    # a normal run asks NO Docker question; Docker present: the review says so
+    new_sandbox ds9; answers "$SB/oa" 18090 '' 1 '' n '' default y; tty_install --dir "$SB/oa"; assert_rc 0; assert_not "$SB/out.txt" 'Installation source \('; assert_has "$SB/out.txt" '8\) Docker +Docker is already installed and kept'
+    NO_DOCKER=1 new_sandbox ds12; run_install --check --dir "$SB/oa" --docker-source tuna; assert_rc 0; assert_has "$SB/out.txt" 'would be installed \(source\(s\) tuna: DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce sh get-docker.sh'; assert_not "$SB/calls.log" 'get-docker'
+}
+
+# the 1Panel-style automatic choice: detect (country lookup, then local signals), announce in one line, probe the mirrors, try them in order of speed
+t_docker_auto() {
+    local c
+    # CN: all mirrors reachable -> aliyun first (speed ties keep the preference order), the exact chain on failure, official last
+    NO_DOCKER=1 new_sandbox da1; FAKE_GEO=CN FAKE_GETDOCKER_BADMIRROR=1 run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0
+    assert_has "$SB/out.txt" 'Docker installation source: automatic: mainland China detected \(ipinfo.io says country CN\) -> reachable mirrors tried by speed: aliyun azure tencent tuna ustc official'
+    assert_has "$SB/calls.log" 'curl .*https://ipinfo.io/country'; assert_order "$SB/calls.log" '^get-docker.sh --mirror Aliyun' '^get-docker.sh --mirror AzureChinaCloud'; assert_count "$SB/calls.log" '^get-docker.sh' 2; assert_not "$SB/calls.log" '^apt-get install'
+    assert_not "$SB/out.txt" 'Installation source \('; assert_not "$SB/out.txt" 'Choice \['
+    run_install --lang zh --check --dir "$SB/oa2"; NO_DOCKER=1 new_sandbox da1z; FAKE_GEO=CN run_install --lang zh --check --dir "$SB/oa"; assert_has "$SB/out.txt" 'Docker 安装源：自动：检测到中国大陆（ipinfo.io 返回国家 CN）→ 按速度依次尝试可达的镜像：aliyun azure tencent tuna ustc official'
+    # a faster mirror comes first; an unreachable one is dropped from the chain
+    NO_DOCKER=1 new_sandbox da2; FAKE_GEO=CN FAKE_MIRROR_FAST=tsinghua FAKE_MIRROR_DOWN=aliyun run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0
+    assert_has "$SB/out.txt" 'tried by speed: tuna azure tencent ustc official'; assert_has "$SB/calls.log" 'get-docker.sh  ?DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce'; assert_not "$SB/calls.log" '^get-docker.sh --mirror Aliyun'
+    # no mirror answers: official source, said so
+    NO_DOCKER=1 new_sandbox da3; FAKE_GEO=CN FAKE_MIRROR_DOWN='aliyun azure tencent tsinghua ustc' run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'but no mirror answered -> official source'; assert_has "$SB/calls.log" '^get-docker.sh  ?DOWNLOAD_URL=$'
+    # non-CN: official, and the mirrors are not even probed
+    NO_DOCKER=1 new_sandbox da4; FAKE_GEO=US run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'automatic: ipinfo.io says country US -> official source download.docker.com'; assert_not "$SB/calls.log" 'docker-ce/linux'; assert_count "$SB/calls.log" '^get-docker.sh' 1
+    # lookup timed out / blocked: local signals. Official reachable and nothing says China -> official
+    for c in timeout blocked; do
+        NO_DOCKER=1 new_sandbox "da5$c"; FAKE_GEO=$c OA_TEST_TZ=UTC run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'country unknown \(lookup failed, blocked or disabled\), no local sign of mainland China'; assert_has "$SB/calls.log" '^get-docker.sh  ?DOWNLOAD_URL=$'
+        # ... time zone Asia/Shanghai -> CN
+        NO_DOCKER=1 new_sandbox "da6$c"; FAKE_GEO=$c OA_TEST_TZ=Asia/Shanghai run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'mainland China detected \(time zone Asia/Shanghai\)'; assert_has "$SB/calls.log" '^get-docker.sh --mirror Aliyun'
+        # ... Aliyun ECS region -> CN
+        NO_DOCKER=1 new_sandbox "da7$c"; FAKE_GEO=$c OA_TEST_TZ=UTC FAKE_ECS_REGION=cn-shanghai run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'mainland China detected \(Alibaba Cloud ECS region cn-shanghai\)'
+        # ... download.docker.com unreachable -> CN-like
+        NO_DOCKER=1 new_sandbox "da8$c"; FAKE_GEO=$c OA_TEST_TZ=UTC FAKE_OFFICIAL_DOWN=1 run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'mainland China detected \(download.docker.com is unreachable within 3 seconds\)'
+    done
+    # --no-geo-lookup / OA_INSTALL_GEO=off / config: no ipinfo request at all (the third-party lookup), local signals only
+    NO_DOCKER=1 new_sandbox da9; FAKE_GEO=CN OA_TEST_TZ=UTC run_install --yes --install-docker --dir "$SB/oa" --no-geo-lookup; assert_rc 0; assert_not "$SB/calls.log" 'ipinfo.io'; assert_has "$SB/out.txt" 'the ipinfo.io lookup is off: --no-geo-lookup'; assert_has "$SB/calls.log" '^get-docker.sh  ?DOWNLOAD_URL=$'
+    NO_DOCKER=1 new_sandbox da10; FAKE_GEO=CN OA_TEST_TZ=UTC OA_INSTALL_GEO=off run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_not "$SB/calls.log" 'ipinfo.io'
+    NO_DOCKER=1 new_sandbox da11; printf 'geo_lookup=no\n' >"$SB/g.conf"; chmod 600 "$SB/g.conf"; FAKE_GEO=CN OA_TEST_TZ=UTC run_install --yes --install-docker --dir "$SB/oa" --config "$SB/g.conf"; assert_not "$SB/calls.log" 'ipinfo.io'
+    # overrides win over the detection: explicit official under a CN verdict; --mirror cn forces CN without any lookup
+    NO_DOCKER=1 new_sandbox da12; FAKE_GEO=CN run_install --yes --install-docker --dir "$SB/oa" --docker-source official; assert_rc 0; assert_not "$SB/calls.log" 'ipinfo.io|docker-ce/linux'; assert_has "$SB/out.txt" 'as you specified: official download.docker.com'
+    NO_DOCKER=1 new_sandbox da13; FAKE_GEO=US run_install --yes --install-docker --dir "$SB/oa" --mirror cn; assert_rc 0; assert_not "$SB/calls.log" 'ipinfo.io'; assert_has "$SB/out.txt" 'mainland China detected \(--mirror cn\)'; assert_has "$SB/calls.log" '^get-docker.sh --mirror Aliyun'
+    NO_DOCKER=1 new_sandbox da14; FAKE_GEO=CN run_install --yes --install-docker --dir "$SB/oa" --docker-source auto; assert_rc 0; assert_has "$SB/out.txt" 'mainland China detected'
+    # Docker already installed: no detection, no announcement, no lookup
+    new_sandbox da15; FAKE_GEO=CN run_install --yes --dir "$SB/oa"; assert_rc 0; assert_not "$SB/calls.log" 'ipinfo.io'; assert_not "$SB/out.txt" 'Docker installation source:'
+    # the wizard asks nothing about it but shows the automatic choice, editable, in the review
+    NO_DOCKER=1 new_sandbox da16; answers "$SB/oa" 18090 '' 1 '' n '' default y y; FAKE_GEO=CN OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker; assert_rc 0
+    assert_has "$SB/out.txt" '8\) Docker +will be installed; Docker installation source: automatic: mainland China detected'; assert_not "$SB/out.txt" 'Choice \[1-8\]'
+    run_install --lang zh --check --dir "$SB/x" 2>/dev/null
+}
+
+# Docker Hub registry mirrors in daemon.json: automatic ONLY when this run installed Docker in mainland China (probed on /v2/); otherwise consent
+t_docker_registry_mirror_auto() {
+    local M=https://mirror.example.com
+    # fresh Docker + CN: probed candidates are written directly and Docker is restarted, no question
+    NO_DOCKER=1 new_sandbox rm1; FAKE_GEO=CN run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0
+    assert_has "$SB/daemon.json" 'https://docker.1ms.run'; assert_has "$SB/daemon.json" 'https://docker.m.daocloud.io'; assert_has "$SB/daemon.json" 'https://docker.1panel.live'; assert_eq "$(mode "$SB/daemon.json")" 644 "daemon.json mode"
+    assert_has "$SB/calls.log" '^systemctl restart docker'; assert_has "$SB/calls.log" 'curl .*https://docker.1ms.run/v2/'; assert_has "$SB/out.txt" 'these Docker Hub mirrors answered and are written to'; assert_has "$SB/out.txt" 'changed: Wrote the Docker Hub mirrors that answered'
+    # only the answering ones are written
+    NO_DOCKER=1 new_sandbox rm2; FAKE_GEO=CN FAKE_RMIRROR_DOWN='1ms daocloud' run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/daemon.json" 'docker.1panel.live'; assert_not "$SB/daemon.json" '1ms|daocloud'
+    # none answers: nothing written, manual hint printed
+    NO_DOCKER=1 new_sandbox rm3; FAKE_GEO=CN FAKE_RMIRROR_DOWN='1ms daocloud 1panel tencentyun' run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_nofile "$SB/daemon.json"; assert_has "$SB/out.txt" 'none of the built-in Docker Hub mirrors answered'; assert_has "$SB/out.txt" 'registry-mirrors'
+    # not CN, or Docker was already there: nothing automatic
+    NO_DOCKER=1 new_sandbox rm4; FAKE_GEO=US run_install --yes --install-docker --dir "$SB/oa"; assert_nofile "$SB/daemon.json"
+    new_sandbox rm5; FAKE_GEO=CN run_install --yes --dir "$SB/oa" --mirror cn; assert_nofile "$SB/daemon.json"
+    # a daemon.json that already has content goes through the consent flow: --yes changes nothing; interactive y/y-restart-n merges it
+    NO_DOCKER=1 new_sandbox rm6; printf '{"log-driver": "json-file"}\n' >"$SB/daemon.json"; cp "$SB/daemon.json" "$SB/daemon.orig"; FAKE_GEO=CN run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; cmp -s "$SB/daemon.json" "$SB/daemon.orig" && ok_ || bad_ "a non-trivial daemon.json changed under --yes"; assert_has "$SB/out.txt" 'never edits daemon.json'
+    # explicit --docker-mirror stays the explicit override (consent flow, nothing automatic)
+    NO_DOCKER=1 new_sandbox rm7; FAKE_GEO=CN run_install --yes --install-docker --dir "$SB/oa" --docker-mirror "$M"; assert_rc 0; assert_nofile "$SB/daemon.json"; assert_not "$SB/calls.log" 'curl .*docker.1ms.run'
+    # the review screen (setting 8) can enter mirrors; invalid URLs are re-asked; consent before daemon.json is written
+    new_sandbox rm8; answers "$SB/oa" 18090 '' 1 '' n '' default e 8 2 'ftp://x' "$M https://mirror2.example.com" y y n; tty_install --dir "$SB/oa"; assert_rc 0
+    assert_has "$SB/out.txt" 'not a valid http\(s\):// URL: ftp://x'; assert_has "$SB/out.txt" "Docker Hub mirror $M https://mirror2.example.com"; assert_has "$SB/daemon.json" "\"$M\""; assert_not "$SB/calls.log" '^systemctl restart docker'
+    new_sandbox rm9; printf '{"log-driver": "json-file"}\n' >"$SB/daemon.json"; cp "$SB/daemon.json" "$SB/daemon.orig"; answers "$SB/oa" 18090 '' 1 '' n '' default e 8 2 "$M" y n; tty_install --dir "$SB/oa"; assert_rc 0; cmp -s "$SB/daemon.json" "$SB/daemon.orig" && ok_ || bad_ "daemon.json changed without consent"
+    # config / print-config keys: lang, docker_source, docker_mirrors, geo_lookup (no secrets)
+    new_sandbox rm10; ( OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_RETRY_BASE=0 OA_INSTALL_LOCK="$SB/lock" OA_DAEMON_JSON="$SB/daemon.json" OA_TEST_DOCKER_SHIM="$SB/shim/docker" PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" --lang zh --yes --print-config --dir "$SB/oa" --docker-source tuna --docker-mirror "$M" >"$SB/pc.stdout" 2>"$SB/pc.stderr" ); RC=$?
+    assert_rc 0 "$SB/pc.stderr"; assert_has "$SB/pc.stdout" '^lang=zh$'; assert_has "$SB/pc.stdout" '^docker_source=tuna$'; assert_has "$SB/pc.stdout" "^docker_mirrors=$M\$"
+    # registry_help names the Docker Hub base images and the mirror options
+    new_sandbox rm11; FAKE_PULL_FAIL=1 FAKE_COMPOSE_PULL_FAIL=1 run_install --yes --dir "$SB/oa" --registry "$REG" --image-tag nope; assert_rc_nz; assert_has "$SB/out.txt" 'the postgres/caddy base images come from Docker Hub by default'
+}
+
+# ---------------------------------------------------------------------------------------------- Docker install: progress, timeout, lock, environment
+t_docker_progress() {
+    mkdir -p /tmp/oa-hb-fixture 2>/dev/null; local fx
+    # heartbeat: a silent install shows elapsed time, the active process and whether the apt download directory is moving
+    NO_DOCKER=1 new_sandbox hb1; fx="$SB/fx"; mkdir -p "$fx/partial"; printf 'x\n' >"$fx/dpkg.log"
+    FAKE_GETDOCKER_SLEEP=2.5 OA_HEARTBEAT=1 OA_APT_PARTIAL="$fx/partial" OA_DPKG_LOG="$fx/dpkg.log" FAKE_PS_PROCS='42 00:03 sh /x/get-docker.sh --mirror Aliyun' FAKE_PS_LATE='43 00:02 apt-get -y -qq install docker-ce docker-ce-cli' FAKE_PS_LATE_FROM=2 \
+        run_install --yes --install-docker --dir "$SB/oa" --docker-source aliyun; assert_rc 0
+    assert_has "$SB/out.txt" 'Still installing Docker\.\.\. [12] s elapsed; current process: '; assert_has "$SB/out.txt" 'apt download directory [0-9]+ KB \((unchanged|growing)\)'; assert_has "$SB/out.txt" 'dpkg log last written [0-9]+ s ago'
+    assert_has "$SB/out.txt" 'current process: .*(apt-get -y -qq install docker-ce|get-docker.sh)'
+    # the download directory growing is reported as growing
+    NO_DOCKER=1 new_sandbox hb2; fx="$SB/fx"; mkdir -p "$fx/partial"; ( sleep 1.2; head -c 300000 /dev/zero >"$fx/partial/pkg.deb" ) &
+    FAKE_GETDOCKER_SLEEP=3 OA_HEARTBEAT=1 OA_APT_PARTIAL="$fx/partial" run_install --yes --install-docker --dir "$SB/oa" --docker-source official; assert_rc 0; wait; assert_has "$SB/out.txt" 'apt download directory [0-9]+ KB \(growing\)'
+    # Chinese heartbeat
+    NO_DOCKER=1 new_sandbox hb3; FAKE_GETDOCKER_SLEEP=2.5 OA_HEARTBEAT=1 run_install --lang zh --yes --install-docker --dir "$SB/oa" --docker-source official; assert_rc 0; assert_has "$SB/out.txt" '仍在安装 Docker…已用 [12] 秒；当前进程：'
+    # a fast install prints no heartbeat
+    NO_DOCKER=1 new_sandbox hb4; run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_not "$SB/out.txt" 'Still installing Docker'
+}
+
+t_docker_timeout() {
+    local fx
+    # --yes: the child's process group is stopped, diagnostics are printed, the installer fails with the hints (exit 1), nothing else is killed
+    NO_DOCKER=1 new_sandbox to1; fx="$SB/fx"; mkdir -p "$fx"; printf 'dpkg-line-one\ndpkg-last-line\n' >"$fx/dpkg.log"; printf 'term-last-line\n' >"$fx/term.log"
+    OA_DOCKER_TIMEOUT=2 FAKE_GETDOCKER_HANG=1 OA_DPKG_LOG="$fx/dpkg.log" OA_APT_TERM_LOG="$fx/term.log" run_install --yes --install-docker --dir "$SB/oa" --docker-source official; assert_rc 1
+    assert_has "$SB/out.txt" 'ran longer than 2 s; stopping its process group'; assert_has "$SB/out.txt" 'Diagnostics \(after the timeout\)'; assert_has "$SB/out.txt" 'dpkg-last-line'; assert_has "$SB/out.txt" 'term-last-line'; assert_has "$SB/out.txt" 'who holds the installation lock'
+    assert_has "$SB/out.txt" 'The Docker installation timed out \(2 s\)'; assert_has "$SB/out.txt" 'OA_DOCKER_TIMEOUT=<seconds>'; assert_nofile "$SB/oa/.env"
+    pgrep -fx 'sleep 987' >/dev/null 2>&1 && bad_ "the hung child was not stopped" || ok_
+    # interactive: n = next source (the hang happens once), r = retry the same source, a = abort (default)
+    NO_DOCKER=1 new_sandbox to2; answers "$SB/oa" 18090 '' 1 '' n '' default y n; OA_DOCKER_TIMEOUT=2 FAKE_GETDOCKER_HANG_ONCE=1 OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 0
+    assert_has "$SB/out.txt" '\[r\]etry the same source / \[n\]ext source / \[a\]bort'; assert_has "$SB/calls.log" 'get-docker.sh --mirror Aliyun'
+    NO_DOCKER=1 new_sandbox to3; answers "$SB/oa" 18090 '' 1 '' n '' default y r; OA_DOCKER_TIMEOUT=2 FAKE_GETDOCKER_HANG_ONCE=1 OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 0; assert_count "$SB/calls.log" '^get-docker.sh --mirror Aliyun' 2
+    NO_DOCKER=1 new_sandbox to4; answers "$SB/oa" 18090 '' 1 '' n '' default y; OA_DOCKER_TIMEOUT=2 FAKE_GETDOCKER_HANG=1 OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 4; assert_has "$SB/out.txt" 'Aborted: the Docker installation timed out'
+    # Chinese
+    NO_DOCKER=1 new_sandbox to5; OA_DOCKER_TIMEOUT=2 FAKE_GETDOCKER_HANG=1 run_install --lang zh --yes --install-docker --dir "$SB/oa" --docker-source official; assert_rc 1; assert_has "$SB/out.txt" '诊断信息（超时后）'; assert_has "$SB/out.txt" 'Docker 安装超时（2 秒）'
+    pgrep -fx 'sleep 987' >/dev/null 2>&1 && bad_ "a hung child is left" || ok_
+}
+
+t_pkg_lock() {
+    # another apt/unattended-upgrades holds the lock: --yes waits (and says so) until it is gone
+    NO_DOCKER=1 new_sandbox lk1; OA_HEARTBEAT=0.3 FAKE_PS_PROCS='777 12:00 /usr/bin/unattended-upgrade' FAKE_LOCK_RELEASE_AFTER=4 run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0
+    assert_has "$SB/out.txt" 'Another package-manager process is running'; assert_has "$SB/out.txt" '777 12:00 /usr/bin/unattended-upgrade'; assert_has "$SB/out.txt" 'still waiting for the package manager to become idle'; assert_order "$SB/out.txt" 'still waiting' 'Installing Docker'; assert_has "$SB/calls.log" '^get-docker.sh'
+    # never released: a clear failure with the hint, nothing installed
+    NO_DOCKER=1 new_sandbox lk2; OA_LOCK_WAIT=1 OA_HEARTBEAT=0.3 FAKE_PS_PROCS='777 12:00 apt-get -y install foo' run_install --yes --install-docker --dir "$SB/oa"; assert_rc 1; assert_has "$SB/out.txt" 'Waited 1 s and the package manager is still busy'; assert_has "$SB/out.txt" 'systemctl stop unattended-upgrades'; assert_not "$SB/calls.log" '^get-docker.sh'
+    # interactive: continue regardless / abort / wait (default)
+    NO_DOCKER=1 new_sandbox lk3; answers "$SB/oa" 18090 '' 1 '' n '' default y c; OA_INSTALL_TTY="$SB/answers" FAKE_PS_PROCS='777 12:00 dpkg --configure -a' run_install --dir "$SB/oa" --install-docker; assert_rc 0; assert_has "$SB/out.txt" '\[w\]ait for it to finish'; assert_has "$SB/calls.log" '^get-docker.sh'
+    NO_DOCKER=1 new_sandbox lk4; answers "$SB/oa" 18090 '' 1 '' n '' default y a; OA_INSTALL_TTY="$SB/answers" FAKE_PS_PROCS='777 12:00 dpkg --configure -a' run_install --dir "$SB/oa" --install-docker; assert_rc 4; assert_has "$SB/out.txt" 'Aborted: the package manager is busy'; assert_not "$SB/calls.log" '^get-docker.sh'
+    NO_DOCKER=1 new_sandbox lk5; answers "$SB/oa" 18090 '' 1 '' n '' default y ''; OA_HEARTBEAT=0.3 FAKE_LOCK_RELEASE_AFTER=4 OA_INSTALL_TTY="$SB/answers" FAKE_PS_PROCS='777 12:00 dnf install x' run_install --dir "$SB/oa" --install-docker; assert_rc 0; assert_has "$SB/out.txt" 'still waiting'
+    # no lock holder: no message; the prerequisite and compose-plugin installs check too
+    NO_DOCKER=1 new_sandbox lk6; run_install --yes --install-docker --dir "$SB/oa"; assert_not "$SB/out.txt" 'Another package-manager process'
+    new_sandbox lk7; OA_TEST_MISSING_CMDS=flock OA_HEARTBEAT=0.3 FAKE_PS_PROCS='777 12:00 apt-get install y' FAKE_LOCK_RELEASE_AFTER=4 run_install --yes --install-prereqs --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'Another package-manager process is running'
+    # Chinese
+    NO_DOCKER=1 new_sandbox lk8; OA_HEARTBEAT=0.3 FAKE_PS_PROCS='777 12:00 apt-get install y' FAKE_LOCK_RELEASE_AFTER=4 run_install --lang zh --yes --install-docker --dir "$SB/oa"; assert_has "$SB/out.txt" '检测到另一个包管理器进程正在运行'; assert_has "$SB/out.txt" '仍在等待包管理器空闲'
+}
+
+t_docker_env_warning() {
+    local k
+    # no systemd + container / WSL: the warning (with the alternative) is in the detection table and again before installing
+    for k in container wsl; do
+        NO_DOCKER=1 new_sandbox ev_$k; OA_TEST_ENVKIND=$k OA_SYSTEMD_RUN_DIR="$SB/nosystemd" run_install --check --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" "\\[WARN\\] $k environment without systemd|\\[WARN\\] A $k environment without systemd"
+        OA_TEST_ENVKIND=$k OA_SYSTEMD_RUN_DIR="$SB/nosystemd" run_install --yes --install-docker --dir "$SB/oa"; assert_rc 0; assert_has "$SB/out.txt" 'post-install script may hang or fail'
+    done
+    assert_has "$SB/out.txt" 'wsl.conf|docker.sock'
+    NO_DOCKER=1 new_sandbox ev3; OA_TEST_ENVKIND=wsl OA_SYSTEMD_RUN_DIR="$SB/nosystemd" run_install --yes --install-docker --dir "$SB/oa"; assert_has "$SB/out.txt" '/etc/wsl.conf'
+    NO_DOCKER=1 new_sandbox ev4; OA_TEST_ENVKIND=container OA_SYSTEMD_RUN_DIR="$SB/nosystemd" run_install --yes --install-docker --dir "$SB/oa"; assert_has "$SB/out.txt" '/var/run/docker.sock'
+    # interactive: the default answer is "no"
+    NO_DOCKER=1 new_sandbox ev5; answers "$SB/oa" 18090 '' 1 '' n '' default y ''; OA_TEST_ENVKIND=container OA_SYSTEMD_RUN_DIR="$SB/nosystemd" OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker; assert_rc 4; assert_has "$SB/out.txt" 'Install Docker here anyway'; assert_not "$SB/calls.log" '^get-docker.sh'
+    NO_DOCKER=1 new_sandbox ev6; answers "$SB/oa" 18090 '' 1 '' n '' default y y; OA_TEST_ENVKIND=container OA_SYSTEMD_RUN_DIR="$SB/nosystemd" OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa" --install-docker; assert_rc 0
+    # systemd present or a real host: no warning
+    NO_DOCKER=1 new_sandbox ev7; OA_TEST_ENVKIND=container run_install --yes --install-docker --dir "$SB/oa"; assert_not "$SB/out.txt" 'post-install script may hang'
+    NO_DOCKER=1 new_sandbox ev8; OA_TEST_ENVKIND=none OA_SYSTEMD_RUN_DIR="$SB/nosystemd" run_install --yes --install-docker --dir "$SB/oa"; assert_not "$SB/out.txt" 'post-install script may hang'
+    # Chinese
+    NO_DOCKER=1 new_sandbox ev9; OA_TEST_ENVKIND=wsl OA_SYSTEMD_RUN_DIR="$SB/nosystemd" run_install --lang zh --yes --install-docker --dir "$SB/oa"; assert_has "$SB/out.txt" '检测到 WSL 且没有 systemd'
 }
 
 # ---------------------------------------------------------------------------------------------- runner

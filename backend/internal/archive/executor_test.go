@@ -98,7 +98,7 @@ func TestIdenticalContentIsIdempotent(t *testing.T) {
 	// New OpID, same content/dest: skipped as identical, no suffix file.
 	op.OpID = "op2"
 	r3 := e.ex.Execute(context.Background(), []Op{op})
-	if r3[0].Status != StatusSkipped || r3[0].FinalRel != "d/a.pdf" {
+	if r3[0].Status != StatusSkipped || r3[0].FinalRel != "d/a.pdf" || r3[0].DuplicateOf != "d/a.pdf" {
 		t.Fatalf("%+v", r3)
 	}
 	if e.exists("d/a_2.pdf") {
@@ -510,5 +510,18 @@ func TestJournalWritten(t *testing.T) {
 	bad.OpID = "../evil"
 	if r := e.ex.Execute(context.Background(), []Op{bad}); r[0].Status != StatusFailed {
 		t.Fatal("bad OpID accepted")
+	}
+}
+
+func TestSameNameOtherContentKeepsAutoSuffixAndReportsNoDuplicate(t *testing.T) {
+	e := newEnv(t)
+	a := e.src("a", "first")
+	a.DestRel, a.OpID = "d/a.pdf", "o1"
+	e.ex.Execute(context.Background(), []Op{a})
+	b := e.src("b", "second")
+	b.DestRel, b.OpID = "d/a.pdf", "o2"
+	r := e.ex.Execute(context.Background(), []Op{b})
+	if r[0].Status != StatusPublished || r[0].FinalRel != "d/a_2.pdf" || r[0].DuplicateOf != "" || !e.exists("d/a.pdf") {
+		t.Fatalf("different content must never overwrite and is not a duplicate: %+v", r[0])
 	}
 }

@@ -70,9 +70,9 @@ describe('intakeNote', () => {
     const n = intakeNote([pf('a.docx'), pf('b.pdf')], []); expect(n).toEqual({ kind: 'success', text: '已添加 2 个文件。' })
     expect(n.text).not.toMatch(/MB|MiB|最多/)
   })
-  it('flags unsupported, legacy and skipped entries', () => {
+  it('flags name-only files (unknown formats) and skipped entries; legacy Office needs no conversion', () => {
     const n = intakeNote([pf('a.docx'), pf('x.exe'), pf('o.doc')], ['/../bad'])
-    expect(n.kind).toBe('info'); expect(n.text).toMatch(/1 个格式不支持/); expect(n.text).toMatch(/1 个旧版/); expect(n.text).toMatch(/1 个条目已跳过/)
+    expect(n.kind).toBe('info'); expect(n.text).toMatch(/1 个文件的内容无法读取，将只按文件名处理/); expect(n.text).not.toMatch(/转换|旧版/); expect(n.text).toMatch(/1 个条目已跳过/)
   })
-  it('all unsupported is an error', () => { expect(intakeNote([pf('x.exe')], []).kind).toBe('error') })
+  it('an upload of only unknown formats is still accepted (by name), not an error', () => { expect(intakeNote([pf('x.exe')], []).kind).toBe('info') })
 })

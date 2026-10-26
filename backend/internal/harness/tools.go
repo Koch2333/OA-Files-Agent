@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"oa-agent/backend/internal/formats"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,13 @@ type Session struct {
 	visionReads int // read_page_image calls (cap maxVisionReads)
 	visionUsed  bool
 	verdict     string // last computed OCR verdict
+
+	// Content readability, set by runExtract: unreadable is the reason code of a fatal worker error (cleared by a later
+	// successful extraction); contentStatus/contentReason come from the last successful extraction.
+	unreadable    string
+	contentStatus string
+	contentReason string
+	formatNote    string
 }
 
 func (s *Session) emitEvent(typ, summary string, details map[string]any) {
@@ -81,15 +89,28 @@ func strArr(max int) map[string]any {
 var nullableStr = map[string]any{"type": []string{"string", "null"}, "maxLength": 1000}
 
 func kindOf(mime, name string) string {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch {
-	case strings.HasPrefix(mime, "image/") || ext == ".png" || ext == ".jpg" || ext == ".jpeg":
+	if strings.HasPrefix(mime, "image/") {
 		return "image"
-	case mime == "application/pdf" || ext == ".pdf":
+	}
+	if mime == "application/pdf" {
 		return "pdf"
-	case ext == ".docx" || ext == ".doc" || strings.Contains(mime, "wordprocessingml") || mime == "application/msword":
+	}
+	if f, ok := formats.Lookup(name); ok {
+		switch f.Group {
+		case "image":
+			return "image"
+		case "pdf":
+			return "pdf"
+		case "excel":
+			return "spreadsheet"
+		case "word", "powerpoint", "text", "web", "mail":
+			return "document"
+		}
+	}
+	switch {
+	case strings.Contains(mime, "wordprocessingml") || mime == "application/msword":
 		return "document"
-	case ext == ".xlsx" || ext == ".xls" || strings.Contains(mime, "spreadsheetml") || mime == "application/vnd.ms-excel":
+	case strings.Contains(mime, "spreadsheetml") || mime == "application/vnd.ms-excel":
 		return "spreadsheet"
 	}
 	return "other"
@@ -116,7 +137,18 @@ func (s *Session) runExtract(ctx context.Context, ocr bool, maxChars int) (any, 
 	}
 	res, err := s.ext.Extract(ctx, ExtractRequest{Path: s.file.StoredPath, Filename: s.file.SourceName, MIMEType: s.file.MIMEType, OCR: ocr})
 	if err != nil {
+		var we *WorkerError
+		if errors.As(err, &we) {
+			if r := ReasonFromCode(we.Code); r != "" {
+				s.unreadable = r
+			}
+		}
 		return nil, err
+	}
+	s.unreadable = ""
+	s.contentStatus, s.contentReason = res.ContentStatus, res.ContentReason
+	if res.ExtensionMismatch {
+		s.formatNote = res.DetectedFormat
 	}
 	if ocr {
 		// OCR output replaces the text only if it adds content (first run) or

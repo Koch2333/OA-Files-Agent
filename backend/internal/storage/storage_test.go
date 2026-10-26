@@ -432,7 +432,7 @@ func TestImportRemoteExpandsFoldersAndAppliesTheSameRulesAsUploads(t *testing.T)
 			okFiles = append(okFiles, f)
 		}
 	}
-	if b.Job.TotalFiles != 6 || len(okFiles) != 3 || len(badFiles) != 3 || b.Job.FailureCount != 3 || b.Job.Status != "queued" {
+	if b.Job.TotalFiles != 6 || len(okFiles) != 5 || len(badFiles) != 1 || b.Job.FailureCount != 1 || b.Job.Status != "queued" {
 		t.Fatalf("batch: %+v ok=%d bad=%d", b.Job, len(okFiles), len(badFiles))
 	}
 	got := map[string]string{}
@@ -444,7 +444,7 @@ func TestImportRemoteExpandsFoldersAndAppliesTheSameRulesAsUploads(t *testing.T)
 			t.Fatalf("stored copy of %s: %v", f.SourcePath, rerr)
 		}
 	}
-	for _, want := range []string{"合同/a.docx", "合同/子/b.pdf", "single.png"} {
+	for _, want := range []string{"合同/a.docx", "合同/子/b.pdf", "single.png", "合同/old.doc", "合同/empty.pdf"} { // legacy and empty files are accepted
 		if got[want] == "" {
 			t.Errorf("missing %s in %v", want, got)
 		}
@@ -457,7 +457,7 @@ func TestImportRemoteExpandsFoldersAndAppliesTheSameRulesAsUploads(t *testing.T)
 			}
 		}
 	}
-	if codes["合同/old.doc"] != "UNSUPPORTED_FORMAT" || codes["合同/empty.pdf"] != "EMPTY_FILE" || codes["huge.pdf"] != "FILE_TOO_LARGE" {
+	if len(codes) != 1 || codes["huge.pdf"] != "FILE_TOO_LARGE" {
 		t.Fatalf("failure codes: %v", codes)
 	}
 	// idempotent replay

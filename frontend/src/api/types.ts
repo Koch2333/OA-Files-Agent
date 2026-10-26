@@ -15,11 +15,15 @@ type S = components['schemas']
 export type TaskStatus = S['TaskStatus']
 export type ImportJob = S['ImportJob']
 export type FileRecord = S['FileRecord']
+export type ContentInfo = S['ContentInfo']
 export type ArchiveStatus = FileRecord['archive_status']
 export type ArchivePlan = S['ArchivePlan']
 export type PlanStatus = ArchivePlan['status']
 export type ArchivePlanItem = S['PlanItem']
 export type PlanItemPatch = S['PlanPatch']
+export type ClassificationOption = S['ClassificationOption']
+/** GET /v1/classification/options：人工修订下拉框的候选值（自动生成，仍可手输）。 */
+export interface ClassificationOptions { departments: ClassificationOption[]; types: ClassificationOption[]; reserved: string }
 export type LedgerEntry = S['LedgerEntry']
 export type TemplateTestResult = S['TemplateTestResult']
 export type ArchiveRule = S['ArchiveRule']
@@ -49,6 +53,18 @@ export type ErrorSeverity = ErrorReport['severity']
 export type FsEntry = S['FsEntry']
 export type FolderListing = S['FolderListing']
 export type TrashItem = S['TrashItem']
+export type ConflictPolicy = S['ConflictPolicy']
+export type FsConflict = S['FsConflict']
+export type FsFileInfo = S['FsFileInfo']
+export type FsItemResult = S['FsItemResult']
+export type FsBatchResult = S['FsBatchResult']
+export type FsVerifyReport = S['FsVerifyReport']
+export type FsFileCheck = S['FsFileCheck']
+export type FsItemStatus = S['FsItemStatus']
+/** 冲突处理选项：on_conflict 为全部项的默认策略，resolutions 以所选项路径为键逐项覆盖。 */
+export interface ConflictOptions { on_conflict?: ConflictPolicy; resolutions?: Record<string, ConflictPolicy> }
+export interface MoveResult { entry?: FsEntry; ledger_updated: number; status: FsItemStatus; final_path?: string; hash_status?: 'verified' | 'modified_outside' | 'not_task'; modified_outside?: string[]; duplicate_of?: string; message?: string }
+export interface RestoreResult { path: string; ledger_updated: number; status?: 'restored' | 'renamed' | 'replaced' | 'skipped' | 'duplicate'; hash_status?: 'verified' | 'modified_outside' | 'not_task'; duplicate_of?: string; message?: string }
 export type Preview = S['Preview']
 export type StorageKind = S['StorageKind']
 export type StorageField = S['StorageField']
@@ -142,6 +158,7 @@ export interface Api {
   getFile(id: string): Promise<FileRecord>
   getPlan(id: string): Promise<ArchivePlan>
   patchPlan(id: string, version: number, items: PlanItemPatch[]): Promise<ArchivePlan>
+  getClassificationOptions(taskId?: string): Promise<ClassificationOptions>
   approvePlan(id: string, version: number): Promise<ArchivePlan>
   executePlan(id: string, idempotencyKey: string): Promise<ArchivePlan>
   rollbackOperation(operationId: string): Promise<void>
@@ -174,10 +191,20 @@ export interface Api {
   /** 纯 URL 构造：第 page 页的 PNG；演示模式返回内联 SVG。 */
   previewPageUrl(source: PreviewSource, page: number, maxSide: number): string
   createFolder(path: string): Promise<FsEntry>
-  moveEntry(from: string, to: string): Promise<{ entry: FsEntry; ledger_updated: number }>
+  /** 冲突时（默认 on_conflict=ask）抛 ApiError(409)，details.conflicts 为 FsConflict[]，且不做任何改动。 */
+  moveEntry(from: string, to: string, opts?: ConflictOptions): Promise<MoveResult>
+  bulkMove(paths: string[], targetDir: string, opts?: ConflictOptions): Promise<FsBatchResult>
+  bulkTrash(paths: string[]): Promise<FsBatchResult>
+  /** 重新计算任务相关文件的 SHA-256 并与台账比对（流式、只读）。 */
+  verifyFiles(paths: string[]): Promise<FsVerifyReport>
+  /** 文件夹/多选下载：GET 链接（路径可重复，适合短选择，浏览器直接流式下载）；演示模式返回 '#'。 */
+  downloadUrl(paths: string[]): string
+  /** 选择太多、URL 放不下时的回退：POST 后收成 Blob。 */
+  downloadSelection(paths: string[]): Promise<{ blob: Blob; filename: string }>
   trashEntry(path: string): Promise<TrashItem>
   listTrash(): Promise<TrashItem[]>
-  restoreTrash(id: string): Promise<{ path: string; ledger_updated: number }>
+  /** 不带策略：旧行为（原位置被占用则自动加序号）；带 onConflict：按冲突策略，ask 时冲突抛 409 + details.conflicts。 */
+  restoreTrash(id: string, onConflict?: ConflictPolicy): Promise<RestoreResult>
   revealInExplorer(path: string): Promise<void>
   /** 存储连接（可选功能）：kinds 返回 404 表示后端未启用该功能。 */
   listStorageKinds(): Promise<StorageKind[]>

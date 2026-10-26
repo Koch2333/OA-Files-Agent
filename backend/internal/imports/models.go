@@ -112,6 +112,20 @@ type File struct {
 	TemplateID     *string   `json:"-"`
 	// LLMError is set when the file failed because of a model-provider call (nil otherwise); retrying the task re-runs it.
 	LLMError *LLMError `json:"llm_error"`
+	// Content says how much of the file's content could be read (nil before analysis or when the file failed).
+	Content *ContentInfo `json:"content"`
+}
+
+// ContentInfo is the readability verdict of one file. Basis "filename_only" means the content could not be read and the
+// classification came from the file name alone (always review-required); Reason is encrypted | damaged | unsupported |
+// too_large | timeout | ocr_empty | ocr_unavailable | empty (unreadable) or capped | damaged | encoding (partial).
+// FormatMismatch holds the real format when the extension did not match the content (e.g. "html" for a web export
+// saved as .xls).
+type ContentInfo struct {
+	Status         string  `json:"status"`
+	Reason         *string `json:"reason"`
+	Basis          string  `json:"basis"`
+	FormatMismatch *string `json:"format_mismatch"`
 }
 
 // LLMError is the user-safe description of a provider failure (never a key, request or document text).

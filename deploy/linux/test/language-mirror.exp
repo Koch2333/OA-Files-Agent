@@ -1,0 +1,75 @@
+#!/usr/bin/expect -f
+# Real-pty run of the language question and the Docker Hub mirror (daemon.json) consent path of install.sh: LANG=C, no --lang, the script
+# piped into bash. The first question is the language (answer 1 = Chinese); everything after is Chinese; the review screen's setting 8 enters a
+# registry mirror; daemon.json is written only after the "y" at the consent question and Docker is NOT restarted (the "n").
+#   INSTALLER PROJECT ROOTDIR REGISTRY TAG PORT   as in interactive.exp          MIRRORURL  the registry mirror to enter
+set timeout 180
+log_user 1
+set installer $env(INSTALLER)
+set project $env(PROJECT)
+set root $env(ROOTDIR)
+set registry $env(REGISTRY)
+set tag $env(TAG)
+set port $env(PORT)
+set murl $env(MIRRORURL)
+proc fail {why} { puts "\nINTERACTIVE-FAIL: $why"; exit 1 }
+proc want {re why} {
+    expect {
+        -re $re {}
+        timeout { fail "timeout waiting for: $why" }
+        eof { fail "installer ended while waiting for: $why" }
+    }
+}
+spawn env -u OA_LANG LC_ALL= LANGUAGE= LANG=C bash -c "cat $installer | bash -s -- --project $project --registry $registry --dir $root/l/opt/oa-agent"
+want {请选择语言 / Select language:} "the language question comes first"
+want {\[2\]: } "language prompt, default 2 (English) under LANG=C"
+send "x\r"
+want {请输入 1 或 2 / enter 1 or 2} "invalid language answer is re-asked"
+want {\[2\]: } "language prompt again"
+send "1\r"
+want {企业 OA 文件智能归档智能体} "the banner is in the chosen language"
+want {检测：这台服务器上已经有什么} "detection heading in Chinese"
+want {安装目录[^\r\n]*: } "install dir prompt"
+send "$root/l/opt/oa-agent\r"
+want {HTTP 端口 \[[0-9]+\]: } "port prompt"
+send "$port\r"
+want {域名[^\r\n]*: } "domain prompt"
+send "\r"
+want {选择 \[1-4\] \[1\]: } "database choice"
+send "\r"
+want {归档根目录[^\r\n]*: } "archive prompt"
+send "$root/l/srv/archive\r"
+want {是否自定义导入暂存[^\r\n]*\[y/N\] } "customise question"
+send "\r"
+want {额外本地存储[^\r\n]*: } "extra mount prompt"
+send "\r"
+want {镜像源[^\r\n]*: } "mirror prompt"
+send "\r"
+want {镜像标签 \[latest\]: } "tag prompt"
+send "$tag\r"
+want {请复核全部设置} "review screen in Chinese"
+want {继续安装？\[Y\]是 / \[e\]修改某项 / \[c\]取消:} "review prompt"
+send "e\r"
+want {修改哪一项？\[1-9\]:} "edit prompt"
+send "8\r"
+want {选择 \[1-2\] \[1\]: } "registry mirror question"
+send "2\r"
+want {加速地址[^\r\n]*: } "mirror URL prompt"
+send "$murl\r"
+want {继续安装？\[Y\]是} "review again"
+send "y\r"
+want {是否修改 /etc/docker/daemon.json？ \[y/N\] } "consent before daemon.json is written"
+send "y\r"
+want {现在重启 Docker？ \[y/N\] } "restart consent is a separate question"
+send "n\r"
+set timeout 2400
+expect {
+    -re {初始化令牌: +([A-Za-z0-9_-]{16,})} { set token $expect_out(1,string) }
+    -re {\[FAIL\]} { fail "installer reported a failure" }
+    timeout { fail "timeout waiting for the final summary" }
+    eof { fail "installer ended without a summary" }
+}
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} { fail "installer exit code [lindex $result 3]" }
+puts "\nINTERACTIVE-LANG-OK"

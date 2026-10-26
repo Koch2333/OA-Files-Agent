@@ -43,7 +43,7 @@ sudo bash install.sh --yes --domain oa.example.com --email admin@example.com \
 |---|---|
 | 系统 | Ubuntu/Debian、CentOS/Rocky/Alma/RHEL/Fedora、Alpine（需先 `apk add bash`；以上均为尽力支持），x86_64 或 aarch64 |
 | 资源 | ≥2 核、≥4 GB 内存（OCR 占内存，<2 GB 会警告）、≥5 GB 可用磁盘（构建约 3 GB），归档另算（<20 GiB 警告） |
-| 网络 | 能访问镜像仓库/Go/npm/PyPI（中国大陆加 `--mirror cn`）；HTTPS 需 80/443 对公网开放且域名已解析 |
+| 网络 | 能访问镜像仓库/Go/npm/PyPI（中国大陆加 `--mirror cn` 用于构建镜像源；Docker 安装源自动选择，见 14.9）；HTTPS 需 80/443 对公网开放且域名已解析 |
 | 软件 | Docker Engine ≥ 20.10 + Compose v2（低于 20.10 时预检失败）。缺失时脚本会**询问**（`--yes` 下必须显式 `--install-docker`）后安装：先用 Docker 官方脚本 get.docker.com（第三方脚本，会提示；失败自动重试；`--mirror cn` 依次试阿里云源、AzureChinaCloud 源），仍失败则回退到发行版软件包（apt/dnf/yum/zypper/apk），全部失败给出明确错误 |
 | 内核/其他 | 内核 ≥ 3.10（<4.0 警告），建议 cgroup v2；系统时钟必须同步（TOTP）；SELinux Enforcing 时给出处理建议（脚本不改 SELinux）。完整清单见 12.2 |
 
@@ -258,7 +258,7 @@ oa-agentctl upgrade --tag sha-旧提交 --no-backup
 
 ### 12.5 Docker 安装回退链与镜像加速
 
-- `--install-docker`（或交互确认）后：get.docker.com 脚本（下载带重试；`--mirror cn` 先阿里云源再 AzureChinaCloud 源）→ 失败则发行版软件包（Debian/Ubuntu `docker.io docker-compose-v2`；RHEL 系 `docker docker-compose-plugin`；Fedora `moby-engine docker-compose`；SUSE `docker docker-compose`；Alpine `docker docker-cli-compose`）→ 仍失败则报错并指向官方文档。软件包的名称和是否带 Compose v2 因发行版而异，属“尽力而为”。
+- `--install-docker`（或交互确认）后：get.docker.com 脚本（下载带重试；安装源默认**自动选择**：中国大陆时按速度试阿里云、Azure 中国、腾讯云、清华、中科大这些可达的镜像，最后官方源；见 14.9，`--docker-source` 可指定；`--mirror cn` 等于已知在大陆）→ 失败则发行版软件包（Debian/Ubuntu `docker.io docker-compose-v2`；RHEL 系 `docker docker-compose-plugin`；Fedora `moby-engine docker-compose`；SUSE `docker docker-compose`；Alpine `docker docker-cli-compose`）→ 仍失败则报错并指向官方文档。软件包的名称和是否带 Compose v2 因发行版而异，属“尽力而为”。
 - `--docker-mirror <URL>`（可重复，或环境变量 `OA_DOCKER_MIRRORS="url1 url2"`）：把 Docker Hub 镜像加速写入 `/etc/docker/daemon.json` 的 `registry-mirrors`。**只在交互确认后才修改**；用 python3 / jq / perl(JSON::PP) 解析并合并（保留其他设置），先备份为 `daemon.json.oa-bak.<时间>`；文件不存在/为空/`{}` 时直接写入；已有文件不是合法 JSON 对象，或主机上没有任何 JSON 工具时**保持不动**并打印手动步骤。**重启 Docker 要再确认一次**（未开 live-restore 时所有容器会重启）。`--yes` 或没有终端时永远不改 `daemon.json`。加速只影响 Docker Hub 的基础镜像（`postgres`、`caddy`）；生产镜像来自 ACR。
 
 ### 12.6 拉取可靠性
@@ -354,7 +354,7 @@ sudo bash install.sh --offline oa-agent-images-sha-0a1b2c3-amd64.tar --yes --arc
 
 ### 14.3 向导问题与复核页
 
-向导一次问一个问题，默认值来自检测：安装目录 → HTTP 端口（默认被占用则建议下一个空闲端口并说明占用者）→ 域名/HTTPS（及邮箱；80/443 被占用时三选一：放在已有反向代理后面〔推荐〕/ 忽略域名只用 HTTP / 仍用内置 Caddy）→ 数据库（1 内置 PostgreSQL〔推荐〕、2 已有 PostgreSQL、3 已有 MySQL 8+、4 已有 SQL Server 2019+；已有库再问主机、端口、库名、用户、隐藏输入的密码、TLS 模式、CA 文件）→ 存储目录（归档、暂存/应用数据/数据库目录、额外挂载）→ 镜像源 → 镜像标签。全部回答后是**复核页**（密码遮蔽），`[Y]继续 / [e]修改某项（按编号）/ [c]取消`；取消退出码 4，未做任何更改。
+向导第一问是界面语言（见 14.9，指定了 `--lang` 就不问）。随后一次问一个问题，默认值来自检测（Docker 安装源和 Docker Hub 镜像加速不在问题里：自动选择并打印一行，可在复核页第 8 项修改）：安装目录 → HTTP 端口（默认被占用则建议下一个空闲端口并说明占用者）→ 域名/HTTPS（及邮箱；80/443 被占用时三选一：放在已有反向代理后面〔推荐〕/ 忽略域名只用 HTTP / 仍用内置 Caddy）→ 数据库（1 内置 PostgreSQL〔推荐〕、2 已有 PostgreSQL、3 已有 MySQL 8+、4 已有 SQL Server 2019+；已有库再问主机、端口、库名、用户、隐藏输入的密码、TLS 模式、CA 文件）→ 存储目录（归档、暂存/应用数据/数据库目录、额外挂载）→ 镜像源 → 镜像标签。全部回答后是**复核页**（密码遮蔽；第 8 项 Docker 安装源/加速、第 9 项语言），`[Y]继续 / [e]修改某项（按编号 1-9）/ [c]取消`；取消退出码 4，未做任何更改。
 
 校验与重问：每个答案都有友好的错误说明；无效最多重问 5 次，超过以退出码 2 中止。Ctrl-C 随时安全（退出码 130）。
 
@@ -368,6 +368,8 @@ sudo bash install.sh --offline oa-agent-images-sha-0a1b2c3-amd64.tar --yes --arc
 
 | 键 | 含义 | 对应参数 |
 |---|---|---|
+| `lang` `geo_lookup` | 界面语言 `zh`/`en`；`geo_lookup=no` 不请求 ipinfo.io | `--lang` `--no-geo-lookup` |
+| `docker_source` `docker_mirrors` | Docker 安装源（见 14.9）；Docker Hub 加速地址（空格分隔） | `--docker-source` `--docker-mirror` |
 | `dir` `port` `domain` `email` `project` | 安装目录、HTTP 端口、域名、证书邮箱、compose 项目名 | `--dir --port --domain --email --project` |
 | `behind_proxy` | `yes`：放在已有反向代理后面（需 `domain`） | `--behind-proxy` |
 | `mirror` | `cn` / `default` | `--mirror` |
@@ -551,3 +553,38 @@ OA Agent would create its schema in host.docker.internal:55442/oa: 10 migration(
 | 「目标库已有 OA Agent 数据」 | 提供原 `OA_SECRET_KEY`（交互输入或 `secret_key_file`），否则拒绝 |
 | 80/443 被占用 | 用向导的「放在它后面」或 `--behind-proxy`；否则停掉占用者 |
 | 想只看状态 | `install.sh --status`（不需要 root）；`--check` 额外打印将执行的计划 |
+
+### 14.9 语言与 Docker 安装源（自动选择，和 1Panel 同一思路）
+
+**界面语言（中文 / English）。** 没有用 `--lang`、`OA_LANG` 或配置文件指定时：
+
+- 交互运行：**第一个问题**就是「请选择语言 / Select language: 1) 中文 2) English」，默认值来自系统区域设置（依次看 `LC_ALL`、`LC_MESSAGES`、`LANGUAGE`、`LANG`，再看 `/etc/default/locale`、`/etc/locale.conf`；`zh_CN`、`zh_TW`、`zh-Hans`、`ZH` 等不分大小写都算中文；`C`/`POSIX` 视为没有设置，继续看下一个来源）。答案从终端读取，所以 `curl … | sudo bash` 时也能问。选定后的横幅、提问、复核页、错误、`--help`（在其后）和传给子脚本的 `OA_LANG` 全部跟随；复核页第 9 项可以随时改语言。
+- 无人值守（`--yes` / `--check` / `--status`）：不提问，按区域设置选择，并打印一行「界面语言：中文（来自系统区域设置；用 --lang zh|en 更改）」。
+- 选择会写入**新安装**的 `.env`（`OA_LANG=zh|en`），`oa-agentctl.sh` 在环境变量 `OA_LANG` 未设置时沿用它；已有安装的 `.env` 不会被改动。配置键 `lang`，环境变量 `OA_INSTALL_LANG`。
+- 外部数据库检查清单（`oa-admin db-check`）和 Go 版 `oa-agentctl mounts apply` 的进度/错误输出也跟随 `OA_LANG`（安装器会传）。**仍然只有中文的部分**：Go 版 `oa-agentctl` 的 TUI 与其余子命令、`oa-admin` 的其他命令、数据库检查清单里未收录的新句子（保持原文，不会编造翻译）、以及 docker/apt 等外部程序自己的输出。
+
+**Docker 安装源默认自动，不提问。** 只在需要安装 Docker 时发生，做法参照 1Panel 的安装脚本（`curl ipinfo.io/country` 判断是否为 `CN`，是则对几个 docker-ce 镜像测速并选最快的作为 `DOWNLOAD_URL`，否则用官方源），但更保守、始终可见：
+
+1. **检测国家**：请求 `https://ipinfo.io/country`（3 秒超时）。这会联系**第三方服务**（与 1Panel 相同），只发送标准的 HTTPS 请求；用 `--no-geo-lookup`、环境变量 `OA_INSTALL_GEO=off` 或配置 `geo_lookup=no` 关闭，之后只用本地信号。
+2. **本地信号**（国家未知——被屏蔽、超时或已关闭——时才用）：阿里云 ECS 元数据里的地域是 `cn-*`、时区是 `Asia/Shanghai` 等、`download.docker.com` 3 秒内不可达 → 视为中国大陆；都不满足 → 官方。国家已知且不是 CN → 官方，不探测任何镜像。
+3. **中国大陆**：对 阿里云、Azure 中国、腾讯云、清华 TUNA、中科大 USTC 的 `…/docker-ce/linux/` 各做一次 3 秒的真实探测，只保留有响应的，按响应时间排序，**最后加上官方源**；依次尝试，失败自动换下一个；全部失败再用发行版软件包。一个都没响应时直接用官方源并说明。
+4. **始终打印一行**：例如 `Docker 安装源：自动：检测到中国大陆（ipinfo.io 返回国家 CN）→ 按速度依次尝试可达的镜像：aliyun azure tencent tuna ustc official`，并在执行前打印将运行的**完整命令**与来源（`get.docker.com` 脚本是第三方脚本）。
+5. **命令如何构成**（已对照 get.docker.com 脚本原文核实）：`--mirror` 只接受 `Aliyun`（`https://mirrors.aliyun.com/docker-ce`）和 `AzureChinaCloud`（`https://mirror.azure.cn/docker-ce`）；环境变量 `DOWNLOAD_URL`（默认 `https://download.docker.com`）替换软件包仓库与 GPG 密钥的根地址，其余镜像（腾讯云 `https://mirrors.cloud.tencent.com/docker-ce`、清华 `https://mirrors.tuna.tsinghua.edu.cn/docker-ce`、中科大 `https://mirrors.ustc.edu.cn/docker-ce`、你自己的 https 地址）就是这样用的：`DOWNLOAD_URL=<根地址> sh get-docker.sh`。
+6. **覆盖**：`--docker-source auto|official|aliyun|azure|tencent|tuna|ustc|<https 地址>`（默认 auto）、`OA_INSTALL_DOCKER_SOURCE`、配置键 `docker_source`、复核页第 8 项（可编辑，显示例如「Docker：将安装；Docker 安装源：自动：检测到中国大陆 …」）。指定具体源时只用它，失败后**仅交互运行**会问是否依次试其他内置源，`--yes` 不会悄悄换源（之后仍会回退到发行版软件包，和以前一致）。`--mirror cn` 仍可用：等于「已知是中国大陆」，跳过国家查询。
+7. 自定义地址必须是 https，且目录结构与 `download.docker.com` 相同（`linux/<发行版>/gpg` 等）。
+
+**Docker Hub 镜像加速（`daemon.json` 的 `registry-mirrors`）。**
+
+- 本次运行**由本脚本新装了 Docker**，且判定为中国大陆：从一个很小的内置列表（`docker.1ms.run`、`docker.m.daocloud.io`、`docker.1panel.live`、`mirror.ccs.tencentyun.com`）里，对每个地址真实探测 `/v2/`（返回 200 或 401），**只写有响应的**；`daemon.json` 不存在/为空/`{}` 时直接写入并重启 Docker（此时没有其他容器），并在摘要里列出「已更改」。一个都没响应：什么都不写，打印手动做法。这些公共加速地址会失效或易手，所以每次安装都重新探测，不依赖固定结论。
+- **Docker 本来就有**（或 `daemon.json` 已有内容）：保持原有的征求同意流程——备份、安全合并、写入前确认、重启再确认；`--yes`/无终端只打印手动步骤。
+- `--docker-mirror URL`（可重复，`OA_DOCKER_MIRRORS`，配置键 `docker_mirrors`）仍是显式覆盖，走同意流程，不做自动探测。复核页第 8 项也能输入自己的地址。
+- 生产镜像（api/worker）来自镜像仓库（ACR），只有 postgres/caddy 基础镜像来自 Docker Hub；拉取失败时的提示会说明这一点，并指向 `--docker-mirror` 或 `.env` 里的 `OA_PG_IMAGE`/`OA_CADDY_IMAGE`。
+
+### 14.10 Docker 安装过程的进度、超时、锁与环境检查
+
+get.docker.com 安装 `docker-ce` 时 apt 是静默的（`apt-get -y -qq install … >/dev/null`），在慢网络或 Debian 13 这类系统上可能几分钟没有任何输出。安装器因此：
+
+1. **心跳**：把 get-docker.sh 放在自己的会话（进程组）里运行，输出实时转发并写入日志；每 15 秒（`OA_HEARTBEAT`）打印一行，例如 `仍在安装 Docker…已用 45 秒；当前进程：1234 00:41 apt-get -y -qq install docker-ce …；apt 下载目录 18432 KB（在增长）；dpkg 日志 3 秒前有更新`。下载目录在增长或 dpkg 日志在更新就是慢而不是卡死；两者都不动、当前进程不变就该怀疑卡住。
+2. **超时**：默认 20 分钟（`OA_DOCKER_TIMEOUT`，秒）。超时后**只停止本脚本启动的那个进程组**（先 TERM，5 个轮询周期后 KILL），然后打印诊断：包管理器进程（ps）、谁持有 apt 锁（fuser/lsof）、`/var/log/dpkg.log` 与 `/var/log/apt/term.log` 的末尾、`systemctl status docker`。交互运行可选 `[r]重试同一个源 / [n]换下一个源 / [a]中止（默认）`；`--yes` 直接以退出码 1 失败并给出同样的提示。Ctrl-C 不会杀掉正在运行的 apt（避免 dpkg 半途中断），而是告诉你它的 pid 仍在后台，等它结束再重跑。
+3. **安装前检查锁**：另一个 apt/dpkg/unattended-upgrades/dnf/yum 在运行时，先列出它并等待（`OA_LOCK_WAIT`，默认 300 秒，每个心跳周期报告一次）；交互时可选 `[w]等待（默认）/ [c]不管锁继续 / [a]中止`；`--yes` 等到超时后以明确提示失败。检查同样用于前置包与 Compose 插件的安装。
+4. **环境检查**：没有 systemd 的容器或 WSL 里，docker-ce 的安装后脚本启动服务可能卡住或失败。检测表里和安装前都会警告并给出正确做法：WSL 在 `/etc/wsl.conf` 写 `[boot] systemd=true` 后 `wsl --shutdown`，或用 Docker Desktop 的 WSL 集成；容器里不要装 Docker，挂载宿主的 `/var/run/docker.sock`，或在宿主机上运行本安装器。交互时默认答案是「不继续」。

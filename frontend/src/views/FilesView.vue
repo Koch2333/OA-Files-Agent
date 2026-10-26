@@ -13,6 +13,7 @@ import Drawer from '../components/Drawer.vue'
 import FileDetail from '../components/FileDetail.vue'
 import CorrectionDrawer from '../components/CorrectionDrawer.vue'
 import FilePreview from '../components/FilePreview.vue'
+import ContentBadge from '../components/ContentBadge.vue'
 import { isPoorOcr } from '../utils/ocr'
 
 const auth = useAuth()
@@ -71,7 +72,7 @@ const DEPTS = ['财务部', '人事部', '采购部', '行政部'], TYPES = ['�
               <td :title="f.source_path"><div class="row" style="gap: 6px"><span class="ellipsis" style="max-width: 360px">{{ f.source_name }}</span><span v-if="isPoorOcr(f)" class="chip error" title="OCR 识别质量较差">OCR 差</span></div></td>
               <td><span v-if="f.detected_department">{{ f.detected_department }}</span><span v-else class="chip attention">待审核</span></td><td><span v-if="f.detected_type">{{ f.detected_type }}</span><span v-else class="chip attention">待审核</span></td><td class="nowrap"><span v-if="f.detected_date">{{ f.detected_date }}</span><span v-else class="chip attention">待审核</span></td>
               <td class="muted nowrap">{{ fmtBytes(f.size_bytes) }}</td>
-              <td><span class="chip" :class="{ success: f.archive_status === 'archived', error: f.archive_status === 'failed' }">{{ { pending: '未归档', archived: '已归档', failed: '失败' }[f.archive_status] }}</span></td>
+              <td><ContentBadge :content="f.content" /><span class="chip" :class="{ success: f.archive_status === 'archived', error: f.archive_status === 'failed' }">{{ { pending: '未归档', archived: '已归档', failed: '失败' }[f.archive_status] }}</span></td>
               <td class="muted nowrap">{{ fmtTime(f.created_at) }}</td>
             </tr>
           </tbody>
