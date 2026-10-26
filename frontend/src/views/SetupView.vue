@@ -104,11 +104,11 @@ async function focusHeading() { await nextTick(); heading.value?.focus() }
 
 const stepError = computed(() => {
   if (!st.value) return null
-  const e = canAdvance(step.value, f, st.value)
+  const e = canAdvance(step.value, f, st.value, passkeyOk.value)
   if (e) return e
   if (step.value === 'policy') {
-    if (!rpIdMatchesHost(f.rpId, location.hostname)) return `RP ID 必须是当前访问域名（${location.hostname}）或其父域，否则 Passkey 无法使用`
-    if (!f.origins.includes(location.origin)) return `允许的来源需包含你当前访问的地址（${location.origin}）`
+    if (passkeyOk.value && !rpIdMatchesHost(f.rpId, location.hostname)) return `RP ID 必须是当前访问域名（${location.hostname}）或其父域，否则 Passkey 无法使用`
+    if (passkeyOk.value && !f.origins.includes(location.origin)) return `允许的来源需包含你当前访问的地址（${location.origin}）`
     if (!f.allowPassword && !passkeyOk.value) return '当前环境不能使用 Passkey，不能关闭密码登录'
   }
   return null
@@ -134,7 +134,7 @@ function request(): SetupRequest {
   if (f.mode === 'local') return base
   return {
     ...base, admin: { username: f.username.trim(), display_name: f.displayName.trim(), password: f.password },
-    rp_id: f.rpId.trim(), rp_name: f.rpName.trim() || undefined, origins: f.origins, mfa_policy: f.mfaPolicy, allow_password_login: f.allowPassword,
+    rp_id: passkeyOk.value ? f.rpId.trim() : '', rp_name: f.rpName.trim() || undefined, origins: passkeyOk.value ? f.origins : [], mfa_policy: f.mfaPolicy, allow_password_login: f.allowPassword,
     session_idle_minutes: f.sessionIdle, session_max_hours: f.sessionMax, password_min_length: f.minLen,
   }
 }
@@ -261,6 +261,8 @@ const mfaLabel = { off: '不强制', admins: '管理员必须', all: '所有用�
       </section>
 
       <section v-else-if="step === 'policy'" class="col">
+        <p v-if="!passkeyOk" class="banner" role="note" data-testid="setup-no-passkey"><Icon name="info" />当前是 HTTP 或 IP 地址访问，Passkey 不可用，登录将使用密码 + TOTP，这里无需填写域名。以后绑定域名并启用 HTTPS（oa-agentctl domain ）后，可在设置里再启用 Passkey。</p>
+        <template v-if="passkeyOk">
         <div class="banner" role="note"><Icon name="warning" />RP ID 与允许的来源决定 Passkey 能在哪个域名使用。<strong>之后修改域名会使已注册的 Passkey 全部失效</strong>（需重新绑定）。请确认这是用户将长期使用的访问地址。</div>
         <div class="grid two">
           <div class="field"><label for="su-rp">RP ID（域名）</label><input id="su-rp" v-model="f.rpId" class="input" autocapitalize="off" spellcheck="false" /><span class="muted t-label">不含协议与端口，例如 oa.example.com；必须是当前访问域名或其父域。</span></div>
@@ -268,6 +270,7 @@ const mfaLabel = { off: '不强制', admins: '管理员必须', all: '所有用�
         </div>
         <div class="field"><label for="su-origins">允许的来源（每行一个，精确到协议+主机+端口）</label><textarea id="su-origins" v-model="f.originsText" class="input mono" rows="3" spellcheck="false" />
           <span v-for="o in f.origins.filter((x) => originError(x))" :key="o" class="t-label" style="color: var(--md-sys-color-error)">{{ o }}：{{ originError(o) }}</span></div>
+        </template>
         <fieldset class="field"><legend class="lbl">多因素认证（MFA）要求</legend>
           <div class="seg" role="group" aria-label="MFA 要求"><button v-for="k in (['off', 'admins', 'all'] as const)" :key="k" type="button" :aria-pressed="f.mfaPolicy === k" @click="f.mfaPolicy = k">{{ mfaLabel[k] }}</button></div>
           <span class="muted t-label">“管理员必须”：管理员登录后若未绑定 MFA，会被要求先绑定。生产环境建议至少选择此项。</span></fieldset>
@@ -309,7 +312,7 @@ const mfaLabel = { off: '不强制', admins: '管理员必须', all: '所有用�
         <div class="banner info" role="status"><Icon name="check_circle" />{{ f.mode === 'local' ? '即将完成：确认后将以本机模式启用，无需登录。' : '最后一步：点击“完成”启用系统。在此之前系统的其他功能不会开放。' }}</div>
         <dl class="sum">
           <dt>运行模式</dt><dd>{{ modeLabel }}</dd>
-          <template v-if="f.mode !== 'local'"><dt>管理员</dt><dd>{{ f.username }}</dd><dt>RP ID</dt><dd>{{ f.rpId }}</dd><dt>MFA 要求</dt><dd>{{ mfaLabel[f.mfaPolicy] }}</dd><dt>全局大模型</dt><dd data-testid="setup-sum-llm">{{ summaryLlm.llm }}</dd><dt>个人大模型</dt><dd>{{ summaryLlm.personal }}</dd></template>
+          <template v-if="f.mode !== 'local'"><dt>管理员</dt><dd>{{ f.username }}</dd><template v-if="passkeyOk"><dt>RP ID</dt><dd>{{ f.rpId }}</dd></template><dt>MFA 要求</dt><dd>{{ mfaLabel[f.mfaPolicy] }}</dd><dt>全局大模型</dt><dd data-testid="setup-sum-llm">{{ summaryLlm.llm }}</dd><dt>个人大模型</dt><dd>{{ summaryLlm.personal }}</dd></template>
         </dl>
         <p v-if="f.mode !== 'local'" class="muted">之后可在“管理 → 安全策略”中调整策略，在“账号安全”中管理自己的 Passkey 与恢复码。</p>
       </section>

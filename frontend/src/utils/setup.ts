@@ -45,7 +45,7 @@ export function rpIdError(rp: string, origins: string[]): string | null {
   return null
 }
 
-export function canAdvance(step: SetupStepId, f: SetupFormLike, st: StatusLike): string | null {
+export function canAdvance(step: SetupStepId, f: SetupFormLike, st: StatusLike, passkeyOk = true): string | null {
   switch (step) {
     case 'welcome': return null // 失败的检查只警告，不阻塞
     case 'token': return st.needs_token && !f.token.trim() ? '请输入初始化令牌' : null
@@ -61,9 +61,12 @@ export function canAdvance(step: SetupStepId, f: SetupFormLike, st: StatusLike):
       return null
     }
     case 'policy': {
+      // 不能用 Passkey（HTTP / IP 访问）时没有 RP ID 与来源要填：之后绑定域名并启用 HTTPS 再设置
+      if (passkeyOk) {
       if (!f.origins.length) return '至少填写一个允许的来源'
       for (const o of f.origins) { const e = originError(o); if (e) return `${o}：${e}` }
       const r = rpIdError(f.rpId, f.origins); if (r) return r
+      }
       if (f.sessionIdle < 5 || f.sessionIdle > 1440) return '空闲超时需在 5–1440 分钟之间'
       if (f.sessionMax < 1 || f.sessionMax > 720) return '会话最长时长需在 1–720 小时之间'
       return null

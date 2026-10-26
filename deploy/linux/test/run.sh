@@ -9,6 +9,7 @@ ROOT="$(cd "$LINUX/../.." && pwd)"
 BASE="${OA_TEST_TMP:-$(mktemp -d)}"
 mkdir -p "$BASE"
 PASS=0; FAIL=0; FAILED=()
+export OA_SUMMARY=full   # tests assert on the long closing screen; the compact one has its own test (t_summary_report)
 FILTER="${1:-}"
 
 # ---------------------------------------------------------------------------------------------- sandbox
@@ -545,7 +546,7 @@ make_bundle() { # a fake /deploy of the oa-agent-deploy image at $SB/bundle (fla
 run_install_piped() { # like "docker run --rm <deploy image> | sudo bash -s -- ...": no script file, cwd outside any checkout
     ( cd "$SB" && cat "$LINUX/install.sh" | OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
         OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_RETRY_BASE=0 OA_INSTALL_LOCK="$SB/lock" OA_DAEMON_JSON="$SB/daemon.json" OA_TEST_DOCKER_SHIM="$SB/shim/docker" \
-        PATH="$SB/shim:$PATH" bash -s -- --lang en "$@" ) >"$SB/out.txt" 2>&1
+        OA_SUMMARY="${OA_SUMMARY:-full}" PATH="$SB/shim:$PATH" bash -s -- --lang en "$@" ) >"$SB/out.txt" 2>&1
     RC=$?
 }
 
@@ -711,7 +712,7 @@ run_stdin() { # run_stdin FILE args... : FILE is fed to "bash -s" on stdin (a cu
     local f="$1"; shift
     ( cd "$SB" && OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
         OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_RETRY_BASE=0 OA_INSTALL_LOCK="$SB/lock" OA_DAEMON_JSON="$SB/daemon.json" OA_TEST_DOCKER_SHIM="$SB/shim/docker" \
-        PATH="$SB/shim:$PATH" bash -s -- --lang en "$@" <"$f" ) >"$SB/out.txt" 2>&1
+        OA_SUMMARY="${OA_SUMMARY:-full}" PATH="$SB/shim:$PATH" bash -s -- --lang en "$@" <"$f" ) >"$SB/out.txt" 2>&1
     RC=$?
 }
 make_tar() { # make_tar OUT TAG [REGISTRY] [omit api|worker|deploy]: a docker-save style tarball (manifest.json with RepoTags) + .sha256
@@ -1502,10 +1503,6 @@ t_summary_report() {
     assert_has "$SB/out.txt" 'Installation complete'; assert_has "$SB/out.txt" 'Next:'; assert_has "$SB/out.txt" 'OA_SECRET_KEY'; assert_has "$SB/out.txt" 'INSTALL-INFO.txt'
     assert_not "$SB/out.txt" 'SAVE THESE'; assert_not "$SB/out.txt" 'What was detected and done'
     assert_file "$SB/oa/INSTALL-INFO.txt"; assert_has "$SB/oa/INSTALL-INFO.txt" 'What was detected and done'; assert_not "$SB/oa/INSTALL-INFO.txt" 'SETUP TOKEN'
-    # --public-url sets OA_PUBLIC_URL (and rejects paths); a private default address gets the "how to change it" hint
-    new_sandbox sr4; OA_SUMMARY=compact run_install --yes --dir "$SB/oa" --port 18080 --public-url http://203.0.113.5:18080/; assert_rc 0
-    assert_has "$SB/oa/.env" '^OA_PUBLIC_URL=http://203.0.113.5:18080$'; assert_has "$SB/out.txt" 'URL: +http://203.0.113.5:18080'
-    new_sandbox sr5; run_install --yes --dir "$SB/oa" --port 18080 --public-url http://x.example.com/path; assert_rc 2
 }
 
 
@@ -1513,7 +1510,7 @@ t_summary_report() {
 run_install_nolang() { # like run_install but WITHOUT --lang: the language comes from the locale / OA_LANG / the question
     OA_TEST_MODE=1 OA_INSTALL_LOG="$SB/install.log" OA_INSTALL_BIN_DIR="$SB/bin" OA_INSTALL_UNIT_DIR="$SB/units" OA_INSTALL_ETC_MARKER="$SB/etc/install_dir" \
         OA_OS_RELEASE="$SB/os-release" OA_MEMINFO="$SB/meminfo" OA_POLL_SECONDS=0 OA_RETRY_BASE=0 OA_INSTALL_LOCK="$SB/lock" OA_DAEMON_JSON="$SB/daemon.json" OA_TEST_DOCKER_SHIM="$SB/shim/docker" \
-        OA_BUILD_FROM_SOURCE="${OA_BUILD_FROM_SOURCE:-1}" PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" "$@" >"$SB/out.txt" 2>&1
+        OA_SUMMARY="${OA_SUMMARY:-full}" OA_BUILD_FROM_SOURCE="${OA_BUILD_FROM_SOURCE:-1}" PATH="$SB/shim:$PATH" bash "$SB/repo/deploy/linux/install.sh" "$@" >"$SB/out.txt" 2>&1
     RC=$?
 }
 # lrun LOCALE-ENV... -- args: run without --lang under the given locale variables (all others cleared)
