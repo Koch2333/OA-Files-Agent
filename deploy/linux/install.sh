@@ -1646,7 +1646,53 @@ summary_report() {
     proxy_snippets
 }
 
+# summary: a SHORT closing screen (address, token, the three things to do next); everything else (directories, commands, what was
+# detected and installed, backup advice) goes to $DIR/INSTALL-INFO.txt and the install log. OA_SUMMARY=full prints the long form.
 summary() {
+    local url token w=64 ip pub i info
+    if [ "${OA_SUMMARY:-}" = full ]; then summary_full; return 0; fi
+    url="$(env_get OA_PUBLIC_URL)"
+    token="$(ctl setup-token 2>/dev/null | tail -n 1 || true)"
+    [ -n "$token" ] || token="$(m '（无；可能已完成初始化，或运行 oa-agentctl setup-token）' '(none; setup may be complete, or run oa-agentctl setup-token)')"
+    # the long form, without the setup token, for later reference
+    info="$DIR/INSTALL-INFO.txt"
+    if ( umask 027; OA_SUMMARY=full C_R='' C_G='' C_Y='' C_B='' C_0='' summary_full 2>&1 | grep -v -E 'SETUP TOKEN:|初始化令牌:' >"$info" ) 2>/dev/null; then :; else info=''; fi
+    printf '\n%s' "$C_G"
+    printf '+%*s+\n' "$w" '' | tr ' ' '='
+    printf '%s\n' "$(m '  安装完成！' '  Installation complete!')"
+    printf '%s\n' "$C_0"
+    printf '  %s %s\n' "$(m '访问地址:    ' 'URL:            ')" "$url"
+    if [ -z "$(env_get OA_DOMAIN)" ]; then
+        while IFS= read -r ip; do
+            [ -n "$ip" ] || continue
+            if [ "http://$ip:$PORT" != "$url" ]; then printf '  %s %s\n' "$(m '其他地址:    ' 'Other URL:      ')" "http://$ip:$PORT"; fi
+        done < <(list_ips)
+    fi
+    if [ "$DETECT_IP" = 1 ]; then
+        pub="$(detect_public_ip)"
+        if [ -n "$pub" ]; then printf '  %s %s\n' "$(m '外网地址:    ' 'External URL:   ')" "http://${pub%%|*}:$PORT"; fi
+    fi
+    printf '  %s %s\n' "$(m '初始化令牌:  ' 'SETUP TOKEN:    ')" "$token"
+    printf '\n%s%s%s\n' "$C_Y" "$(m '  接下来：' '  Next:')" "$C_0"
+    printf '  %s\n' "$(m '1. 立即打开上面的地址，完成初始化向导（创建管理员 + 二次验证）；令牌每次重启都会更换。' '1. Open the URL now and finish the setup wizard (admin + second factor); the token changes on every restart.')"
+    printf '  %s\n' "$(m "2. 备份 $DIR/.env 里的 OA_SECRET_KEY（丢失后已保存的凭据无法解密）：$CTL_HINT backup" "2. Back up OA_SECRET_KEY from $DIR/.env (saved credentials cannot be decrypted without it): $CTL_HINT backup")"
+    if [ -z "$(env_get OA_DOMAIN)" ]; then
+        printf '  %s\n' "$(m "3. 外部访问需放行 $FW_PORTS 端口；当前是纯 HTTP（无 Passkey），建议 $CTL_HINT domain <域名>" "3. Open port(s) $FW_PORTS for external access; this is plain HTTP (no Passkey), consider: $CTL_HINT domain <domain>")"
+    else
+        printf '  %s\n' "$(m '3. 首次访问域名时 Caddy 申请证书，需要 80/443 可达且 DNS 已解析。' '3. Caddy requests the certificate on first access: 80/443 must be reachable and DNS must resolve.')"
+    fi
+    if [ "${#PF_NOTES[@]}" -gt 0 ]; then
+        printf '\n%s%s%s\n' "$C_Y" "$(m "  环境警告（${#PF_NOTES[@]}）：" "  Warnings (${#PF_NOTES[@]}):")" "$C_0"
+        for i in "${!PF_NOTES[@]}"; do printf '  - %s\n' "${PF_NOTES[$i]}"; done
+    fi
+    printf '\n  %s %s\n' "$(m '管理:' 'Manage:')" "$CTL_HINT  $(m '（不带参数进入交互界面）' '(no arguments: interactive UI)')"
+    if [ -n "$info" ]; then printf '  %s %s\n' "$(m '详细信息（目录、命令、检测结果）:' 'Details (directories, commands, detection results):')" "$info"; fi
+    printf '%s' "$C_G"
+    printf '+%*s+\n' "$w" '' | tr ' ' '='
+    printf '%s\n' "$C_0"
+}
+
+summary_full() {
     local url token w=64 ip i pub
     url="$(env_get OA_PUBLIC_URL)"
     token="$(ctl setup-token 2>/dev/null | tail -n 1 || true)"
