@@ -1132,7 +1132,7 @@ pull_stack_images() {
         docker pull "$img" >/dev/null 2>&1 || failed+=("$img")
     done < <(stack_images)
     if [ "${#failed[@]}" -gt 0 ] && [ -n "${REGISTRY:-}" ]; then
-        local still=() var hub name mh u got probed='' hub_ok=''
+        local still=() var hub name mh u got probed=''
         for img in "${failed[@]}"; do
             name="${img##*/}"; name="${name#oa-agent-}"      # postgres:16-alpine / caddy:2-alpine
             case "$name" in postgres:*) var=OA_PG_IMAGE ;; caddy:*) var=OA_CADDY_IMAGE ;; *) still+=("$img"); continue ;; esac
