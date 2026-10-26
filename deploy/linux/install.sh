@@ -1107,43 +1107,55 @@ dcw() { (cd "$DIR" && env COMPOSE_FILE="$(env_get COMPOSE_FILE)" docker compose 
 stack_images() {
     local pg cdy
     pg="$(env_get OA_PG_IMAGE)"; cdy="$(env_get OA_CADDY_IMAGE)"
-    printf '%s/oa-agent-api:%s\n%s/oa-agent-worker:%s\n%s\n' "$REGISTRY" "$VERSION" "$REGISTRY" "$VERSION" "${pg:-postgres:16-alpine}"
-    if [ -n "${DOMAIN:-}" ]; then printf '%s\n' "${cdy:-caddy:2-alpine}"; fi
+    printf '%s/oa-agent-api:%s\n%s/oa-agent-worker:%s\n%s\n' "$REGISTRY" "$VERSION" "$REGISTRY" "$VERSION" "${pg:-$REGISTRY/oa-agent-postgres:16-alpine}"
+    if [ -n "${DOMAIN:-}" ]; then printf "%s\n" "${cdy:-$REGISTRY/oa-agent-caddy:2-alpine}"; fi
 }
 
-# pull_stack_images: compose pull with retries; when it still fails, name the exact failing image(s)
+# default_base_images: pull the postgres/caddy base images from the registry copies (mirrored from Docker Hub by images.yml) instead of
+# docker.io, which is slow or unreachable in mainland China. Only fills in what .env does not set, so an explicit OA_PG_IMAGE /
+# OA_CADDY_IMAGE always wins. Not used when building from source (no registry) or with --offline (images are loaded from the tarball).
+default_base_images() {
+    [ "${BUILD_SRC:-0}" != 1 ] && [ -n "${REGISTRY:-}" ] || return 0
+    [ -n "$(env_get OA_PG_IMAGE)" ] || env_set OA_PG_IMAGE "$REGISTRY/oa-agent-postgres:16-alpine"
+    [ -n "$(env_get OA_CADDY_IMAGE)" ] || env_set OA_CADDY_IMAGE "$REGISTRY/oa-agent-caddy:2-alpine"
+}
+
+# pull_stack_images: compose pull with retries (base images come from the registry copies by default, see default_base_images); when it
+# still fails, name the failing image(s), and for a base image try Docker Hub, then probed accelerators, before giving up
 pull_stack_images() {
-    net_retry "docker compose pull" dcw pull && return 0
     local img failed=()
+    default_base_images
+    net_retry "docker compose pull" dcw pull && return 0
     say "拉取失败，逐个镜像排查 …" "Pull failed; checking the images one by one ..."
     while IFS= read -r img; do
         [ -n "$img" ] || continue
         docker pull "$img" >/dev/null 2>&1 || failed+=("$img")
     done < <(stack_images)
-    # Docker Hub is often unreachable from mainland China: the registry carries copies of the base images
-    # (<registry>/oa-agent-postgres|caddy, mirrored by images.yml); switch .env to them and retry once.
     if [ "${#failed[@]}" -gt 0 ] && [ -n "${REGISTRY:-}" ]; then
-        local still=() var alt probed=""
+        local still=() var hub name mh u got probed='' hub_ok=''
         for img in "${failed[@]}"; do
-            case "$img" in "$REGISTRY"/*) still+=("$img"); continue ;; esac
-            case "${img##*/}" in postgres:*) var=OA_PG_IMAGE ;; caddy:*) var=OA_CADDY_IMAGE ;; *) still+=("$img"); continue ;; esac
-            alt="$REGISTRY/oa-agent-${img##*/}"
-            say "Docker Hub 不可达，改用仓库里的镜像副本: $alt" "Docker Hub is unreachable; using the registry copy instead: $alt"
-            if docker pull "$alt" >/dev/null 2>&1; then env_set "$var" "$alt"; continue; fi
-            # second fallback: Docker Hub accelerators (Tencent first); pulled under the mirror name, then tagged as the
-            # original reference so compose finds it locally and .env stays unchanged
-            local mh u got=''
-            [ -n "${probed:-}" ] || probed="$(for u in ${DOCKER_MIRRORS[@]+"${DOCKER_MIRRORS[@]}"}; do printf "%s\n" "$u"; done; auto_registry_mirrors)"
-            say "探测到可访问的镜像加速地址: $(printf "%s " $probed)" "Reachable accelerators (probed on /v2/): $(printf "%s " $probed)"
+            name="${img##*/}"; name="${name#oa-agent-}"      # postgres:16-alpine / caddy:2-alpine
+            case "$name" in postgres:*) var=OA_PG_IMAGE ;; caddy:*) var=OA_CADDY_IMAGE ;; *) still+=("$img"); continue ;; esac
+            hub="$name"; got=''
+            # 1) the registry copy failed (not published yet?): try Docker Hub itself, if it answers within 4 s
+            case "$img" in "$REGISTRY"/*)
+                if have_cmd curl && case "$(curl -sS -o /dev/null -m 4 --connect-timeout 3 -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null || true)" in 200 | 401) true ;; *) false ;; esac; then
+                    say "仓库里没有 $img，改用 Docker Hub: $hub" "$img is not available in the registry; using Docker Hub: $hub"
+                    if docker pull "$hub" >/dev/null 2>&1; then env_set "$var" "$hub"; continue; fi
+                fi ;;
+            esac
+            # 2) accelerators that answer on /v2/ (yours first); pulled under the accelerator name, then tagged as the reference
+            #    compose uses, so .env stays unchanged
+            [ -n "$probed" ] || probed="$(for u in ${DOCKER_MIRRORS[@]+"${DOCKER_MIRRORS[@]}"}; do printf '%s\n' "$u"; done; auto_registry_mirrors)"
             for mh in $(printf '%s\n' "$probed" | sed 's#^https\?://##; s#/$##' | awk 'NF && !s[$0]++'); do
-                if docker pull "$mh/library/${img##*/}" >/dev/null 2>&1 && docker tag "$mh/library/${img##*/}" "$img" >/dev/null 2>&1; then
+                if docker pull "$mh/library/$hub" >/dev/null 2>&1 && docker tag "$mh/library/$hub" "$img" >/dev/null 2>&1; then
                     say "已从加速地址拉取: $mh" "Pulled through the accelerator: $mh"; got=1; break
                 fi
             done
             [ -n "$got" ] || still+=("$img")
         done
         if [ "${#still[@]}" -eq 0 ]; then
-            # images pulled via an accelerator carry the original tag locally; do not re-pull them from Docker Hub
+            # images pulled via an accelerator carry the expected tag locally; do not re-pull them
             dcw pull --ignore-pull-failures >/dev/null 2>&1 || true
             local miss=""; while IFS= read -r img; do [ -z "$img" ] || docker image inspect "$img" >/dev/null 2>&1 || miss=1; done < <(stack_images)
             [ -n "$miss" ] || return 0
