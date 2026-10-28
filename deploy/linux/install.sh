@@ -1134,6 +1134,27 @@ default_base_images() {
 
 # pull_stack_images: compose pull with retries (base images come from the registry copies by default, see default_base_images); when it
 # still fails, name the failing image(s), and for a base image try Docker Hub, then probed accelerators, before giving up
+# image_lacks_arch IMG: true only when the registry manifest list of IMG is readable AND has no entry for this host's architecture
+# (an image built before multi-arch images were published). Unknown (no manifest command, unreadable, single-arch manifest) = false.
+image_lacks_arch() {
+    local out
+    [ -n "${ARCH:-}" ] || return 1
+    out="$(docker manifest inspect "$1" 2>/dev/null)" || return 1
+    printf '%s' "$out" | grep -q '"architecture"' || return 1
+    ! printf '%s' "$out" | grep -Eq "\"architecture\": *\"$ARCH\""
+}
+# arch_pull_hint IMG...: explain a pull failure that is really "this tag has no image for this CPU"
+arch_pull_hint() {
+    local img hit=''
+    for img in "$@"; do
+        image_lacks_arch "$img" || continue
+        hit=1
+        say "  镜像 $img 没有 $ARCH 架构的版本（这个标签构建时还没有发布 $ARCH 镜像）。" "  The image $img has no $ARCH build (this tag was published before $ARCH images existed)."
+    done
+    [ -z "$hit" ] || say "  解决：改用较新的标签（--image-tag <版本号>，或默认分支最新的 latest），或加 --build-from-source 在本机构建。" \
+        "  Fix: use a newer tag (--image-tag <version>, or the default branch's latest), or add --build-from-source to build on this host."
+}
+
 pull_stack_images() {
     local img failed=()
     default_base_images
@@ -1175,6 +1196,9 @@ pull_stack_images() {
             failed=("${still[@]}")
         fi
     fi
+    local chk=() ci
+    if [ "${#failed[@]}" -gt 0 ]; then chk=("${failed[@]}"); else while IFS= read -r ci; do [ -z "$ci" ] || chk+=("$ci"); done < <(stack_images); fi
+    arch_pull_hint ${chk[@]+"${chk[@]}"}
     registry_help
     if [ "${#failed[@]}" -gt 0 ]; then
         die "镜像拉取失败，出错的镜像: ${failed[*]}（详见上方提示与 $LOG_FILE）" "Image pull failed; failing image(s): ${failed[*]} (see the hints above and $LOG_FILE)"

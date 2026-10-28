@@ -145,7 +145,7 @@ sudo bash install.sh --yes --domain oa.example.com --email admin@example.com \
 | 标签 `v1.2.3` | `1.2.3`、`1.2`、`sha-<7位提交>`（预发布版本如 `v1.2.3-rc.1` 没有 `1.2`） |
 | Pull Request | 只构建，不登录、不推送、拿不到任何机密（fork 也一样） |
 
-`latest` 与分支标签是**会移动的**；生产环境请固定 `sha-<7位提交>` 或版本号。默认只构建 `linux/amd64`；手动运行工作流（workflow_dispatch）时可勾选 `arm64`（api 与 deploy 的 Go/前端在构建机上交叉编译，只有很短的 apk 步骤走 QEMU，代价小）和 `arm64_worker`（Worker 的 pip 安装在 QEMU 下运行，很慢，所以单独开关）。
+`latest` 与分支标签是**会移动的**；生产环境请固定 `sha-<7位提交>` 或版本号。默认分支推送（`latest`）和发布标签（`v*`）同时构建 `linux/amd64` 与 `linux/arm64`，推送后工作流会校验镜像清单里确实列出这两个平台；其他分支和 Pull Request 只构建 `linux/amd64`；在这些场景下，手动运行工作流（workflow_dispatch）时可勾选 `arm64`（api 与 deploy 的 Go/前端在构建机上交叉编译，只有很短的 apk 步骤走 QEMU，代价小）和 `arm64_worker`（Worker 的 pip 安装在 QEMU 下运行，很慢，所以单独开关）。
 
 ### 11.3 安装
 
@@ -297,6 +297,7 @@ sudo bash install.sh --offline oa-agent-images-sha-0a1b2c3-amd64.tar --yes --arc
 | `--docker-mirror` 没有修改 daemon.json | `--yes`/无终端不会修改；或文件不是合法 JSON/没有 JSON 工具；按提示手动编辑后 `systemctl restart docker` |
 | `--offline` 提示 SHA-256 不匹配 | tar 损坏或被改动；重新拷贝/重新打包 |
 | `--offline` 提示镜像架构不一致 | 在目标架构（amd64/arm64）上重新用 `save-images.sh --pull --arch` 打包 |
+| 安装提示「镜像 … 没有 arm64 架构的版本」 | 这个标签是在发布 arm64 镜像之前构建的：改用较新的标签（`--image-tag <版本号>` 或 `latest`），或加 `--build-from-source` 在本机构建；离线安装则在 arm64 机器上用 `save-images.sh --pull --arch arm64` 打包 |
 
 ## 13. 使用已有的 PostgreSQL / MySQL / SQL Server
 

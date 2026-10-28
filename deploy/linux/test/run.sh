@@ -28,7 +28,7 @@ new_sandbox() { # sets SB, prepares mini repo + shims
     export OA_TICK=0.1   # poll interval of the Docker install loop (default 1 s)
     export OA_INSTALL_STATE="$SB/etc/install.json" OA_INSTALL_DEFAULT_DIR="$SB/nodefault" OA_SYSTEMD_RUN_DIR="$SB" OA_TEST_PKG_STATE="$SB/state/pkg-installed"
     unset FAKE_GETDOCKER_HANG FAKE_GETDOCKER_HANG_ONCE FAKE_GETDOCKER_SLEEP FAKE_PS_PROCS FAKE_PS_LATE FAKE_PS_LATE_FROM FAKE_LOCK_RELEASE_AFTER OA_TEST_ENVKIND OA_DOCKER_TIMEOUT OA_HEARTBEAT OA_LOCK_WAIT OA_APT_PARTIAL OA_DPKG_LOG OA_APT_TERM_LOG OA_TEST_MISSING_CMDS FAKE_GEO FAKE_OFFICIAL_DOWN FAKE_MIRROR_DOWN FAKE_MIRROR_FAST FAKE_RMIRROR_DOWN OA_TEST_TZ FAKE_NO_HUB FAKE_PS_EXTRA FAKE_COMPOSE_LS FAKE_COMPOSE_V1 FAKE_DOCKER_ENABLED FAKE_UNITS FAKE_DOCKER_DOWN FAKE_DOCKER_HOST FAKE_CTX_HOST FAKE_PODMAN FAKE_COMPOSE_VERSION FAKE_CHECK_RC FAKE_CHECK_OUT FAKE_INIT_OUT FAKE_INIT_RC FAKE_APPLY_RC FAKE_IPT_DROP 2>/dev/null || true
-    unset FAKE_PORTS FAKE_UNHEALTHY FAKE_NO_COMPOSE FAKE_UFW FAKE_PULL_FAIL FAKE_COMPOSE_PULL_FAIL FAKE_LOGIN_FAIL FAKE_BUNDLE FAKE_KERNEL FAKE_SELINUX FAKE_NTP FAKE_CGROUP FAKE_DOCKER_VERSION FAKE_PULL_FLAKY FAKE_FAIL_IMAGE FAKE_MISSING_IMAGE FAKE_ECS_REGION FAKE_ECS_EIP FAKE_PUBLIC_IP FAKE_GETDOCKER_FAIL FAKE_GETDOCKER_BADMIRROR FAKE_NO_REGISTRY FAKE_IPS4 FAKE_IPS6 FAKE_DOCKER_ROOT FAKE_DOCKER_SECOPT FAKE_SAVE_FAIL FAKE_IMG_ARCH FAKE_LOAD_FAIL FAKE_PKG_FAIL FAKE_BUILD_FLAKY 2>/dev/null || true
+    unset FAKE_UNAME_M FAKE_MANIFEST_ARCHS FAKE_PORTS FAKE_UNHEALTHY FAKE_NO_COMPOSE FAKE_UFW FAKE_PULL_FAIL FAKE_COMPOSE_PULL_FAIL FAKE_LOGIN_FAIL FAKE_BUNDLE FAKE_KERNEL FAKE_SELINUX FAKE_NTP FAKE_CGROUP FAKE_DOCKER_VERSION FAKE_PULL_FLAKY FAKE_FAIL_IMAGE FAKE_MISSING_IMAGE FAKE_ECS_REGION FAKE_ECS_EIP FAKE_PUBLIC_IP FAKE_GETDOCKER_FAIL FAKE_GETDOCKER_BADMIRROR FAKE_NO_REGISTRY FAKE_IPS4 FAKE_IPS6 FAKE_DOCKER_ROOT FAKE_DOCKER_SECOPT FAKE_SAVE_FAIL FAKE_IMG_ARCH FAKE_LOAD_FAIL FAKE_PKG_FAIL FAKE_BUILD_FLAKY 2>/dev/null || true
 }
 
 make_shims() {
@@ -46,6 +46,8 @@ case "${1:-}" in
     if [ -n "${FAKE_FAIL_IMAGE:-}" ] && [[ "$2" == *"$FAKE_FAIL_IMAGE"* ]]; then echo "Error response from daemon: pull access denied for $2" >&2; exit 1; fi
     if [ "${FAKE_PULL_FLAKY:-0}" -gt 0 ]; then n=$(cat "$SB/state/flaky-pull" 2>/dev/null || echo 0); echo $((n + 1)) >"$SB/state/flaky-pull"; if [ "$n" -lt "$FAKE_PULL_FLAKY" ]; then echo "Error response from daemon: Get https://x/v2/: net/http: TLS handshake timeout" >&2; exit 1; fi; fi
     touch "$SB/state/pulled-$(echo "$2" | tr "/:" "__")"; echo "fake pull $2"; exit 0 ;;
+  manifest) [ "${2:-}" = inspect ] && [ -n "${FAKE_MANIFEST_ARCHS:-}" ] || exit 1
+    printf '{"schemaVersion":2,"manifests":['; sep=""; for a in $FAKE_MANIFEST_ARCHS; do printf '%s{"platform":{"architecture": "%s","os":"linux"}}' "$sep" "$a"; sep=","; done; printf ']}\n'; exit 0 ;;
   load) [ -z "${FAKE_LOAD_FAIL:-}" ] || { echo "open /var/lib/docker: no space left on device" >&2; exit 1; }; echo "Loaded image: fake"; exit 0 ;;
   image) case "${2:-}" in
       inspect) img="${@: -1}"; if [ -n "${FAKE_MISSING_IMAGE:-}" ] && [[ "$img" == *"$FAKE_MISSING_IMAGE"* ]] && [ ! -e "$SB/state/pulled-$(echo "$img" | tr "/:" "__")" ]; then exit 1; fi
@@ -195,7 +197,7 @@ PSSH
     printf '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfake 999999999 1 500000000 1pct /\\n"\n' >"$s/df"
     printf '#!/usr/bin/env bash\n[ "$1" = -I ] && echo 192.0.2.10 || echo testhost\n' >"$s/hostname"
     printf '#!/usr/bin/env bash\necho "${FAKE_NTP:-yes}"\n' >"$s/timedatectl"
-    printf '#!/usr/bin/env bash\n[ "$1" = -r ] && { echo "${FAKE_KERNEL:-6.1.0-fake}"; exit 0; }\nPATH=/usr/bin:/bin exec uname "$@"\n' >"$s/uname"
+    printf '#!/usr/bin/env bash\n[ "$1" = -r ] && { echo "${FAKE_KERNEL:-6.1.0-fake}"; exit 0; }\n[ "$1" = -m ] && [ -n "${FAKE_UNAME_M:-}" ] && { echo "$FAKE_UNAME_M"; exit 0; }\nPATH=/usr/bin:/bin exec uname "$@"\n' >"$s/uname"
     printf '#!/usr/bin/env bash\necho "${FAKE_SELINUX:-Disabled}"\n' >"$s/getenforce"
     printf '#!/usr/bin/env bash\necho 4\n' >"$s/nproc"
     cat >"$s/ip" <<'IPSH'
@@ -635,6 +637,25 @@ t_registry_login() {
     assert_has "$SB/out.txt" 'Registry login failed'; assert_not "$SB/out.txt" 's3cr3t-Pw'; assert_nofile "$SB/oa/.env"
     new_sandbox regl3; make_bundle; rm -rf "$SB/repo"
     OA_REGISTRY_USER=alice run_install_piped --yes --dir "$SB/oa" --registry "$REG"; assert_rc_nz; assert_has "$SB/out.txt" 'must be set together'
+}
+
+t_arch_pull_hint() {
+    # arm64 host, the tag only has an amd64 build: the failure says so and what to do
+    new_sandbox ah1; make_bundle; rm -rf "$SB/repo"
+    FAKE_UNAME_M=aarch64 FAKE_MANIFEST_ARCHS=amd64 FAKE_COMPOSE_PULL_FAIL=1 FAKE_FAIL_IMAGE=oa-agent-api run_install_piped --yes --dir "$SB/oa" --registry "$REG" --image-tag old; assert_rc_nz
+    assert_has "$SB/out.txt" "oa-agent-api:old has no arm64 build"; assert_has "$SB/out.txt" '\-\-build-from-source'; assert_has "$SB/out.txt" 'Image pull failed'
+    # the same failure on an amd64 host with an arm64-only tag
+    new_sandbox ah2; make_bundle; rm -rf "$SB/repo"
+    FAKE_UNAME_M=x86_64 FAKE_MANIFEST_ARCHS=arm64 FAKE_COMPOSE_PULL_FAIL=1 FAKE_FAIL_IMAGE=oa-agent-api run_install_piped --yes --dir "$SB/oa" --registry "$REG" --image-tag old; assert_rc_nz
+    assert_has "$SB/out.txt" "has no amd64 build"
+    # a multi-arch tag that fails for another reason (permissions): no architecture claim
+    new_sandbox ah3; make_bundle; rm -rf "$SB/repo"
+    FAKE_UNAME_M=aarch64 FAKE_MANIFEST_ARCHS="amd64 arm64" FAKE_COMPOSE_PULL_FAIL=1 FAKE_FAIL_IMAGE=oa-agent-api run_install_piped --yes --dir "$SB/oa" --registry "$REG" --image-tag t; assert_rc_nz
+    assert_not "$SB/out.txt" 'no arm64 build'; assert_has "$SB/out.txt" 'Image pull failed'
+    # no readable manifest (old Docker, no access): never guess
+    new_sandbox ah4; make_bundle; rm -rf "$SB/repo"
+    FAKE_UNAME_M=aarch64 FAKE_COMPOSE_PULL_FAIL=1 FAKE_FAIL_IMAGE=oa-agent-api run_install_piped --yes --dir "$SB/oa" --registry "$REG" --image-tag t; assert_rc_nz
+    assert_not "$SB/out.txt" 'no arm64 build'
 }
 
 t_registry_pull_errors() {
