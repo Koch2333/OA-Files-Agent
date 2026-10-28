@@ -116,7 +116,7 @@ export default defineConfig({
           { text: '界面规范 Material 3', link: '/界面规范-Material3' },
         ],
       },
-      { text: 'v0.6.0', items: [{ text: '发行版', link: `${repo}/releases` }, { text: '许可证 AGPL-3.0', link: `${repo}/blob/main/LICENSE` }] },
+      { text: 'v1.0.0', items: [{ text: '发行版', link: `${repo}/releases` }, { text: '许可证 AGPL-3.0', link: `${repo}/blob/main/LICENSE` }] },
     ],
     sidebar: {
       '/guide/': [...guide, design],
@@ -147,6 +147,6 @@ export default defineConfig({
     langMenuLabel: '语言',
     lightModeSwitchTitle: '切换到浅色模式',
     darkModeSwitchTitle: '切换到深色模式',
-    footer: { message: '以 AGPL-3.0 许可证发布', copyright: 'OA 文件智能归档智能体 · 0.6.0' },
+    footer: { message: '以 AGPL-3.0 许可证发布', copyright: 'OA 文件智能归档智能体 · 1.0.0' },
   },
 })
