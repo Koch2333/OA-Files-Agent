@@ -38,7 +38,7 @@
 
 ## API 代数（`api_level`）
 
-`GET /v1/setup/status` 返回 `api_level`，即后端实现的契约代数，对应 Go 常量 `api.APILevel`（`backend/internal/api/setup.go`，当前为 **8**）。前端带同一个数字（`frontend/src/utils/apiLevel.ts` 的 `REQUIRED_API_LEVEL`，当前也是 8）；前端依赖新接口或字段时必须**同时递增**两处，不一致时界面显示“版本不匹配”横幅。`server_version` 是产品版本（当前 0.5.0）。注意 `info.version: 1.0.0` 是契约文档自己的版本，不是产品版本。
+`GET /v1/setup/status` 返回 `api_level`，即后端实现的契约代数，对应 Go 常量 `api.APILevel`（`backend/internal/api/setup.go`，当前为 **11**）。前端带同一个数字（`frontend/src/utils/apiLevel.ts` 的 `REQUIRED_API_LEVEL`，当前也是 11）；前端依赖新接口或字段时必须**同时递增**两处，不一致时界面显示“版本不匹配”横幅。`server_version` 是产品版本（当前 0.5.0）。注意 `info.version: 1.0.0` 是契约文档自己的版本，不是产品版本。
 
 ## 任务事件（SSE）
 

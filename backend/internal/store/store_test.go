@@ -111,8 +111,8 @@ func TestPlanStateMachine(t *testing.T) {
 	if patched.Version != p.Version+1 || patched.Items[0].ReviewRequired || *patched.Items[0].Department != "人事部" || patched.Items[0].SuggestedName != "x_a.pdf" {
 		t.Fatalf("patch result wrong: %+v", patched.Items[0])
 	}
-	if cleared, err := s.PatchPlan(ctx, p.ID, patched.Version, []PlanPatch{{FileID: p.Items[1].FileID, DocumentDate: str("")}}, derive); err != nil || !cleared.Items[1].ReviewRequired || cleared.Items[1].DocumentDate != nil {
-		t.Fatalf("clearing a field must null it and require review: %v %+v", err, cleared.Items[1])
+	if cleared, err := s.PatchPlan(ctx, p.ID, patched.Version, []PlanPatch{{FileID: p.Items[1].FileID, DocumentDate: str("")}}, derive); err != nil || cleared.Items[1].DocumentDate != nil {
+		t.Fatalf("clearing the date must null it (a missing date alone does not require review): %v %+v", err, cleared.Items[1])
 	}
 	cur, _ := s.GetPlan(ctx, p.ID)
 	if _, err := s.PatchPlan(ctx, p.ID, cur.Version, []PlanPatch{{FileID: p.Items[1].FileID, DocumentDate: str("2026-03-15")}}, derive); err != nil {

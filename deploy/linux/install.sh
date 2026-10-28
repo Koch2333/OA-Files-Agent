@@ -792,6 +792,18 @@ docker_pkg_install() {
     have_docker
 }
 
+# docker_install_hint: the commands that will be run on this distribution, for the announcement/confirmation
+docker_install_hint() {
+    local pk="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
+    case "$(os_family)" in
+        debian) case "$OS_ID" in debian | ubuntu) echo "apt-get install $pk" ;; *) echo "$(docker_source_cmd "${SRC_ORDER%% *}")" ;; esac ;;
+        rhel) case "$OS_ID" in rhel | centos | rocky | almalinux) echo "dnf install $pk" ;; *) echo "dnf install docker docker-compose-plugin" ;; esac ;;
+        fedora) echo "dnf install $pk" ;;
+        suse) echo "zypper install docker docker-compose" ;;
+        alpine) echo "apk add docker docker-cli-compose" ;;
+        *) echo "$(docker_source_cmd "${SRC_ORDER%% *}")" ;;
+    esac
+}
 install_docker() {
     local fam
     fam="$(os_family)"
@@ -802,7 +814,7 @@ install_docker() {
     if [ "$INSTALL_DOCKER" != 1 ]; then
         [ "$ASSUME_YES" != 1 ] || die "未检测到 Docker。--yes 模式下需显式加 --install-docker 才会自动安装；或先自行安装 Docker 与 compose 插件。" "Docker not found. In --yes mode pass --install-docker explicitly to allow installation, or install Docker and the compose plugin yourself."
         local first_src="${SRC_ORDER%% *}"
-        say "将执行（需要联网，需 root）：$(docker_source_cmd "$first_src")；脚本取自 https://get.docker.com（Docker Inc. 官方，第三方脚本），软件包仓库 $(docker_source_base "$first_src")；失败时按上面的顺序/发行版软件包回退。" "About to run (needs network and root): $(docker_source_cmd "$first_src"); the script comes from https://get.docker.com (Docker Inc.'s official, third-party script), package repository $(docker_source_base "$first_src"); on failure the order above / distribution packages follow."
+        say "将通过系统包管理器安装（需要联网，需 root）：$(docker_install_hint)；软件包仓库 $(docker_source_base "$first_src")；失败时回退到 get-docker.sh（$(docker_source_cmd "$first_src")）和发行版自带软件包。" "About to install with the system package manager (needs network and root): $(docker_install_hint); package repository $(docker_source_base "$first_src"); on failure get-docker.sh ($(docker_source_cmd "$first_src")) and the distribution's own packages follow."
         confirm "是否继续安装 Docker？" "Install Docker now?" n || die_cancel "已取消：未安装 Docker。" "Cancelled: Docker not installed."
     fi
     warn_docker_env
@@ -811,7 +823,7 @@ install_docker() {
     local done_=0
     case "$fam" in
         debian | rhel | fedora)
-            if docker_official_script 8>&-; then done_=1
+            if docker_repo_install 8>&- || docker_official_script 8>&-; then done_=1
             else
                 warn "官方脚本不可用，回退到发行版软件包 …" "The official script did not work; falling back to distribution packages ..."
                 docker_pkg_install 8>&- && done_=1
@@ -1890,6 +1902,34 @@ probe_url() {
     if [[ "$code" =~ ^[1-4][0-9][0-9]$ ]]; then printf '%s %s' "$code" "${t:-9}"; fi
     return 0
 }
+# probe_file URL: "200 seconds" = how long the first 2 MB of that file take (a real transfer, 4 s cap; slower mirrors get a larger
+# extrapolated figure), nothing when no data arrived. Ranking by this picks the mirror with the best actual download speed.
+probe_file() {
+    local out code sp
+    out="$(curl -sS -o /dev/null -r 0-2097151 -m 4 --connect-timeout 2 -w '%{http_code} %{speed_download}' "$1" 2>/dev/null || true)"
+    code="${out%% *}"; sp="${out#* }"; sp="${sp%%.*}"
+    case "$code" in 200 | 206) ;; *) return 0 ;; esac
+    [[ "$sp" =~ ^[0-9]+$ ]] && [ "$sp" -gt 0 ] || return 0
+    printf '200 %s' "$(awk -v s="$sp" 'BEGIN{printf "%.2f", 2097152/s}')"
+    return 0
+}
+# mirror_sample_path BASE...: path of a real, large package (containerd.io) of this distribution (apt families), read from the package
+# index of the first mirror that serves it; every mirror then downloads the same file
+mirror_sample_path() {
+    local id='' cn='' arch='' b p
+    [ -r "$OS_RELEASE" ] || return 0
+    have_cmd gzip || return 0
+    id="$(. "$OS_RELEASE"; printf '%s' "${ID:-}")"; cn="$(. "$OS_RELEASE"; printf '%s' "${VERSION_CODENAME:-}")"
+    case "$id" in debian | ubuntu) ;; *) return 0 ;; esac
+    [ -n "$cn" ] || return 0
+    arch="$(dpkg --print-architecture 2>/dev/null || true)"; [ -n "$arch" ] || return 0
+    for b in "$@"; do
+        p="$(curl -fsS -m 6 --connect-timeout 2 "$b/linux/$id/dists/$cn/stable/binary-$arch/Packages.gz" 2>/dev/null | gzip -dc 2>/dev/null |
+            awk '/^Package: containerd.io$/{f=1} f&&/^Filename:/{print $2; exit}' || true)"
+        if [ -n "$p" ]; then printf '%s' "linux/$id/$p"; return 0; fi
+    done
+    return 0
+}
 resolve_docker_source() {
     [ "$DK_RESOLVED" = 0 ] || return 0
     DK_RESOLVED=1; DK_AUTO_ORDER=''; DK_VERDICT=''
@@ -1921,8 +1961,15 @@ resolve_docker_source() {
     if [ "$DK_VERDICT" = cn ]; then
         local tok r list=''
         if have_cmd curl; then
+            local sample; sample="$(mirror_sample_path "$(docker_source_base aliyun)" "$(docker_source_base tuna)" "$(docker_source_base ustc)" "$(docker_source_base tencent)")"
             for tok in aliyun azure tencent tuna ustc; do
-                r="$(probe_url "$(docker_source_base "$tok")/linux/")"
+                r=''
+                [ -z "$sample" ] || r="$(probe_file "$(docker_source_base "$tok")/$sample")"
+                if [ -z "$r" ]; then
+                    r="$(probe_url "$(docker_source_base "$tok")/linux/")"
+                    # answers but the real file gave no data: rank behind every mirror that delivered it
+                    [ -z "$r" ] || [ -z "$sample" ] || r="${r%% *} 100"
+                fi
                 if [ -n "$r" ]; then list="$list${r#* } $tok"$'\n'; fi
             done
             DK_AUTO_ORDER="$(printf '%s' "$list" | sort -s -n -k1,1 | awk '{print $2}' | tr '\n' ' ')official"
@@ -1964,8 +2011,9 @@ chk_choice_1_8() { case "$1" in 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;; *) m "请输�
 # what it prints, and every OA_HEARTBEAT seconds (default 15) says how long it has been running, which package-manager process is active
 # and whether the download directory / dpkg log are moving, so "slow" and "hung" can be told apart. After OA_DOCKER_TIMEOUT seconds
 # (default 1200) ONLY that child's process group is stopped and diagnostics are shown.
+APT_ROOT=''   # tests point this at a sandbox; empty = the real /etc/apt
 APT_PARTIAL='/var/cache/apt/archives/partial'; DPKG_LOG='/var/log/dpkg.log'; APT_TERM_LOG='/var/log/apt/term.log'
-if [ "$TEST_MODE" = 1 ]; then APT_PARTIAL="${OA_APT_PARTIAL:-$APT_PARTIAL}"; DPKG_LOG="${OA_DPKG_LOG:-$DPKG_LOG}"; APT_TERM_LOG="${OA_APT_TERM_LOG:-$APT_TERM_LOG}"; fi
+if [ "$TEST_MODE" = 1 ]; then APT_ROOT="${OA_APT_ROOT:-}"; APT_PARTIAL="${OA_APT_PARTIAL:-$APT_PARTIAL}"; DPKG_LOG="${OA_DPKG_LOG:-$DPKG_LOG}"; APT_TERM_LOG="${OA_APT_TERM_LOG:-$APT_TERM_LOG}"; fi
 DOCKER_CHILD=''
 # pkg_procs: running package-manager processes ("pid etime command ..."), one per line
 pkg_procs() {
@@ -2105,6 +2153,76 @@ run_docker_source() {
     if [ "$rc" = 124 ]; then return 2; fi
     have_docker
 }
+# docker_repo_install: install Docker through the distribution's package manager from Docker's own repository on the chosen (fastest)
+# source, and only engine + CLI + containerd + compose (what 1Panel installs), instead of get-docker.sh:
+#   Debian/Ubuntu  apt-get install docker-ce docker-ce-cli containerd.io docker-compose-plugin   (repo: $BASE/linux/<id>)
+#   RHEL/CentOS/Rocky/Alma  dnf|yum install ...   (repo file /etc/yum.repos.d/docker-ce.repo, $BASE/linux/centos|rhel)
+#   Fedora         dnf install ...                (repo $BASE/linux/fedora)
+# SUSE and Alpine have no Docker repository: they use their own packages (docker_pkg_install). Sources are tried in SRC_ORDER and every
+# failure removes the repository file again. Returns 1 when it does not apply or nothing worked; the caller falls back to get-docker.sh.
+docker_repo_install() {
+    [ "${OA_DOCKER_VIA:-repo}" != script ] || return 1   # OA_DOCKER_VIA=script: skip this path and use get-docker.sh only
+    local kind='' dir='' repofile='' pk="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
+    case "$OS_ID" in
+        debian | ubuntu) kind=apt; dir="$OS_ID"; repofile=/etc/apt/sources.list.d/docker.list; have_cmd apt-get || return 1 ;;
+        rhel) kind=rpm; dir=rhel; repofile=/etc/yum.repos.d/docker-ce.repo ;;
+        centos | rocky | almalinux) kind=rpm; dir=centos; repofile=/etc/yum.repos.d/docker-ce.repo ;;
+        fedora) kind=rpm; dir=fedora; repofile=/etc/yum.repos.d/docker-ce.repo ;;
+        *) return 1 ;;
+    esac
+    [ "$kind" != rpm ] || { have_cmd dnf || have_cmd yum || return 1; }
+    [ "$BUILD_SRC" != 1 ] || pk="$pk docker-buildx-plugin"
+    TMP="${TMP:-$(mktemp -d)}"
+    if [ "$kind" = apt ]; then
+        cat >"$TMP/docker-repo.sh" <<'APT'
+set -e
+BASE="$1"; DIR="$2"; shift 2
+. "${OA_OSREL:-/etc/os-release}"
+export DEBIAN_FRONTEND=noninteractive
+R="${OA_APT_ROOT:-}"
+apt-get -y install ca-certificates curl
+install -m 0755 -d "$R/etc/apt/keyrings" "$R/etc/apt/sources.list.d"
+curl -fsSL --connect-timeout 10 --max-time 60 "$BASE/linux/$DIR/gpg" -o "$R/etc/apt/keyrings/docker.asc"
+chmod a+r "$R/etc/apt/keyrings/docker.asc"
+echo "deb [arch=$(dpkg --print-architecture) signed-by=$R/etc/apt/keyrings/docker.asc] $BASE/linux/$DIR $VERSION_CODENAME stable" >"$R/etc/apt/sources.list.d/docker.list"
+apt-get update
+apt-get -y -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Dpkg::Progress-Fancy=0 install "$@"
+APT
+    else
+        cat >"$TMP/docker-repo.sh" <<'RPM'
+set -e
+BASE="$1"; DIR="$2"; shift 2
+R="${OA_APT_ROOT:-}"
+if command -v dnf >/dev/null 2>&1; then PM=dnf; else PM=yum; fi
+mkdir -p "$R/etc/yum.repos.d"
+cat >"$R/etc/yum.repos.d/docker-ce.repo" <<REPO
+[docker-ce-stable]
+name=Docker CE Stable
+baseurl=$BASE/linux/$DIR/\$releasever/\$basearch/stable
+enabled=1
+gpgcheck=1
+gpgkey=$BASE/linux/$DIR/gpg
+REPO
+$PM -y --setopt=timeout=30 --setopt=retries=3 install "$@"
+RPM
+    fi
+    local srcs=() src base rc
+    docker_sources_order
+    read -r -a srcs <<<"$SRC_ORDER"
+    for src in "${srcs[@]}"; do
+        base="$(docker_source_base "$src")"
+        case "$kind" in
+            apt) say "用 apt 从 $src（$base）安装：apt-get install $pk" "Installing with apt from $src ($base): apt-get install $pk" ;;
+            *) say "用 dnf/yum 从 $src（$base）安装：dnf install $pk" "Installing with dnf/yum from $src ($base): dnf install $pk" ;;
+        esac
+        # shellcheck disable=SC2086  # $pk is a list of package names, split on purpose
+        rc=0; run_docker_cmd env OA_APT_ROOT="$APT_ROOT" OA_OSREL="$OS_RELEASE" sh "$TMP/docker-repo.sh" "$base" "$dir" $pk || rc=$?
+        if [ "$rc" = 0 ] && have_docker; then return 0; fi
+        warn "软件包源 $src 失败（rc=$rc），清理该仓库配置后换下一个。" "The package source $src failed (rc=$rc); its repository file is removed and the next source is tried."
+        rm -f "$APT_ROOT$repofile"
+    done
+    return 1
+}
 # docker_official_script: Docker Inc.'s get.docker.com script from the chosen source; the next source is only tried with consent
 # (interactive) or when the order came from auto / --mirror cn. Returns 1 when everything failed (the caller falls back to distro packages).
 docker_official_script() {
@@ -2115,6 +2233,11 @@ docker_official_script() {
         warn "下载 get.docker.com 脚本失败。" "Failed to download the get.docker.com script."
         return 1
     fi
+    # get-docker.sh also installs rootless-extras, the model plugin and buildx (tens of MB the stack never uses; 1Panel installs
+    # only engine + CLI + containerd + compose). Strip them from the downloaded copy; buildx stays for --build-from-source.
+    # Every pattern is a no-op when the script changes shape, so the worst case is the previous full install.
+    sed -i -e 's/ docker-ce-rootless-extras\$pkg_version//' -e 's/ docker-model-plugin//' "$TMP/get-docker.sh" || true
+    [ "$BUILD_SRC" = 1 ] || sed -i -e 's/ docker-buildx-plugin//' "$TMP/get-docker.sh" || true
     docker_sources_order
     read -r -a srcs <<<"$SRC_ORDER"
     for src in "${srcs[@]}"; do

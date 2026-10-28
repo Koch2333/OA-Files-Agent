@@ -33,6 +33,7 @@ export const router = createRouter({
     { path: '/import', name: 'import', component: () => import('../views/ImportView.vue'), meta: { title: '批量导入 / 智能归档', minRole: 'operator' } },
     { path: '/tasks', name: 'tasks', component: () => import('../views/TasksView.vue'), meta: { title: '任务中心' } },
     { path: '/tasks/:id', name: 'task', component: () => import('../views/TaskDetailView.vue'), props: true, meta: { title: '任务详情', parent: 'tasks' } },
+    { path: '/review-queue', name: 'review-queue', component: () => import('../views/ReviewQueueView.vue'), meta: { title: '待审核队列', parent: 'tasks' } },
     { path: '/plans/:id', name: 'plan', component: () => import('../views/PlanView.vue'), props: true, meta: { title: '归档计划与审批', parent: 'tasks' } },
     { path: '/files', name: 'files', component: () => import('../views/FilesView.vue'), meta: { title: '文件库' } },
     { path: '/manage', name: 'manage', component: () => import('../views/FileManagerView.vue'), meta: { title: '文件管理' } },

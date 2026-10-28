@@ -14,15 +14,15 @@ const ui = useUi()
 const cur = ref(''), next = ref(''), next2 = ref('')
 const busy = ref(false)
 const err = ref<string | null>(null)
-const minLen = computed(() => auth.policy?.password_min_length ?? 12)
+const minLen = computed(() => auth.policy?.password_min_length ?? 8)
 const st = computed(() => passwordStrength(next.value, minLen.value, auth.user?.username))
 const mismatch = computed(() => !!next2.value && next.value !== next2.value)
-const can = computed(() => !!cur.value && st.value.ok && next.value === next2.value && !busy.value)
+const can = computed(() => (props.forced || !!cur.value) && st.value.ok && next.value === next2.value && !busy.value)
 async function submit() {
   if (!can.value) return
   busy.value = true; err.value = null
   try {
-    await api.changePassword(cur.value, next.value)
+    await api.changePassword(props.forced ? undefined : cur.value, next.value)
     cur.value = next.value = next2.value = ''
     await auth.refreshMe()
     ui.toast('密码已修改，其他设备上的登录已退出', 'success')
@@ -32,11 +32,11 @@ async function submit() {
 </script>
 <template>
   <Dialog :title="forced ? '请先修改初始密码' : '修改密码'" width="480px" @close="!forced && !busy && emit('close')">
-    <p v-if="forced" class="banner info">管理员为你设置了临时密码，必须先改为自己的密码才能继续使用。</p>
+    <p v-if="forced" class="banner info">管理员为你设置了临时密码，请直接设置自己的新密码（不用再输入临时密码）。</p>
     <form class="col" @submit.prevent="submit">
       <input type="text" :value="auth.user?.username" autocomplete="username" hidden readonly tabindex="-1" aria-hidden="true" />
-      <PasswordField id="cp-cur" v-model="cur" label="当前密码" autocomplete="current-password" autofocus />
-      <PasswordField id="cp-new" v-model="next" label="新密码" autocomplete="new-password" strength :min-length="minLen" :username="auth.user?.username" />
+      <PasswordField v-if="!forced" id="cp-cur" v-model="cur" label="当前密码" autocomplete="current-password" autofocus />
+      <PasswordField id="cp-new" v-model="next" label="新密码" autocomplete="new-password" :autofocus="forced" strength :min-length="minLen" :username="auth.user?.username" />
       <PasswordField id="cp-new2" v-model="next2" label="确认新密码" autocomplete="new-password" :invalid="mismatch" />
       <p v-if="mismatch" class="t-label" style="color: var(--md-sys-color-error)" role="alert">两次输入的密码不一致</p>
       <div v-if="err" class="banner error" role="alert">{{ err }}</div>

@@ -147,7 +147,7 @@ func (s *Server) setupComplete(w http.ResponseWriter, r *http.Request) {
 // APILevel is the contract generation this backend implements. The frontend carries the same number
 // (REQUIRED_API_LEVEL in frontend/src/utils/apiLevel.ts) and shows a banner when they differ. Bump it in BOTH places
 // whenever the frontend starts to depend on a new endpoint or field.
-const APILevel = 8
+const APILevel = 11
 
 func (s *Server) setupFinish(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.identity(w, r)

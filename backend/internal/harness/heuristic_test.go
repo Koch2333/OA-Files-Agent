@@ -37,6 +37,7 @@ func TestHeuristicAccuracy(t *testing.T) {
 		{name: "letterhead names department", filename: "scan001.pdf", text: "销售部\n" + longPad, dept: "销售部", typ: "", date: "", review: true},
 		{name: "conflict dept filename vs label", filename: "财务部通知.docx", text: "发文部门：人事部\n" + longPad, dept: "", typ: "通知", date: "", review: true, evidence: nil},
 		{name: "conflict date filename vs body", filename: "财务部报销申请_20260301.docx", text: "日期：2026年3月15日\n" + longPad, dept: "财务部", typ: "申请", date: "", review: true},
+		{name: "no date in the document is normal: no forced review", filename: "财务部报销申请.docx", text: "金额合计一百元整，请财务核对并按流程办理报销事宜，谢谢。", dept: "财务部", typ: "申请", date: "", review: false},
 		{name: "no signal", filename: "IMG_0001.jpg", mime: "image/jpeg", text: "hello world 12345 abcdefghijklmnop", dept: "", typ: "", date: "", review: true},
 		{name: "empty text image", filename: "photo.png", mime: "image/png", text: "", dept: "", typ: "", date: "", review: true},
 		{name: "single weak mention", filename: "notes.docx", text: longPad + "提到会计一次。", dept: "", typ: "", date: "", review: true},

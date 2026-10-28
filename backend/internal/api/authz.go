@@ -74,7 +74,7 @@ var routeAccess = normalizeAccess(map[string]access{
 	"GET /v1/archive-plans/{id}":                 viw, "PATCH /v1/archive-plans/{id}": opr,
 	"POST /v1/archive-plans/{id}/approve": opr, "POST /v1/archive-plans/{id}/execute": opr,
 	"POST /v1/archive-operations/{id}/rollback": opr,
-	"GET /v1/ledger": viw, "GET /v1/ledger/export": viw, "GET /v1/classification/options": viw,
+	"POST /v1/archive-plans/{id}/defer":         opr, "POST /v1/archive-plans/{id}/reanalyze": opr, "GET /v1/review-queue": viw, "GET /v1/ledger": viw, "GET /v1/ledger/export": viw, "POST /v1/ledger/{id}/reclassify": opr, "GET /v1/classification/options": viw,
 	"GET /v1/oa-templates": viw, "POST /v1/oa-templates": opr,
 	"GET /v1/oa-templates/{id}": viw, "PATCH /v1/oa-templates/{id}": opr, "DELETE /v1/oa-templates/{id}": opr, "POST /v1/oa-templates/{id}/test": opr,
 	"GET /v1/archive-rules": viw, "POST /v1/archive-rules": opr,

@@ -51,10 +51,20 @@ export function useImportFlow() {
   async function submit() {
     if (!picked.value.length || submitting.value) return
     submitting.value = true; err.value = null
+    // 上传期间还可以继续添加：已交给上传器的文件记在 sent 里，drain 取出之后新加入的，并入同一个批次
+    const sent = new Set<PickedFile>(picked.value)
+    const drain = () => { const fresh = picked.value.filter((p) => !sent.has(p)); fresh.forEach((p) => sent.add(p)); return fresh }
     try {
-      const job = await uploader.start(picked.value, { templateId: templateId.value || null, options: currentOptions() })
-      ui.toast('已创建归档任务', 'success')
+      const job = await uploader.start(picked.value, { templateId: templateId.value || null, options: currentOptions(), drain })
       uploader.reset()
+      const late = picked.value.filter((p) => !sent.has(p))
+      if (late.length) {
+        // 一次请求就传完的小批次来不及并入：这些文件留在待提交列表里，不丢
+        picked.value = late
+        ui.toast(`已创建归档任务；上传期间追加的 ${late.length} 个文件还没有提交，仍在列表中`, 'info', { label: '查看任务', run: () => { void router.push(`/tasks/${job.id}`) } })
+        return
+      }
+      ui.toast('已创建归档任务', 'success')
       await router.push(`/tasks/${job.id}`)
     } catch (e) { err.value = errMsg(e); await afterError(e) } finally { submitting.value = false }
   }

@@ -31,11 +31,11 @@ const canWrite = computed(() => auth.canWrite)
 const shown = computed(() => picked.value.slice(0, listOpen.value ? 100 : 0))
 const nameOnlyPreview = computed(() => flow.summary.value.nameOnlyList.slice(0, 4).map((r) => r.path).join('、'))
 
-// 页面级投放（见 utils/dropTarget.ts）：整页可放，遮罩提示“松开即可上传”；只读账号/提交中仍阻止导航但不接收
-const { dragging } = useWindowDrop({ enabled: () => canWrite.value && !flow.submitting.value, onDrop: (dt) => { void flow.addFromDrop(dt) } })
+// 页面级投放（见 utils/dropTarget.ts）：整页可放，遮罩提示“松开即可上传”；上传进行中也可以继续放入，新文件并入同一个任务；只读账号不接收
+const { dragging } = useWindowDrop({ enabled: () => canWrite.value, onDrop: (dt) => { void flow.addFromDrop(dt) } })
 function onPaste(e: ClipboardEvent) {
   const t = e.target as HTMLElement | null
-  if (!canWrite.value || flow.submitting.value || t?.closest('input, textarea, select, [contenteditable]')) return
+  if (!canWrite.value || t?.closest('input, textarea, select, [contenteditable]')) return
   const list = fromClipboard(e.clipboardData?.files)
   if (list.length) { e.preventDefault(); flow.add(list) }
 }
@@ -60,7 +60,7 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
     <div v-else-if="!picked.length" class="empty">
       <Icon :name="flow.scanning.value ? 'progress_activity' : 'cloud_upload'" class="big" :class="{ spin: flow.scanning.value }" />
       <div class="t-title" data-testid="dz-title" aria-live="polite">{{ flow.scanning.value ? `正在读取文件${flow.found.value ? `（已发现 ${flow.found.value} 个）` : ''}…` : dragging ? '松开即可上传' : '把文件或文件夹拖到这里，AI 自动识别并归档' }}</div>
-      <p class="muted">支持 Word / Excel / PPT（含旧版 .doc .xls .ppt）、PDF、图片（含扫描件 OCR）、文本、网页、邮件；其他格式也会接收，只按文件名处理。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
+      <p class="muted">支持 Word / Excel / PPT（含旧版 .doc .xls .ppt）、PDF、图片（含扫描件 OCR）、文本、网页、邮件；ZIP 压缩包会自动展开成里面的文件（加密或损坏的压缩包按普通文件处理）；其他格式也会接收，只按文件名处理。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
       <div class="row wrap" style="justify-content: center">
         <label class="btn filled has-icon"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden data-testid="dz-files" @change="onPick" /></label>
         <label class="btn tonal has-icon"><Icon name="folder_open" sm />选择文件夹<input type="file" hidden webkitdirectory data-testid="dz-folder" @change="onPick" /></label>
@@ -89,7 +89,7 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
       <div v-if="listOpen" class="table-wrap files">
         <table class="tbl"><tbody>
           <tr v-for="p in shown" :key="p.relativePath"><td class="ellipsis" style="max-width: 380px" :title="p.relativePath">{{ p.relativePath }}</td><td class="muted nowrap">{{ fmtBytes(p.file.size) }}</td><td><span class="chip" :class="chip(p.file)">{{ VERDICT_LABEL[verdict(p.file)] }}</span></td>
-            <td><button class="btn icon-only sm" :aria-label="`移除 ${p.file.name}`" @click="flow.remove(p)"><Icon name="close" sm /></button></td></tr>
+            <td><button class="btn icon-only sm" :disabled="flow.submitting.value" :aria-label="`移除 ${p.file.name}`" @click="flow.remove(p)"><Icon name="close" sm /></button></td></tr>
         </tbody></table>
       </div>
       <p v-if="brief.nameOnly" class="muted t-label" data-testid="rejected-list">格式无法读取内容（或是空文件）的文件仍会提交：只依据文件名判断，一定进入人工审核：{{ nameOnlyPreview }}<template v-if="flow.summary.value.nameOnlyList.length > 4"> 等 {{ flow.summary.value.nameOnlyList.length }} 个</template></p>
@@ -102,6 +102,7 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
         </div>
       </div>
       <UploadProgress v-if="flow.submitting.value" :progress="flow.progress.value" @cancel="flow.cancelUpload()" />
+      <p v-if="flow.submitting.value" class="muted t-label" data-testid="dz-append-hint">上传期间可以继续添加或拖入文件：它们会并入同一个任务，全部传完后一起提交。</p>
       <ErrorBanner :message="flow.err.value" />
       <div class="row go">
         <span class="muted t-label grow">此步骤只读取你选的文件，不会移动或修改任何原文件。</span>

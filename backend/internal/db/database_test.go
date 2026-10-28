@@ -137,7 +137,7 @@ func TestDestructiveNeedsApproval(t *testing.T) {
 	if pool.Provider() == sqldb.Postgres {
 		body = "BEGIN;\nDROP TABLE ai_policy;\nCOMMIT;"
 	}
-	os.WriteFile(filepath.Join(db.Dir(dir, pool.Provider()), "013_drop.up.sql"), []byte(body), 0o600)
+	os.WriteFile(filepath.Join(db.Dir(dir, pool.Provider()), "014_drop.up.sql"), []byte(body), 0o600)
 	err := db.Apply(ctx, pool, db.Options{Dir: dir})
 	if err == nil || !strings.Contains(err.Error(), "destructive") {
 		t.Fatalf("destructive migration ran without approval: %v", err)
@@ -177,7 +177,7 @@ func TestFailedStepRecovery(t *testing.T) {
 		broken = good + "\n--;;\n" + bad
 	}
 	_ = repaired
-	name := "013_fail.up.sql"
+	name := "014_fail.up.sql"
 	path := filepath.Join(db.Dir(dir, p), name)
 	os.WriteFile(path, []byte(broken), 0o600)
 	err := db.Apply(ctx, pool, db.Options{Dir: dir})
@@ -233,7 +233,7 @@ func TestMySQLResumeAfterCrashBetweenStepAndMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := copyDir(t, sqldb.MySQL)
-	path := filepath.Join(db.Dir(dir, sqldb.MySQL), "013_two.up.sql")
+	path := filepath.Join(db.Dir(dir, sqldb.MySQL), "014_two.up.sql")
 	body := "CREATE TABLE zz_a (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB\n--;;\nALTER TABLE zz_a ADD COLUMN b INT NULL\n--;;\nCREATE INDEX zz_a_b ON zz_a(b)"
 	os.WriteFile(path, []byte(body), 0o600)
 	ms, _ := db.Load(dir, sqldb.MySQL)
@@ -247,7 +247,7 @@ func TestMySQLResumeAfterCrashBetweenStepAndMarker(t *testing.T) {
 		t.Fatalf("resume failed: %v", err)
 	}
 	st, _ := db.SchemaStatus(ctx, pool)
-	if st.State != "ok" && st.Version != 13 {
+	if st.State != "ok" && st.Version != 14 {
 		t.Fatalf("status %+v", st)
 	}
 	if st.Dirty {

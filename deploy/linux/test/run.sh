@@ -10,6 +10,7 @@ BASE="${OA_TEST_TMP:-$(mktemp -d)}"
 mkdir -p "$BASE"
 PASS=0; FAIL=0; FAILED=()
 export OA_SUMMARY=full   # tests assert on the long closing screen; the compact one has its own test (t_summary_report)
+export OA_DOCKER_VIA=script   # existing tests cover the get-docker.sh route; the apt route has t_docker_apt
 FILTER="${1:-}"
 
 # ---------------------------------------------------------------------------------------------- sandbox
@@ -143,6 +144,7 @@ SH
 echo "curl $*" >>"$FAKE_SB/calls.log"
 out=''; url=''; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac; shift; done
 case "$url" in
+  */docker-ce/linux/*/gpg) [ -z "$out" ] || echo fake-key >"$out"; exit 0 ;;
   *get.docker.com*) [ -z "${FAKE_GETDOCKER_FAIL:-}" ] || exit 22
     printf '#!/bin/sh\necho "get-docker.sh $* DOWNLOAD_URL=${DOWNLOAD_URL:-}" >>"$FAKE_SB/calls.log"\nif [ -n "$FAKE_GETDOCKER_HANG" ]; then exec sleep 987; fi\nif [ -n "$FAKE_GETDOCKER_HANG_ONCE" ] && [ ! -e "$FAKE_SB/state/hung" ]; then touch "$FAKE_SB/state/hung"; exec sleep 987; fi\nsleep "${FAKE_GETDOCKER_SLEEP:-0}"\nif [ -n "$FAKE_GETDOCKER_BADMIRROR" ] && [ "$2" != AzureChinaCloud ]; then echo mirror-failed >&2; exit 1; fi\ncp "$FAKE_SB/shim/docker.real" "$FAKE_SB/shim/docker"\n' >"$out"; exit 0 ;;
   *127.0.0.1*healthz*) exit 0 ;;
@@ -867,6 +869,32 @@ t_pull_retry() {
     assert_has "$SB/out.txt" "failing image\(s\): $REG/oa-agent-worker:t4"; assert_not "$SB/out.txt" "failing image\(s\):.*oa-agent-api"
     # a flaky build is retried too (first build attempt fails, the second works)
     new_sandbox rt5; FAKE_BUILD_FLAKY=1 run_install --yes --dir "$SB/oa"; assert_rc 0; assert_count "$SB/calls.log" 'compose\[CF=[^]]*\] build' 2; assert_has "$SB/out.txt" "docker compose build failed \(attempt 1/3\)"
+}
+
+t_docker_apt() {
+    # Debian/Ubuntu: the repository is configured and only engine + CLI + containerd + compose are installed with apt-get; no get-docker.sh
+    NO_DOCKER=1 new_sandbox da1; printf 'ID=ubuntu\nID_LIKE=debian\nVERSION_CODENAME=noble\n' >"$SB/os-release"
+    OA_BUILD_FROM_SOURCE=0 OA_DOCKER_VIA=repo OA_APT_ROOT="$SB/aptroot" run_install --yes --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 0
+    assert_has "$SB/calls.log" '^apt-get -y install ca-certificates curl'; assert_has "$SB/calls.log" '^apt-get update'
+    assert_has "$SB/calls.log" 'install docker-ce docker-ce-cli containerd.io docker-compose-plugin$'; assert_not "$SB/calls.log" 'docker-buildx-plugin|rootless|model-plugin|get-docker'
+    assert_has "$SB/calls.log" 'curl .*https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg'
+    assert_has "$SB/aptroot/etc/apt/sources.list.d/docker.list" 'https://mirrors.aliyun.com/docker-ce/linux/ubuntu noble stable'
+    # apt fails on the first source: its repository file is removed, the next source is tried, then get-docker.sh
+    NO_DOCKER=1 new_sandbox da2; printf 'ID=debian\nVERSION_CODENAME=trixie\n' >"$SB/os-release"
+    OA_DOCKER_VIA=repo OA_APT_ROOT="$SB/aptroot" FAKE_PKG_FAIL=1 run_install --yes --dir "$SB/oa" --install-docker --docker-source aliyun
+    assert_has "$SB/out.txt" 'The package source aliyun failed'; assert_nofile "$SB/aptroot/etc/apt/sources.list.d/docker.list"; assert_has "$SB/calls.log" 'get-docker.sh'
+    # Rocky/CentOS/RHEL and Fedora: dnf with a generated docker-ce.repo, same four packages
+    NO_DOCKER=1 new_sandbox da3; printf 'ID=rocky\nID_LIKE="rhel centos fedora"\n' >"$SB/os-release"
+    OA_BUILD_FROM_SOURCE=0 OA_DOCKER_VIA=repo OA_APT_ROOT="$SB/aptroot" run_install --yes --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 0
+    assert_has "$SB/calls.log" 'dnf .*install docker-ce docker-ce-cli containerd.io docker-compose-plugin$'; assert_not "$SB/calls.log" 'get-docker'
+    assert_has "$SB/aptroot/etc/yum.repos.d/docker-ce.repo" 'baseurl=https://mirrors.aliyun.com/docker-ce/linux/centos/\$releasever/\$basearch/stable'
+    NO_DOCKER=1 new_sandbox da4; printf 'ID=fedora\n' >"$SB/os-release"
+    OA_BUILD_FROM_SOURCE=0 OA_DOCKER_VIA=repo OA_APT_ROOT="$SB/aptroot" run_install --yes --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 0
+    assert_has "$SB/aptroot/etc/yum.repos.d/docker-ce.repo" 'linux/fedora/\$releasever'
+    # SUSE has no Docker repository: its own packages, never the repo path
+    NO_DOCKER=1 new_sandbox da5; printf 'ID=opensuse-leap\n' >"$SB/os-release"
+    OA_DOCKER_VIA=repo OA_APT_ROOT="$SB/aptroot" run_install --yes --dir "$SB/oa" --install-docker --docker-source aliyun; assert_rc 0
+    assert_has "$SB/calls.log" '^zypper .*install docker'; assert_nofile "$SB/aptroot/etc/yum.repos.d/docker-ce.repo"
 }
 
 t_docker_install_chain() {
@@ -1613,7 +1641,7 @@ t_docker_source() {
     OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 0
     assert_has "$SB/out.txt" 'Docker installation source \(the default, automatic'; assert_has "$SB/out.txt" '8\) automatic \(default\)'
     assert_has "$SB/out.txt" '8\) Docker +will be installed; Docker installation source: as you specified: Tsinghua TUNA'
-    assert_has "$SB/out.txt" 'About to run \(needs network and root\): DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce sh get-docker.sh'; assert_has "$SB/calls.log" 'get-docker.sh  ?DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce'
+    assert_has "$SB/out.txt" 'About to install with the system package manager.*DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce sh get-docker.sh'; assert_has "$SB/calls.log" 'get-docker.sh  ?DOWNLOAD_URL=https://mirrors.tuna.tsinghua.edu.cn/docker-ce'
     NO_DOCKER=1 new_sandbox ds7; answers "$SB/oa" 18090 '' 1 '' n '' default e 8 7 'http://x.example.com' 'https://bad host' 'https://docker.example.com/docker-ce' 1 y y y
     OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 0; assert_count "$SB/out.txt" 'an https:// URL is required' 2; assert_has "$SB/calls.log" 'DOWNLOAD_URL=https://docker.example.com/docker-ce'
     NO_DOCKER=1 new_sandbox ds8; answers "$SB/oa" 18090 '' 1 '' n '' default y n; OA_INSTALL_TTY="$SB/answers" run_install --dir "$SB/oa"; assert_rc 4; assert_not "$SB/calls.log" 'get-docker'

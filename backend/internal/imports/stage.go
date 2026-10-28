@@ -652,6 +652,7 @@ func (s *Service) CommitStaged(ctx context.Context, owner, batchID, key, templat
 			batch.Files = append(batch.Files, File{ID: file, TaskID: id, SourceName: m.Name, SourcePath: m.RelPath, MIMEType: mime, SHA256: m.SHA256, SizeBytes: m.Size, Evidence: []string{}, ReviewRequired: true, ArchiveStatus: "pending", CreatedAt: now, StoredPath: stored})
 		}
 	}
+	consumed := s.expandArchives(dir, &batch) // ZIPs are replaced by the files inside them (see archive_expand.go)
 	batch.Job.FailureCount = len(batch.Failures)
 	batch.Job.ProcessedFiles = len(batch.Failures)
 	if len(batch.Files) == 0 {
@@ -663,6 +664,11 @@ func (s *Service) CommitStaged(ctx context.Context, owner, batchID, key, templat
 		return batch, fmt.Errorf("save import: %w", saveErr)
 	}
 	committed = !replay
+	if committed {
+		for _, p := range consumed {
+			_ = os.Remove(p) // the expanded archives; kept until now so a failed save could be retried
+		}
+	}
 	if replay {
 		// the earlier task owns its copies; ours are removed by the deferred cleanup (moves are not restored on replay)
 		moves = nil

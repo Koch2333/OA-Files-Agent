@@ -534,6 +534,7 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 		return err == nil
 	}, cand)
 	items := make([]store.PlanItem, 0, len(planned))
+	held := map[string]bool{} // automatic mode: only repeated imports wait for a human; everything else is archived with placeholders
 	for _, p := range planned {
 		f := meta[p.FileID]
 		warns := append(append([]string{}, renderWarn[p.FileID]...), p.Warnings...)
@@ -542,14 +543,20 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 			warns = append(warns, "与已归档文件内容相同："+prev)
 			duplicate = true
 		}
-		review := f.ReviewRequired || f.Department == nil || f.DocumentType == nil || f.Date == nil
+		review := f.ReviewRequired || f.Department == nil || f.DocumentType == nil
 		if review {
 			warns = append(warns, "字段置信度低或信息缺失，需人工确认")
 		}
-		if auto && duplicate && !review {
+		if auto && duplicate {
 			// a repeated import is a human decision, never an automatic one
+			held[p.FileID] = true
 			review = true
 			warns = append(warns, "全自动模式：内容与已归档文件相同，需人工确认是否重复归档")
+		}
+		if auto && len(f.Evidence) > 0 && strings.HasPrefix(f.Evidence[0], store.FilenameOnlyMarker) {
+			// content could not be read: the file name alone is never enough for an automatic archive decision
+			held[p.FileID] = true
+			review = true
 		}
 		it := store.PlanItem{FileID: f.ID, OriginalName: f.SourceName, SuggestedName: p.Name, SourcePath: f.SourcePath, DestinationPath: p.Rel, Department: f.Department, DocumentType: f.DocumentType, DocumentDate: f.Date, Warnings: warns, ReviewRequired: review}
 		store.ApplyFallbackPlaceholder(&it)
@@ -562,7 +569,7 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 	if auto {
 		var ready, left []store.PlanItem
 		for _, it := range items {
-			if it.ReviewRequired {
+			if held[it.FileID] {
 				left = append(left, it)
 			} else {
 				ready = append(ready, it)
@@ -572,7 +579,7 @@ func (s *Service) buildPlan(ctx context.Context, job imports.Job) {
 			s.planAndRunAuto(ctx, job, ruleID, ready, left)
 			return
 		}
-		s.event(ctx, job.ID, "planning", "auto_nothing_ready", nil, "全自动模式：模型没有能够完全确定的条目，未自动归档任何文件，全部转人工审核", map[string]any{"automation": "auto", "model": job.LLMModel})
+		s.event(ctx, job.ID, "planning", "auto_nothing_ready", nil, "全自动模式：没有可自动归档的条目（均为内容读取失败，或与已归档文件内容相同），已转人工审核", map[string]any{"automation": "auto", "model": job.LLMModel})
 	}
 	plan, err := st.CreatePlan(ctx, job.ID, ruleID, items)
 	if err != nil {
@@ -765,10 +772,16 @@ func (s *Service) planAndRunAuto(ctx context.Context, job imports.Job, ruleID *s
 		return
 	}
 	details := map[string]any{"plan_id": auto.ID, "automation": "auto", "model": job.LLMModel, "auto_items": len(ready), "pending_items": len(left)}
-	summary := fmt.Sprintf("全自动模式：%d 项已由模型 %s 完全确定，将自动归档", len(ready), job.LLMModel)
+	placeholders := 0
+	for _, it := range ready {
+		if it.ReviewRequired {
+			placeholders++
+		}
+	}
+	summary := fmt.Sprintf("全自动模式：%d 项将自动归档（模型 %s）；其中 %d 项含占位字段（其他/未知日期），归档后可在台账中筛选并修改", len(ready), job.LLMModel, placeholders)
 	if leftover != nil {
 		details["pending_plan_id"] = leftover.ID
-		summary += fmt.Sprintf("；%d 项未能确定，保留在待审核计划中", len(left))
+		summary += fmt.Sprintf("；%d 项（内容无法读取，或与已归档文件内容相同）保留在待审核计划中", len(left))
 	}
 	s.event(ctx, job.ID, "planning", "auto_plan_ready", nil, summary, details)
 	if c, err := st.CancelRequested(ctx, job.ID); err == nil && c {

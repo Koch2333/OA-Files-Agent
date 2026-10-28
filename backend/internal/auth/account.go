@@ -110,7 +110,10 @@ func (s *Service) ChangePassword(ctx context.Context, c Client, id Identity, cur
 	if id.User.PasswordHash == "" {
 		return fail(409, "NO_PASSWORD", "该账号没有密码（仅 Passkey），请联系管理员设置")
 	}
-	if !VerifyPassword(id.User.PasswordHash, current) {
+	// A session that exists only because an administrator-issued temporary password was just used (must_change_password) is confined
+	// to this one call: the temporary password was proven a moment ago at login, so it is not asked for again.
+	forced := id.User.MustChangePassword
+	if !forced && !VerifyPassword(id.User.PasswordHash, current) {
 		s.audit(ctx, id.User.Username, "auth.reauth_failed", id.User.ID, "修改密码失败（当前密码错误）")
 		if e := s.countFailure(ctx, id.User, id.Settings, "密码"); e != nil {
 			_, _ = s.Store.DeleteUserSessions(ctx, id.User.ID, "")
@@ -121,7 +124,7 @@ func (s *Service) ChangePassword(ctx context.Context, c Client, id Identity, cur
 	if msg := CheckPasswordPolicy(next, id.User.Username, id.Settings.PasswordMinLength); msg != "" {
 		return fail(422, "WEAK_PASSWORD", msg)
 	}
-	if next == current {
+	if (forced && VerifyPassword(id.User.PasswordHash, next)) || (!forced && next == current) {
 		return fail(422, "WEAK_PASSWORD", "新密码不能与当前密码相同")
 	}
 	h, err := HashPassword(next)

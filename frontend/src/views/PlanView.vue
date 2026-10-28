@@ -75,6 +75,36 @@ const attention = computed(() => p.value?.items.filter((i) => i.review_required 
 const rows = computed(() => (filter.value === 'attention' ? attention.value : p.value?.items ?? []))
 const blocking = computed(() => p.value?.items.filter((i) => i.review_required).length ?? 0)
 const locked = computed(() => !!p.value && !['draft', 'awaiting_review'].includes(p.value.status))
+// “稍后审核”：勾选暂时不想处理的条目，把它们拆到待审核队列，其余的可以先批准
+const sel = ref(new Set<string>())
+const canDefer = computed(() => auth.canWrite && !locked.value && (p.value?.items.length ?? 0) > 1)
+const allShown = computed(() => rows.value.length > 0 && rows.value.every((r) => sel.value.has(r.file_id)))
+function toggleSel(id: string) { const s = new Set(sel.value); if (s.has(id)) s.delete(id); else s.add(id); sel.value = s }
+function toggleAll() { sel.value = allShown.value ? new Set() : new Set(rows.value.map((r) => r.file_id)) }
+async function deferSelected() {
+  if (!p.value || !sel.value.size) return
+  busy.value = 'save'
+  try {
+    const res = await api.deferPlanItems(p.value.id, p.value.version, [...sel.value])
+    plan.data.value = res.plan
+    ui.toast(`已把 ${sel.value.size} 项移入稍后审核`, 'success', { label: '打开待审核队列', run: () => { void router.push('/review-queue') } })
+    sel.value = new Set()
+  } catch (e) { await handle(e) } finally { busy.value = '' }
+}
+// “退回重新识别”：只把勾选的文件交给 AI 再分析一遍（新任务），其余条目不动；会再次调用模型，所以先让用户确认
+const reanalyzing = ref(false)
+const reText = ref('')
+async function reanalyzeSelected() {
+  if (!p.value || !sel.value.size) return
+  busy.value = 'save'
+  try {
+    const res = await api.reanalyzePlanItems(p.value.id, p.value.version, [...sel.value], reText.value)
+    plan.data.value = res.plan
+    const n = sel.value.size
+    sel.value = new Set(); reanalyzing.value = false; reText.value = ''
+    ui.toast(`已退回 ${n} 个文件重新识别，完成后会出现在待审核队列`, 'success', { label: '查看新任务', run: () => { void router.push(`/tasks/${res.task_id}`) } })
+  } catch (e) { reanalyzing.value = false; await handle(e) } finally { busy.value = '' }
+}
 const steps = computed(() => planStepView(p.value, busy.value))
 const fallbackCount = computed(() => fallbackItems(p.value?.items ?? []).length)
 const deptErr = computed(() => (form.department ? validateCategory(form.department) : null))
@@ -196,6 +226,8 @@ async function execute() {
         </div>
         <div class="seg" role="group" aria-label="筛选"><button :aria-pressed="filter === 'all'" @click="filter = 'all'">全部</button><button :aria-pressed="filter === 'attention'" @click="filter = 'attention'">需关注 {{ attention.length }}</button></div>
         <button v-if="auth.canWrite && p.operation_id && api.capabilities.rollback" class="btn outlined danger has-icon" :disabled="!!busy" @click="confirmRollback = true"><Icon name="undo" sm />撤销本次归档</button>
+        <button v-if="canDefer && sel.size" class="btn tonal has-icon" :disabled="!!busy || sel.size >= p.items.length" data-testid="plan-reanalyze" title="只把勾选的文件交给 AI 重新识别（会再次调用模型）" @click="reanalyzing = true"><Icon name="auto_fix" sm />退回 AI 重新识别（{{ sel.size }}）</button>
+        <button v-if="canDefer && sel.size" class="btn tonal has-icon" :disabled="!!busy || sel.size >= (p.items.length)" data-testid="plan-defer" :title="sel.size >= p.items.length ? '不能选中全部：要留下一部分去批准' : '这些条目移到待审核队列，其余的可以先批准'" @click="deferSelected"><Icon name="schedule" sm />稍后审核所选（{{ sel.size }}）</button>
         <StepButtons v-if="auth.canWrite" :view="steps" :pulse-execute="pulse" :coach="coach" @approve="approve" @execute="confirmExec = true" @jump-first="jumpFirst" @confirm-fallback="confirmFallback = true" @coach-dismiss="dismissCoach" />
       </section>
 
@@ -206,9 +238,10 @@ async function execute() {
         <StateView :empty="!rows.length" empty-title="没有符合筛选条件的条目" empty-icon="fact_check">
           <div class="table-wrap">
             <table class="tbl">
-              <thead><tr><th>文件名（原 → 新）</th><th>路径（原 → 目标）</th><th>部门 / 类型 / 日期</th><th>提示</th><th /></tr></thead>
+              <thead><tr><th v-if="canDefer" class="sel"><input type="checkbox" :checked="allShown" aria-label="全选当前列表" data-testid="plan-select-all" @change="toggleAll" /></th><th>文件名（原 → 新）</th><th>路径（原 → 目标）</th><th>部门 / 类型 / 日期</th><th>提示</th><th /></tr></thead>
               <tbody>
                 <tr v-for="it in rows" :id="'plan-row-' + it.file_id" :key="it.file_id" :class="{ warnrow: it.review_required }">
+                  <td v-if="canDefer" class="sel"><input type="checkbox" :checked="sel.has(it.file_id)" :aria-label="`选择 ${it.original_name}`" data-testid="plan-select" @change="toggleSel(it.file_id)" /></td>
                   <td class="diff"><div class="old"><Icon name="remove" sm />{{ it.original_name }}</div><div class="new"><Icon name="add" sm />{{ it.suggested_name }}</div></td>
                   <td class="diff mono"><div class="old"><Icon name="remove" sm /><span class="ellipsis">{{ dirOf(it.source_path) }}{{ baseOf(it.source_path) }}</span></div><div class="new"><Icon name="add" sm /><span class="ellipsis"><span class="muted">{{ dirOf(it.destination_path) }}</span>{{ baseOf(it.destination_path) }}</span></div></td>
                   <td class="nowrap"><div><span v-if="isFb(it, 'department')" class="chip attention" title="系统暂填，待确认">{{ OTHER }} · 待确认</span><template v-else>{{ it.department ?? '—' }}</template> · <span v-if="isFb(it, 'document_type')" class="chip attention" title="系统暂填，待确认">{{ OTHER }} · 待确认</span><template v-else>{{ it.document_type ?? '—' }}</template></div><div class="muted">{{ it.document_date ?? '日期待审核' }}</div></td>
@@ -240,6 +273,13 @@ async function execute() {
       <template v-if="askOther"><button class="btn" @click="askOther = false">返回填写</button><button class="btn" :disabled="busy === 'save'" @click="doSave">仍留空，待确认</button><button class="btn filled" :disabled="busy === 'save'" data-testid="plan-save-other" @click="saveWithOther">归入「{{ OTHER }}」并保存</button></template>
       <template v-else><button class="btn" @click="editing = null">取消</button><button class="btn filled" :disabled="busy === 'save'" data-testid="plan-save" @click="save">保存修订</button></template>
     </template>
+  </Dialog>
+
+  <Dialog v-if="reanalyzing && p" title="退回 AI 重新识别？" width="560px" @close="reanalyzing = false">
+    <p>只把勾选的 <b>{{ sel.size }}</b> 个文件交给 AI 重新识别，其余 {{ p.items.length - sel.size }} 项<b>原样保留</b>（你的修订不会丢），可以继续批准。</p>
+    <div class="banner info"><Icon name="info" /><div>这会<b>再次调用大模型</b>，只处理这 {{ sel.size }} 个文件，可能产生模型费用。重新识别在一个新任务里进行，完成后出现在「待审核队列」，需要你再确认。</div></div>
+    <div class="field"><label for="re-t">给 AI 的新说明（可选，缺省沿用原任务的说明）</label><textarea id="re-t" v-model="reText" class="input" rows="3" maxlength="2000" placeholder="例如：这批是采购合同，部门按合同甲方所在项目判断" /></div>
+    <template #actions><button class="btn" @click="reanalyzing = false">取消</button><button class="btn filled has-icon" :disabled="busy === 'save'" data-testid="plan-reanalyze-confirm" @click="reanalyzeSelected"><Icon name="auto_fix" sm />确认退回</button></template>
   </Dialog>
 
   <Dialog v-if="confirmFallback" title="确认暂填的「其他」？" @close="confirmFallback = false">

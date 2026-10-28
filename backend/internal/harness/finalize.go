@@ -75,7 +75,7 @@ func validateFinal(fa FinalAnswer, o Options, now time.Time) (Result, []string) 
 		r.Department, r.DocumentType, r.DocumentDate = nil, nil, nil
 		warns = append(warns, "字段缺少证据，已置空")
 	}
-	if r.Department == nil || r.DocumentType == nil || r.DocumentDate == nil || len(warns) > 0 {
+	if r.Department == nil || r.DocumentType == nil || len(warns) > 0 {
 		r.ReviewRequired = true
 	}
 	return r, warns

@@ -26,10 +26,12 @@ func TestAdminOperationsReauthResetsAndLastAdmin(t *testing.T) {
 		t.Fatalf("%s", g.Raw)
 	}
 	assertCode(t, bob.do("POST", "/v1/auth/password", map[string]any{"current_password": tmp, "new_password": "short"}), 422, "WEAK_PASSWORD")
-	assertCode(t, bob.do("POST", "/v1/auth/password", map[string]any{"current_password": "nope-Nope-12345", "new_password": adminPW}), 401, "INVALID_CREDENTIALS")
+	// a session forced to change its temporary password does not need to retype it (it was just used to log in)
 	assertCode(t, bob.do("POST", "/v1/auth/password", map[string]any{"current_password": tmp, "new_password": tmp}), 422, "WEAK_PASSWORD")
 	other, _ := e.login("bobby", tmp) // a second session dies when the password changes
-	bob.must("POST", "/v1/auth/password", map[string]any{"current_password": tmp, "new_password": adminPW}, 204)
+	bob.must("POST", "/v1/auth/password", map[string]any{"new_password": adminPW}, 204)
+	// once the flag is cleared the current password is required again
+	assertCode(t, bob.do("POST", "/v1/auth/password", map[string]any{"current_password": "nope-Nope-12345", "new_password": adminPW + "x"}), 401, "INVALID_CREDENTIALS")
 	assertCode(t, other.do("GET", "/v1/auth/me", nil), 401, "UNAUTHENTICATED")
 	if me := bob.must("GET", "/v1/auth/me", nil, 200); me.Data["user"].(map[string]any)["must_change_password"] != false {
 		t.Fatal("flag not cleared")

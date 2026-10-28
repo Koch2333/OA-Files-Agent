@@ -174,7 +174,7 @@ function seedNameOnly() {
     const nameOnly = f.content?.basis === 'filename_only'
     const sug = `${date}_${dept}_${ty}_${n}`
     items.push({ file_id: id, original_name: n, suggested_name: sug, source_path: f.source_path, destination_path: `归档/${dept}/${date.slice(0, 4)}/${ty}/${sug}`, department: dept, document_type: ty, document_date: f.detected_date,
-      warnings: nameOnly ? ['字段置信度低或信息缺失，需人工确认'] : [], review_required: f.review_required || nameOnly || fb.length > 0 || !f.detected_date, fallback_fields: fb, basis: nameOnly ? 'filename_only' : 'content', basis_note: nameOnly ? f.evidence[0] ?? null : null })
+      warnings: nameOnly ? ['字段置信度低或信息缺失，需人工确认'] : [], review_required: f.review_required || nameOnly || fb.length > 0, fallback_fields: fb, basis: nameOnly ? 'filename_only' : 'content', basis_note: nameOnly ? f.evidence[0] ?? null : null })
   }
   const plan: ArchivePlan = { id: uid(), task_id: t.id, items, status: 'awaiting_review', version: 1, requires_approval: true, approved_by: null, approved_at: null, operation_id: null }
   plans.set(plan.id, plan)
@@ -448,6 +448,41 @@ export const mockApi: Api = {
   async getFile(id) { await delay(100); return getOr404(files, id, '文件') },
 
   async getPlan(id) { await delay(150); return structuredClone(getOr404(plans, id, '归档计划')) },
+  async deferPlanItems(id, version, fileIds) {
+    await delay(200)
+    const p = getOr404(plans, id, '归档计划')
+    if (p.version !== version) throw new ApiError(409, 'VERSION_CONFLICT', '计划已被他人修改，请刷新后重试')
+    if (p.status !== 'awaiting_review' && p.status !== 'draft') throw new ApiError(409, 'PLAN_LOCKED', '计划已批准或执行，不能再修改')
+    const chosen = new Set(fileIds)
+    const moved = p.items.filter((i) => chosen.has(i.file_id))
+    if (!moved.length || moved.length !== chosen.size || moved.length === p.items.length) throw new ApiError(422, 'VALIDATION_FAILED', '所选条目无效：须至少选 1 项，且不能选中全部（需留下一部分去批准）')
+    const later: ArchivePlan = { ...p, id: uid(), items: moved.map((i) => ({ ...i })), version: 1, status: 'awaiting_review', approved_by: null, approved_at: null, operation_id: null }
+    plans.set(later.id, later)
+    p.items = p.items.filter((i) => !chosen.has(i.file_id)); p.version += 1
+    return { plan: structuredClone(p), deferred_plan_id: later.id }
+  },
+  async reanalyzePlanItems(id, version, fileIds, instruction) {
+    await delay(200)
+    const p = getOr404(plans, id, '归档计划')
+    if (p.version !== version) throw new ApiError(409, 'VERSION_CONFLICT', '计划已被他人修改，请刷新后重试')
+    if (p.status !== 'awaiting_review' && p.status !== 'draft') throw new ApiError(409, 'PLAN_LOCKED', '计划已批准或执行，不能再修改')
+    const chosen = new Set(fileIds)
+    const moved = p.items.filter((i) => chosen.has(i.file_id))
+    if (!moved.length || moved.length !== chosen.size || moved.length === p.items.length) throw new ApiError(422, 'VALIDATION_FAILED', '所选条目无效：须至少选 1 项，且不能选中全部')
+    const old = tasks.get(p.task_id)
+    const t: ImportJob = { id: uid(), status: 'queued', total_files: moved.length, processed_files: 0, success_count: 0, failure_count: 0, plan_id: null, instruction: instruction?.trim() || old?.instruction, automation: 'review', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+    tasks.set(t.id, t)
+    p.items = p.items.filter((i) => !chosen.has(i.file_id)); p.version += 1
+    return { plan: structuredClone(p), task_id: t.id }
+  },
+  async getReviewQueue() {
+    await delay()
+    const cur = new Set([...tasks.values()].map((t) => t.plan_id).filter(Boolean))
+    return [...plans.values()].filter((p) => p.status === 'awaiting_review' && p.items.length).map((p) => ({
+      plan_id: p.id, task_id: p.task_id, items: p.items.length, needs_review: p.items.filter((i) => i.review_required).length,
+      first_name: [...p.items].map((i) => i.original_name).sort()[0] ?? '', task_status: 'awaiting_review', deferred: !cur.has(p.id), updated_at: new Date().toISOString(),
+    }))
+  },
   async patchPlan(id, version, patches) {
     await delay(200)
     const p = getOr404(plans, id, '归档计划')
@@ -553,6 +588,17 @@ export const mockApi: Api = {
       types: build(['申请', '通知', '公告', '合同', '报告', '发票', '报表', '会议纪要', '制度', '方案', '请示', '批复', '清单'], ledger.map((l) => l.document_type), planItems.map((i) => i.document_type ?? '')),
       reserved: OTHER,
     }
+  },
+  async reclassifyLedger(id, patch) {
+    await delay()
+    const l = ledger.find((x) => x.id === id)
+    if (!l) throw new ApiError(404, 'NOT_FOUND', '台账记录不存在')
+    if (patch.department !== undefined) l.department = patch.department.trim() || OTHER
+    if (patch.document_type !== undefined) l.document_type = patch.document_type.trim() || OTHER
+    if (patch.document_date !== undefined) l.document_date = patch.document_date
+    const base = l.canonical_name.split('/').pop() ?? l.canonical_name
+    l.archive_path = `${l.department}/${l.document_date ? l.document_date.slice(0, 4) : '未知日期'}/${l.document_type}/${base}`
+    return { ...l }
   },
   async listLedger(q) { await delay(); return paginate(filterLedger(q).map((l) => ({ ...l, department: displayCategory(l.department), document_type: displayCategory(l.document_type) })), q) },
   async exportLedger(q) {

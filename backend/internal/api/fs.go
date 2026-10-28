@@ -16,6 +16,7 @@ import (
 
 	"oa-agent/backend/internal/fileops"
 	"oa-agent/backend/internal/fsman"
+	"oa-agent/backend/internal/store"
 )
 
 // FileManager is the file-manager backend (implemented by fileops.Service).
@@ -35,6 +36,7 @@ type FileManager interface {
 	Verify(ctx context.Context, paths []string, actor string) (fileops.VerifyReport, error)
 	PlanDownload(paths []string, now time.Time) (fileops.DownloadPlan, error)
 	WriteZip(ctx context.Context, w io.Writer, plan fileops.DownloadPlan, actor string) (fileops.ZipReport, error)
+	Reclassify(ctx context.Context, id string, rc fileops.Reclass, derive fileops.Derive, actor string) (store.LedgerEntry, error)
 	Root() string
 	CanReveal() bool
 }
@@ -479,5 +481,35 @@ func (s *Server) fsDownload(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, context.Canceled) {
 			log.Printf("fs download aborted: %v", err)
 		}
+	}
+}
+
+// reclassify corrects department/type/date of an archived file afterwards (fixes the placeholders the automatic mode leaves).
+func (s *Server) reclassify(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Department   *string `json:"department"`
+		DocumentType *string `json:"document_type"`
+		DocumentDate *string `json:"document_date"`
+	}
+	if !s.decode(w, r, &in) {
+		return
+	}
+	if in.Department == nil && in.DocumentType == nil && in.DocumentDate == nil {
+		s.fail(w, r, 400, "INVALID_ARGUMENT", "至少修改部门、类型、日期中的一项", nil)
+		return
+	}
+	e, err := s.d.Files.Reclassify(r.Context(), r.PathValue("id"), fileops.Reclass{Department: in.Department, DocumentType: in.DocumentType, DocumentDate: in.DocumentDate},
+		func(ctx context.Context, it store.PlanItem) (string, string, []string, error) {
+			return s.d.Backend.Derive(ctx, it)
+		}, actorOf(r))
+	switch {
+	case err == nil:
+		s.ok(w, 200, e)
+	case errors.Is(err, fileops.ErrReclassInvalid):
+		s.fail(w, r, 422, "VALIDATION_FAILED", strings.TrimPrefix(err.Error(), "invalid correction: "), nil)
+	case errors.Is(err, store.ErrNotFound):
+		s.fail(w, r, 404, "NOT_FOUND", "台账记录不存在", nil)
+	default:
+		s.fsErr(w, r, err)
 	}
 }

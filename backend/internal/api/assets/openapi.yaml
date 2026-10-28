@@ -300,6 +300,72 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
+  /v1/archive-plans/{id}/defer:
+    post:
+      tags: [plans]
+      operationId: deferPlanItems
+      summary: 把所选条目移入“稍后审核”：它们拆到同一任务下的一个新计划（仍待审核），其余条目留在原计划，可以先批准
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, file_ids]
+              additionalProperties: false
+              properties:
+                version: {type: integer, minimum: 1}
+                file_ids: {type: array, minItems: 1, maxItems: 5000, items: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: The remaining plan and the id of the new plan
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: object, required: [plan, deferred_plan_id], properties: {plan: {$ref: '#/components/schemas/ArchivePlan'}, deferred_plan_id: {type: string, format: uuid}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/archive-plans/{id}/reanalyze:
+    post:
+      tags: [plans]
+      operationId: reanalyzePlanItems
+      summary: 把所选条目退回重新识别：它们离开当前计划，在一个新任务里重新分析（可附新说明），只有这些文件会再次调用模型；计划里其余条目原样保留，可以先批准
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, file_ids]
+              additionalProperties: false
+              properties:
+                version: {type: integer, minimum: 1}
+                file_ids: {type: array, minItems: 1, maxItems: 5000, items: {type: string, format: uuid}}
+                instruction: {type: string, maxLength: 2000, description: 新任务的说明；缺省沿用原任务的说明}
+      responses:
+        '200':
+          description: The remaining plan and the new task
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: object, required: [plan, task_id], properties: {plan: {$ref: '#/components/schemas/ArchivePlan'}, task_id: {type: string, format: uuid}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /v1/review-queue:
+    get:
+      tags: [plans]
+      operationId: getReviewQueue
+      summary: 待审核队列：所有仍在等人决定的计划（含“稍后审核”拆出来的），最新的在前，最多 200 条
+      responses:
+        '200':
+          description: Plans awaiting review
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/ReviewQueueEntry'}}}}
   /v1/archive-plans/{id}/approve:
     post:
       tags: [plans]
@@ -370,6 +436,35 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/LedgerPageEnvelope'}
+  /v1/ledger/{id}/reclassify:
+    post:
+      tags: [ledger]
+      operationId: reclassifyLedgerEntry
+      summary: 归档后修订部门/类型/日期（用于修正全自动模式留下的占位「其他」「未知日期」）；按新值重新计算标准文件名与目录并移动文件，不覆盖已有文件，台账同步
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              description: 缺省的字段保持不变；document_date 为空串表示清除日期（目录/文件名用「未知日期」）；部门和类型不能为空（不确定时填「其他」）
+              properties:
+                department: {type: string}
+                document_type: {type: string}
+                document_date: {type: string, description: YYYY-MM-DD 或空串}
+      responses:
+        '200':
+          description: The corrected ledger entry
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/LedgerEntry'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /v1/ledger/export:
     get:
       tags: [ledger]
@@ -1617,8 +1712,8 @@ paths:
     post:
       tags: [auth]
       operationId: changePassword
-      summary: 修改自己的密码（需当前密码；成功后吊销其他会话；清除 must_change_password）
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [current_password, new_password], additionalProperties: false, properties: {current_password: {type: string}, new_password: {type: string}}}}}}
+      summary: 修改自己的密码（需当前密码，但被管理员设置临时密码的账号首次修改时不需要；成功后吊销其他会话；清除 must_change_password）
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [new_password], additionalProperties: false, properties: {current_password: {type: string}, new_password: {type: string}}}}}}
       responses:
         '204': {description: Changed}
         '401': {$ref: '#/components/responses/Error'}
@@ -2486,6 +2581,18 @@ components:
         document_date: {type: [string, 'null']}
         suggested_name: {type: [string, 'null']}
         destination_path: {type: [string, 'null']}
+    ReviewQueueEntry:
+      type: object
+      required: [plan_id, task_id, items, needs_review, first_name, task_status, deferred, updated_at]
+      properties:
+        plan_id: {type: string, format: uuid}
+        task_id: {type: string, format: uuid}
+        items: {type: integer}
+        needs_review: {type: integer, description: 其中仍需人工确认的条目数}
+        first_name: {type: string, description: 计划里第一个文件名（按字母序最小），用于识别}
+        task_status: {type: string}
+        deferred: {type: boolean, description: true=由“稍后审核”拆出，任务当前计划是另一个}
+        updated_at: {type: string, format: date-time}
     LedgerEntry:
       type: object
       required: [id, original_name, canonical_name, department, document_type, document_date, archive_path, sha256, task_id, status, executed_at]

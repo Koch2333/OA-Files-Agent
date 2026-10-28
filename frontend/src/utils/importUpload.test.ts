@@ -46,6 +46,19 @@ describe('runImport', () => {
     expect(phases[phases.length - 1]).toBe('done')
   })
 
+  it('files added while the upload runs join the same batch and are committed together once', async () => {
+    const { api, calls } = fakeApi()
+    const late = pk('late.pdf', 2 * 1024 ** 3)
+    let handed = false
+    const drain = () => { if (handed) return []; handed = true; return [late] }
+    const job = await runImport([pk('big.pdf', 2 * 1024 ** 3)], { drain }, () => {}, deps(api)).promise
+    expect(job.id).toMatch(/^job-/)
+    expect(calls.filter((c) => c === 'create').length).toBe(2)
+    expect(calls.filter((c) => c.startsWith('commit:')).length).toBe(1)
+    expect(calls.indexOf('createImport')).toBe(-1)
+    expect(calls.lastIndexOf('complete')).toBeLessThan(calls.findIndex((c) => c.startsWith('commit:')))
+  })
+
   it('also switches to chunking for many files (>100) even when tiny', async () => {
     const { api, calls } = fakeApi()
     const many = Array.from({ length: 250 }, (_, i) => pk(`f${i}.pdf`, 10))

@@ -11,9 +11,12 @@ import { archiveRow } from '../utils/recentArchive'
 import Icon from './Icon.vue'
 import DecisionBadge from './DecisionBadge.vue'
 import FilePreview from './FilePreview.vue'
+import LedgerEditDialog from './LedgerEditDialog.vue'
 
 /** 台账记录详情（抽屉内容）：完整归档路径、原文件名、SHA-256、来源任务、识别依据、预览与“打开所在文件夹”都在这里，列表里不再显示。 */
 const props = defineProps<{ entry: LedgerEntry }>()
+const emit = defineEmits<{ updated: [entry: LedgerEntry] }>()
+const editing = ref(false)
 const auth = useAuth()
 const ui = useUi()
 const file = ref<FileRecord | null>(null)
@@ -63,7 +66,8 @@ async function copy(text: string, what: string) { ui.toast((await copyText(text)
       <dt>SHA-256</dt><dd class="mono" style="word-break: break-all">{{ entry.sha256 }}</dd>
       <dt>来源任务</dt><dd><RouterLink :to="`/tasks/${entry.task_id}`">{{ entry.task_id.slice(0, 8) }}</RouterLink></dd>
     </dl>
-    <div><button class="btn tonal has-icon" data-testid="ld-preview" @click="previewing = true"><Icon name="visibility" sm />预览归档文件</button></div>
+    <div class="row wrap" style="gap: 8px"><button class="btn tonal has-icon" data-testid="ld-preview" @click="previewing = true"><Icon name="visibility" sm />预览归档文件</button><button v-if="auth.canWrite" class="btn tonal has-icon" data-testid="ld-edit" @click="editing = true"><Icon name="edit" sm />修订分类</button></div>
+    <LedgerEditDialog v-if="editing" :entry="entry" @close="editing = false" @saved="(e) => { editing = false; emit('updated', e) }" />
     <template v-if="file">
       <div v-if="file.ocr?.used" class="col" style="gap: 8px" data-testid="ld-ocr">
         <div class="t-label muted">OCR 信息</div>

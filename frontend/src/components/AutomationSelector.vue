@@ -16,7 +16,7 @@ void props
     </div>
     <p v-if="!gate.allowed && gate.reason !== 'loading'" class="muted hint" data-testid="auto-why"><Icon name="info" sm />全自动不可用：{{ gate.text }}</p>
     <p v-else-if="mode === 'review'" class="muted hint">模型给出归档计划后，由你逐项核对、批准并执行；不会自动改动文件。</p>
-    <p v-else class="hint warn"><Icon name="warning" sm />全自动：模型直接决定并归档，无人工审批；无法确认的文件会留待人工处理，可事后一键撤销。</p>
+    <p v-else class="hint warn"><Icon name="warning" sm />全自动：模型直接决定并归档，无人工审批；拿不准的字段先用「其他」「未知日期」占位并照常归档，之后在台账里筛选修改；读不出内容或与已归档重复的文件仍留待人工处理。可事后一键撤销。</p>
   </div>
 </template>
 <style scoped>

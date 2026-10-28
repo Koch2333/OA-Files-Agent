@@ -14,17 +14,21 @@ $machine = (& $py -c "import platform; print(platform.machine())").Trim()
 if ($machine -ne "AMD64") { Fail "The worker venv Python is $machine; the worker must be built with an x64 (AMD64) Python 3.12 (see the comment at the top of this script)" }
 & $py -c "import PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) { Fail "PyInstaller missing in the worker venv: workers\document-ai\.venv\Scripts\pip install pyinstaller" }
+& $py -c "import olefile, xlrd" 2>$null
+if ($LASTEXITCODE -ne 0) { Fail "olefile / xlrd missing in the worker venv (needed for Word/Excel/PowerPoint 97-2003): workers\document-ai\.venv\Scripts\pip install -r workers\document-ai\requirements.txt" }
 $dist = Join-Path $RepoRoot "dist\worker-dist"
 $work = Join-Path $RepoRoot "dist\worker-build"
 Step "Document worker (PyInstaller onedir)"
 if ($Clean) { Remove-IfExists $dist; Remove-IfExists $work }
-Invoke-Native $py @("-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--name", "document-worker",
+$piArgs = @("-m", "PyInstaller", "--noconfirm", "--onedir", "--name", "document-worker",
   "--distpath", $dist, "--workpath", $work, "--specpath", $work,
   "--collect-all", "rapidocr_onnxruntime", "--collect-all", "pymupdf", "--collect-all", "docx", "--collect-all", "openpyxl",
   "--collect-submodules", "xlrd", "--collect-submodules", "olefile",
   "--hidden-import", "extract_core", "--hidden-import", "server", "--hidden-import", "formats_data", "--hidden-import", "fmt_common",
   "--hidden-import", "sniff", "--hidden-import", "ole_formats", "--hidden-import", "text_formats", "--hidden-import", "zip_formats",
-  "--paths", ".", "worker_main.py") $wk
+  "--paths", ".", "worker_main.py")
+# Without -Clean the PyInstaller analysis cache in $work is reused, which makes repeat builds much faster.
+Invoke-Native $py $piArgs $wk
 $exe = Join-Path $dist "document-worker\document-worker.exe"
 if (-not (Test-Path $exe)) { Fail "worker build produced no $exe" }
 Info ("worker: " + (Format-Size (Get-DirSize (Join-Path $dist "document-worker"))))

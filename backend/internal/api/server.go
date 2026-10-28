@@ -290,6 +290,8 @@ func (s *Server) storeErr(w http.ResponseWriter, r *http.Request, err error, wha
 		s.fail(w, r, 404, "NOT_FOUND", what+"不存在", nil)
 	case errors.Is(err, store.ErrConflict):
 		s.fail(w, r, 409, "VERSION_CONFLICT", "已被他人修改或存在冲突，请刷新后重试", nil)
+	case errors.Is(err, store.ErrBadSelection):
+		s.fail(w, r, 422, "VALIDATION_FAILED", "所选条目无效：须至少选 1 项，且不能选中全部（需留下一部分去批准）", nil)
 	case errors.Is(err, store.ErrReviewRequired):
 		s.fail(w, r, 409, "REVIEW_REQUIRED", "仍有待人工确认的条目，请先修订", nil)
 	case errors.Is(err, store.ErrState):

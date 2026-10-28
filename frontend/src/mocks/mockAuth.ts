@@ -63,7 +63,7 @@ export function createMockAuth(audit: (actor: string, action: string, target: st
 
   const settings: SecuritySettings = {
     mode: 'enterprise', rp_id: 'localhost', rp_name: 'OA 文件智能归档', origins: ['http://localhost:5173'], mfa_policy: 'admins', allow_password_login: true,
-    session_idle_minutes: 60, session_max_hours: 12, password_min_length: 12, lockout_threshold: 5, lockout_minutes: 15, passkey_available: true,
+    session_idle_minutes: 60, session_max_hours: 12, password_min_length: 8, lockout_threshold: 5, lockout_minutes: 15, passkey_available: true,
   }
   const sessions = new Map<string, MSession>()
   let current: MSession | null = null
@@ -158,7 +158,7 @@ export function createMockAuth(audit: (actor: string, action: string, target: st
 
   const setupStatus = (): SetupStatus => ({
     initialized, wizard_finished: initialized && wizardFinished, server_version: 'mock', api_level: REQUIRED_API_LEVEL, ...(initialized ? { mode: settings.mode } : {}), needs_token: false, loopback: true, https: false, passkey_available: true,
-    rp_id_suggestion: 'localhost', origin_suggestion: location.origin, min_password_length: 12,
+    rp_id_suggestion: 'localhost', origin_suggestion: location.origin, min_password_length: 8,
     checks: [
       { name: '数据库', ok: true, message: '演示数据，无需数据库' }, { name: '文档解析 Worker', ok: true, message: '演示模式' },
       { name: 'HTTPS', ok: false, message: '演示：当前为 http://localhost，Passkey 仅限 localhost' }, { name: 'Passkey', ok: true, message: 'localhost 允许使用 Passkey' },
@@ -248,7 +248,7 @@ export function createMockAuth(audit: (actor: string, action: string, target: st
 
     async changePassword(cur, next) {
       await delay(300); const u = needFull()
-      if (u.password !== cur) throw new ApiError(401, 'INVALID_CREDENTIALS', '当前密码不正确')
+      if (!u.must_change_password && u.password !== cur) throw new ApiError(401, 'INVALID_CREDENTIALS', '当前密码不正确')
       if (next.length < settings.password_min_length) throw new ApiError(422, 'VALIDATION_FAILED', `新密码至少 ${settings.password_min_length} 位`)
       u.password = next; u.must_change_password = false
       for (const [id, s] of sessions) if (s.userId === u.id && s.id !== current?.id) sessions.delete(id)

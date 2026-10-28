@@ -360,8 +360,8 @@ func NewDefaultRegistry(o Options) *Registry {
 			}
 			res, warns := validateFinal(fa, s.opts, s.eng.now)
 			issues := append([]string{}, warns...)
-			if res.Department == nil || res.DocumentType == nil || res.DocumentDate == nil {
-				issues = append(issues, "存在为空的字段，将需要人工审核")
+			if res.Department == nil || res.DocumentType == nil {
+				issues = append(issues, "部门或类型为空，将需要人工审核（日期为空是允许的）")
 			}
 			return map[string]any{"valid": len(warns) == 0 && len(issues) == 0, "issues": issues,
 				"normalized": map[string]any{"department": res.Department, "document_type": res.DocumentType, "document_date": res.DocumentDate, "evidence": res.Evidence}}, nil

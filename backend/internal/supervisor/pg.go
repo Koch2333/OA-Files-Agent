@@ -61,7 +61,17 @@ func StartPostgres(ctx context.Context, l Layout) (*Postgres, error) {
 			return nil, err
 		}
 		defer os.Remove(pwf)
-		if out, err := runPG(ctx, l, "initdb", "-D", data, "-U", "oa", "--pwfile="+pwf, "--auth=scram-sha-256", "-E", "UTF8", "--locale=C"); err != nil {
+		args := []string{"-D", data, "-U", "oa", "--pwfile=" + pwf, "--auth=scram-sha-256", "-E", "UTF8", "--locale=C"}
+		share, cleanShare, serr := initdbShareDir(l)
+		if serr != nil {
+			return nil, fmt.Errorf("preparing initdb for a non-ASCII install path failed: %v", serr)
+		}
+		defer cleanShare()
+		if share != "" {
+			log.Printf("install path has non-ASCII characters; initdb reads its files from %s", share)
+			args = append(args, "-L", share)
+		}
+		if out, err := runPG(ctx, l, "initdb", args...); err != nil {
 			return nil, fmt.Errorf("initdb failed: %v: %s", err, tail(out))
 		}
 		if err := os.WriteFile(secretPath, []byte(pw), 0o600); err != nil {

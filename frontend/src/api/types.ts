@@ -25,6 +25,7 @@ export type ClassificationOption = S['ClassificationOption']
 /** GET /v1/classification/options：人工修订下拉框的候选值（自动生成，仍可手输）。 */
 export interface ClassificationOptions { departments: ClassificationOption[]; types: ClassificationOption[]; reserved: string }
 export type LedgerEntry = S['LedgerEntry']
+export type ReviewQueueEntry = S['ReviewQueueEntry']
 export type TemplateTestResult = S['TemplateTestResult']
 export type ArchiveRule = S['ArchiveRule']
 export type ArchiveRuleInput = Omit<ArchiveRule, 'id'>
@@ -158,11 +159,18 @@ export interface Api {
   getFile(id: string): Promise<FileRecord>
   getPlan(id: string): Promise<ArchivePlan>
   patchPlan(id: string, version: number, items: PlanItemPatch[]): Promise<ArchivePlan>
+  /** 把所选条目移入“稍后审核”：拆成同一任务下的新计划（仍待审核），其余条目留在原计划 */
+  deferPlanItems(id: string, version: number, fileIds: string[]): Promise<{ plan: ArchivePlan; deferred_plan_id: string }>
+  getReviewQueue(): Promise<ReviewQueueEntry[]>
+  /** 把所选条目退回重新识别：新任务里只重新分析这些文件（可附新说明）；计划里其余条目原样保留 */
+  reanalyzePlanItems(id: string, version: number, fileIds: string[], instruction?: string): Promise<{ plan: ArchivePlan; task_id: string }>
   getClassificationOptions(taskId?: string): Promise<ClassificationOptions>
   approvePlan(id: string, version: number): Promise<ArchivePlan>
   executePlan(id: string, idempotencyKey: string): Promise<ArchivePlan>
   rollbackOperation(operationId: string): Promise<void>
   listLedger(q?: LedgerQuery): Promise<Page<LedgerEntry>>
+  /** 归档后修订部门/类型/日期（缺省字段不变；date 为空串=清除）；后端按新值重算文件名与目录并移动文件 */
+  reclassifyLedger(id: string, patch: { department?: string; document_type?: string; document_date?: string }): Promise<LedgerEntry>
   exportLedger(q?: LedgerQuery): Promise<{ blob: Blob; filename: string }>
   listTemplates(): Promise<OATemplate[]>
   createTemplate(t: OATemplateInput): Promise<OATemplate>
@@ -266,7 +274,7 @@ export interface Api {
   reauthPasskeyBegin(): Promise<WebAuthnBegin>
   reauthPasskeyFinish(challengeId: string, credential: WebAuthnJSON): Promise<Me>
   /* ===== 账号安全（自助） ===== */
-  changePassword(current: string, next: string): Promise<void>
+  changePassword(current: string | undefined, next: string): Promise<void>
   getMySecurity(): Promise<SecuritySummary>
   totpBegin(): Promise<TotpEnrollment>
   totpConfirm(challengeId: string, code: string): Promise<MfaEnrolled>

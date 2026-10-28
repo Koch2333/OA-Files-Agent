@@ -292,6 +292,16 @@ func (e *engine) metadataDate(m FileMetadata) *dateRes {
 	return nil
 }
 
+// dateNoEvidence is the date warning when nothing usable was found. Together with hasDateLike it tells "the document has no date"
+// (normal, no forced review) from "a date was there but rejected or ambiguous" (conflict, expired, implausible: still a review).
+const dateNoEvidence = "日期：未发现可用证据"
+
+var dateLikeRE = regexp.MustCompile(`(?:19|20)\d{2}\s*[-/.年_]\s*\d{1,2}|(?:19|20)\d{6}|[〇零一二三四五六七八九]{4}\s*年`)
+
+func hasDateLike(filename, text string) bool {
+	return dateLikeRE.MatchString(filename) || dateLikeRE.MatchString(text)
+}
+
 // date resolves the document date. source is a template DateSource or empty.
 func (e *engine) date(filename, text string, meta FileMetadata, source string) (*string, []string, string) {
 	t, f := e.textDate(text), e.filenameDate(filename)
@@ -321,7 +331,7 @@ func (e *engine) date(filename, text string, meta FileMetadata, source string) (
 		warn = r.warn
 	}
 	if warn == "" {
-		warn = "日期：未发现可用证据"
+		warn = dateNoEvidence
 	}
 	return nil, nil, warn
 }
@@ -367,7 +377,7 @@ func (e *engine) Extract(filename, text string, meta FileMetadata, tpl *Template
 	add(tv, tev, tw, &c.DocumentType)
 	gv, gev, gw := e.date(filename, text, meta, source)
 	add(gv, gev, gw, &c.DocumentDate)
-	if c.Department == nil || c.DocumentType == nil || c.DocumentDate == nil {
+	if c.Department == nil || c.DocumentType == nil || (c.DocumentDate == nil && (gw != dateNoEvidence || hasDateLike(filename, text))) {
 		c.ReviewRequired = true
 	}
 	return c

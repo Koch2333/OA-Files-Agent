@@ -4,7 +4,7 @@ import { buildImportForm } from './importForm'
 import type {
   AiPolicy, ErrorReport, ErrorReportDetail, LlmStatus, LlmOauthStart, LlmOauthStatus, SystemInfo,
   Api, ArchivePlan, ArchiveRule, AuditLog, ClassificationOptions, CorrectionProposal, FileRecord, FolderListing, FsEntry, ImportJob,
-  LedgerEntry, LlmConfig, LlmPreset, LlmTestResult, OATemplate, Page, Preview, ProviderStatus, ReadinessInfo, Replication, StorageConnection, StorageKind,
+  LedgerEntry, ReviewQueueEntry, LlmConfig, LlmPreset, LlmTestResult, OATemplate, Page, Preview, ProviderStatus, ReadinessInfo, Replication, StorageConnection, StorageKind,
   StorageListing, StorageTestResult, TemplateTestResult, TrashItem, FsBatchResult, FsVerifyReport, MoveResult, RestoreResult,
   ImportConfig, UploadSession, ImportBatchStatus, PathImportStatus,
   AdminUser, InviteCreated, Invitation, LoginResult, Me, MfaEnrolled, Passkey, SecuritySettings, SecuritySummary, SessionInfo, SetupStatus, TotpEnrollment, WebAuthnBegin,
@@ -70,12 +70,16 @@ export const realApi: Api = {
 
   getPlan: (id) => json<ArchivePlan>(`/v1/archive-plans/${id}`),
   patchPlan: (id, version, items) => json<ArchivePlan>(`/v1/archive-plans/${id}`, { method: 'PATCH' }, { version, items }),
+  deferPlanItems: (id, version, fileIds) => json<{ plan: ArchivePlan; deferred_plan_id: string }>(`/v1/archive-plans/${id}/defer`, { method: 'POST' }, { version, file_ids: fileIds }),
+  getReviewQueue: () => json<ReviewQueueEntry[]>('/v1/review-queue'),
+  reanalyzePlanItems: (id, version, fileIds, instruction) => json<{ plan: ArchivePlan; task_id: string }>(`/v1/archive-plans/${id}/reanalyze`, { method: 'POST' }, { version, file_ids: fileIds, ...(instruction?.trim() ? { instruction: instruction.trim() } : {}) }),
   getClassificationOptions: (taskId) => json<ClassificationOptions>('/v1/classification/options' + qs(taskId ? { task_id: taskId } : undefined)),
   approvePlan: (id, version) => json<ArchivePlan>(`/v1/archive-plans/${id}/approve`, { method: 'POST' }, { version }),
   executePlan: (id, key) => json<ArchivePlan>(`/v1/archive-plans/${id}/execute`, { method: 'POST', headers: { 'Idempotency-Key': key } }),
   rollbackOperation: (id) => json<void>(`/v1/archive-operations/${id}/rollback`, { method: 'POST' }),
 
   listLedger: (q) => json<Page<LedgerEntry>>('/v1/ledger' + qs(q)),
+  reclassifyLedger: (id, patch) => json<LedgerEntry>('/v1/ledger/' + encodeURIComponent(id) + '/reclassify', { method: 'POST' }, patch),
   async exportLedger(q) {
     const { page: _p, page_size: _s, ...filters } = q ?? {}
     const res = await raw('/v1/ledger/export' + qs(filters))
@@ -193,7 +197,7 @@ export const realApi: Api = {
   reauthPasskeyBegin: () => json<WebAuthnBegin>('/v1/auth/reauth/passkey/begin', { method: 'POST' }),
   async reauthPasskeyFinish(challengeId, credential) { return rememberMe(await json<Me>('/v1/auth/reauth/passkey/finish', { method: 'POST' }, { challenge_id: challengeId, credential })) },
 
-  changePassword: (current, next) => json<void>('/v1/auth/password', { method: 'POST' }, { current_password: current, new_password: next }),
+  changePassword: (current, next) => json<void>('/v1/auth/password', { method: 'POST' }, current === undefined ? { new_password: next } : { current_password: current, new_password: next }),
   getMySecurity: () => json<SecuritySummary>('/v1/auth/security'),
   totpBegin: () => json<TotpEnrollment>('/v1/auth/totp/begin', { method: 'POST' }),
   async totpConfirm(challengeId, code) { return rememberEnrolled(await json<MfaEnrolled>('/v1/auth/totp/confirm', { method: 'POST' }, { challenge_id: challengeId, code })) },

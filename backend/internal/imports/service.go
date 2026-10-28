@@ -225,6 +225,7 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 	if batch.Job.TotalFiles == 0 || (manifestSeen && len(paths) != batch.Job.TotalFiles) {
 		return batch, &Error{400, "INVALID_PATHS", "至少上传一个文件，且 paths 与 files 数量必须一致"}
 	}
+	consumed := s.expandArchives(dir, &batch) // ZIPs are replaced by the files inside them (see archive_expand.go)
 	batch.Job.FailureCount = len(batch.Failures)
 	batch.Job.ProcessedFiles = len(batch.Failures)
 	if len(batch.Files) == 0 {
@@ -236,6 +237,11 @@ func (s *Service) Import(ctx context.Context, reader *multipart.Reader, key, tem
 		return batch, fmt.Errorf("save import: %w", saveErr)
 	}
 	committed = !replay
+	if committed {
+		for _, p := range consumed {
+			_ = os.Remove(p) // the expanded archives (the request is already saved)
+		}
+	}
 	batch = saved
 	batch.Replay = replay
 	return batch, nil

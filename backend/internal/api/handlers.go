@@ -29,11 +29,15 @@ func (s *Server) business() {
 	s.handle("/v1/correction-proposals/{id}/approve", map[string]http.HandlerFunc{"POST": s.approveCorrection})
 	s.handle("/v1/archive-plans/{id}", map[string]http.HandlerFunc{"GET": s.getPlan, "PATCH": s.patchPlan})
 	s.handle("/v1/archive-plans/{id}/approve", map[string]http.HandlerFunc{"POST": s.approvePlan})
+	s.handle("/v1/archive-plans/{id}/defer", map[string]http.HandlerFunc{"POST": s.deferPlanItems})
+	s.handle("/v1/archive-plans/{id}/reanalyze", map[string]http.HandlerFunc{"POST": s.reanalyzeItems})
+	s.handle("/v1/review-queue", map[string]http.HandlerFunc{"GET": s.reviewQueue})
 	s.handle("/v1/archive-plans/{id}/execute", map[string]http.HandlerFunc{"POST": s.executePlan})
 	s.handle("/v1/archive-operations/{id}/rollback", map[string]http.HandlerFunc{"POST": s.rollback})
 	s.handle("/v1/classification/options", map[string]http.HandlerFunc{"GET": s.classificationOptions})
 	s.handle("/v1/ledger", map[string]http.HandlerFunc{"GET": s.ledger})
 	s.handle("/v1/ledger/export", map[string]http.HandlerFunc{"GET": s.exportLedger})
+	s.handle("/v1/ledger/{id}/reclassify", map[string]http.HandlerFunc{"POST": s.reclassify})
 	s.handle("/v1/oa-templates", map[string]http.HandlerFunc{"GET": s.listTemplates, "POST": s.createTemplate})
 	s.handle("/v1/oa-templates/{id}", map[string]http.HandlerFunc{"GET": s.getTemplate, "PATCH": s.patchTemplate, "DELETE": s.deleteTemplate})
 	s.handle("/v1/oa-templates/{id}/test", map[string]http.HandlerFunc{"POST": s.testTemplate})
@@ -665,3 +669,60 @@ func (s *Server) providers(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ = url.QueryEscape
+
+// deferPlanItems moves the chosen items into a separate plan that stays under review ("review later"); the rest can be approved now.
+func (s *Server) deferPlanItems(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Version int      `json:"version"`
+		FileIDs []string `json:"file_ids"`
+	}
+	if !s.decode(w, r, &in) {
+		return
+	}
+	if in.Version < 1 || len(in.FileIDs) == 0 || len(in.FileIDs) > 5000 {
+		s.fail(w, r, 400, "INVALID_ARGUMENT", "需要 version 和 1–5000 个 file_ids", nil)
+		return
+	}
+	p, deferred, err := s.d.Store.DeferPlanItems(r.Context(), r.PathValue("id"), in.Version, in.FileIDs)
+	if err != nil {
+		s.storeErr(w, r, err, "归档计划")
+		return
+	}
+	s.d.Store.Audit(r.Context(), actorOf(r), "plan.defer", p.ID, fmt.Sprintf("%d 项移入稍后审核（新计划 %s）", len(in.FileIDs), deferred))
+	s.ok(w, 200, map[string]any{"plan": p, "deferred_plan_id": deferred})
+}
+
+// reviewQueue lists every plan waiting for a human decision, including the ones split off with "review later".
+func (s *Server) reviewQueue(w http.ResponseWriter, r *http.Request) {
+	q, err := s.d.Store.ReviewQueue(r.Context())
+	if err != nil {
+		s.storeErr(w, r, err, "待审核队列")
+		return
+	}
+	s.ok(w, 200, q)
+}
+
+// reanalyzeItems sends the chosen plan items back to the analysis as a new task (only those files are analysed again).
+func (s *Server) reanalyzeItems(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Version     int      `json:"version"`
+		FileIDs     []string `json:"file_ids"`
+		Instruction string   `json:"instruction"`
+	}
+	if !s.decode(w, r, &in) {
+		return
+	}
+	in.Instruction = strings.TrimSpace(in.Instruction)
+	if in.Version < 1 || len(in.FileIDs) == 0 || len(in.FileIDs) > 5000 || len([]rune(in.Instruction)) > 2000 {
+		s.fail(w, r, 400, "INVALID_ARGUMENT", "需要 version 和 1–5000 个 file_ids；说明最多 2000 字", nil)
+		return
+	}
+	p, taskID, err := s.d.Store.ReturnItemsForReanalysis(r.Context(), r.PathValue("id"), in.Version, in.FileIDs, in.Instruction)
+	if err != nil {
+		s.storeErr(w, r, err, "归档计划")
+		return
+	}
+	s.d.Store.Audit(r.Context(), actorOf(r), "plan.reanalyze", p.ID, fmt.Sprintf("%d 项退回重新识别（新任务 %s）", len(in.FileIDs), taskID))
+	_ = s.d.Store.AppendEvent(r.Context(), taskID, "queued", "reanalysis_queued", nil, fmt.Sprintf("从任务 %s 的计划中退回 %d 个文件，重新识别", p.TaskID, len(in.FileIDs)), nil)
+	s.ok(w, 200, map[string]any{"plan": p, "task_id": taskID})
+}

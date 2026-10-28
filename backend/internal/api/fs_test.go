@@ -14,6 +14,7 @@ import (
 
 	"oa-agent/backend/internal/fileops"
 	"oa-agent/backend/internal/fsman"
+	"oa-agent/backend/internal/store"
 )
 
 type fakeFiles struct {
@@ -243,6 +244,10 @@ func (f *fakeFiles) BulkTrash(_ context.Context, paths []string, _ string) (file
 func (f *fakeFiles) RestoreWith(context.Context, string, fileops.Policy, string) (fileops.RestoreResult, error) {
 	return fileops.RestoreResult{Status: "restored", Conflicts: []fileops.Conflict{}}, f.err
 }
+func (f *fakeFiles) Reclassify(context.Context, string, fileops.Reclass, fileops.Derive, string) (store.LedgerEntry, error) {
+	return store.LedgerEntry{}, store.ErrNotFound
+}
+
 func (f *fakeFiles) Verify(context.Context, []string, string) (fileops.VerifyReport, error) {
 	return fileops.VerifyReport{Items: []fileops.FileCheck{}}, f.err
 }

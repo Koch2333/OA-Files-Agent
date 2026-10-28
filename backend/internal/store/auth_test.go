@@ -41,7 +41,7 @@ func TestAuthSettingsDefaultsAndSetupToken(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	a, err := s.AuthSettings(ctx)
-	if err != nil || a.SetupCompleted || a.Mode != "enterprise" || a.MFAPolicy != "admins" || !a.AllowPasswordLogin || a.SessionIdleMinutes != 60 || a.SessionMaxHours != 12 || a.PasswordMinLength != 12 || a.LockoutThreshold != 5 || a.LockoutMinutes != 15 {
+	if err != nil || a.SetupCompleted || a.Mode != "enterprise" || a.MFAPolicy != "admins" || !a.AllowPasswordLogin || a.SessionIdleMinutes != 60 || a.SessionMaxHours != 12 || a.PasswordMinLength != 8 || a.LockoutThreshold != 5 || a.LockoutMinutes != 15 {
 		t.Fatalf("%+v %v", a, err)
 	}
 	if err := s.SetSetupToken(ctx, "hash1"); err != nil {

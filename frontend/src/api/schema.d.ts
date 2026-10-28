@@ -271,6 +271,57 @@ export interface paths {
         patch: operations["patchPlan"];
         trace?: never;
     };
+    "/v1/archive-plans/{id}/defer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 把所选条目移入“稍后审核”：它们拆到同一任务下的一个新计划（仍待审核），其余条目留在原计划，可以先批准 */
+        post: operations["deferPlanItems"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/archive-plans/{id}/reanalyze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 把所选条目退回重新识别：它们离开当前计划，在一个新任务里重新分析（可附新说明），只有这些文件会再次调用模型；计划里其余条目原样保留，可以先批准 */
+        post: operations["reanalyzePlanItems"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/review-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 待审核队列：所有仍在等人决定的计划（含“稍后审核”拆出来的），最新的在前，最多 200 条 */
+        get: operations["getReviewQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/archive-plans/{id}/approve": {
         parameters: {
             query?: never;
@@ -335,6 +386,23 @@ export interface paths {
         get: operations["listLedger"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/ledger/{id}/reclassify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 归档后修订部门/类型/日期（用于修正全自动模式留下的占位「其他」「未知日期」）；按新值重新计算标准文件名与目录并移动文件，不覆盖已有文件，台账同步 */
+        post: operations["reclassifyLedgerEntry"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1441,7 +1509,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 修改自己的密码（需当前密码；成功后吊销其他会话；清除 must_change_password） */
+        /** 修改自己的密码（需当前密码，但被管理员设置临时密码的账号首次修改时不需要；成功后吊销其他会话；清除 must_change_password） */
         post: operations["changePassword"];
         delete?: never;
         options?: never;
@@ -2483,6 +2551,22 @@ export interface components {
             document_date?: string | null;
             suggested_name?: string | null;
             destination_path?: string | null;
+        };
+        ReviewQueueEntry: {
+            /** Format: uuid */
+            plan_id: string;
+            /** Format: uuid */
+            task_id: string;
+            items: number;
+            /** @description 其中仍需人工确认的条目数 */
+            needs_review: number;
+            /** @description 计划里第一个文件名（按字母序最小），用于识别 */
+            first_name: string;
+            task_status: string;
+            /** @description true=由“稍后审核”拆出，任务当前计划是另一个 */
+            deferred: boolean;
+            /** Format: date-time */
+            updated_at: string;
         };
         LedgerEntry: {
             /** Format: uuid */
@@ -4088,6 +4172,108 @@ export interface operations {
             422: components["responses"]["Error"];
         };
     };
+    deferPlanItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    version: number;
+                    file_ids: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description The remaining plan and the id of the new plan */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            plan: components["schemas"]["ArchivePlan"];
+                            /** Format: uuid */
+                            deferred_plan_id: string;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    reanalyzePlanItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    version: number;
+                    file_ids: string[];
+                    /** @description 新任务的说明；缺省沿用原任务的说明 */
+                    instruction?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The remaining plan and the new task */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            plan: components["schemas"]["ArchivePlan"];
+                            /** Format: uuid */
+                            task_id: string;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getReviewQueue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plans awaiting review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ReviewQueueEntry"][];
+                    };
+                };
+            };
+        };
+    };
     approvePlan: {
         parameters: {
             query?: never;
@@ -4193,6 +4379,43 @@ export interface operations {
                     "application/json": components["schemas"]["LedgerPageEnvelope"];
                 };
             };
+        };
+    };
+    reclassifyLedgerEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    department?: string;
+                    document_type?: string;
+                    /** @description YYYY-MM-DD 或空串 */
+                    document_date?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The corrected ledger entry */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LedgerEntry"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     exportLedger: {
@@ -6130,7 +6353,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    current_password: string;
+                    current_password?: string;
                     new_password: string;
                 };
             };

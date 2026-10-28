@@ -743,7 +743,9 @@ def parse_xls(path, lim):
     ole = None
     summary = meta()
     try:
-        if open(path, "rb").read(8) == OLE_MAGIC:
+        with open(path, "rb") as fh:
+            magic = fh.read(8)
+        if magic == OLE_MAGIC:
             ole = Ole(path)
             summary = ole.summary()
             if ole.has("EncryptedPackage") or ole.has("EncryptionInfo"):

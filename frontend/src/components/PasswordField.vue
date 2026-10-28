@@ -5,7 +5,7 @@ import Icon from './Icon.vue'
 const props = defineProps<{ modelValue: string; label: string; id: string; autocomplete?: 'current-password' | 'new-password'; strength?: boolean; minLength?: number; username?: string; invalid?: boolean; autofocus?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [v: string] }>()
 const shown = ref(false)
-const st = computed(() => passwordStrength(props.modelValue, props.minLength ?? 12, props.username))
+const st = computed(() => passwordStrength(props.modelValue, props.minLength ?? 8, props.username))
 const COLORS = ['var(--md-sys-color-error)', 'var(--md-sys-color-error)', 'var(--c-warn)', 'var(--c-success)', 'var(--c-success)']
 </script>
 <template>

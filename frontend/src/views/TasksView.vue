@@ -37,6 +37,7 @@ watch(page, () => { if (!grouped.value) void r.run() })
 <template>
   <PageHeader title="任务中心" subtitle="每次导入对应一个任务：看它走到哪一步，轮到你时直接去审批。">
     <template #actions>
+      <RouterLink class="btn tonal has-icon" to="/review-queue" data-testid="open-review-queue"><Icon name="schedule" sm />待审核队列</RouterLink>
       <select v-model="status" class="input" aria-label="按状态筛选">
         <option value="">全部状态</option>
         <optgroup label="分组"><option v-for="(g, k) in GROUPS" :key="k" :value="k">{{ g.label }}</option></optgroup>

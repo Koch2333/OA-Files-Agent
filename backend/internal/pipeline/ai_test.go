@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,7 +209,7 @@ func auditHas(t *testing.T, st *store.Store, action, actor string) store.AuditLo
 	return store.AuditLog{}
 }
 
-func TestAutomaticTaskArchivesDeterminedItemsAndLeavesTheRestPending(t *testing.T) {
+func TestAutomaticTaskArchivesEverythingWithPlaceholders(t *testing.T) {
 	st := testStore(t)
 	good := func(d string) harness.Result {
 		return harness.Result{Department: sp("采购部"), DocumentType: sp("合同"), DocumentDate: sp(d), Evidence: []string{"文件名含“合同”"}}
@@ -218,33 +217,22 @@ func TestAutomaticTaskArchivesDeterminedItemsAndLeavesTheRestPending(t *testing.
 	an := &fakeAnalyzer{results: map[string]harness.Result{
 		"合同甲.pdf": good("2026-03-15"), "合同乙.pdf": good("2026-03-16"),
 		"不明.pdf":  {ReviewRequired: true, Evidence: []string{}},
-		"缺日期.pdf": {Department: sp("采购部"), DocumentType: sp("合同"), Evidence: []string{"x"}, ReviewRequired: false},
+		"缺部门.pdf": {DocumentType: sp("合同"), Evidence: []string{"x"}, ReviewRequired: false},
 	}}
 	svc, spool, arch := newAISvc(t, st, an, &fakeModels{})
 	ctx := context.Background()
-	b := importAI(t, st, spool, map[string]string{"合同甲.pdf": "AAA", "合同乙.pdf": "BBB", "不明.pdf": "CCC", "缺日期.pdf": "DDD"}, autoJob("g-model"))
+	b := importAI(t, st, spool, map[string]string{"合同甲.pdf": "AAA", "合同乙.pdf": "BBB", "不明.pdf": "CCC", "缺部门.pdf": "DDD"}, autoJob("g-model"))
 	runJob(t, st, svc)
 
 	job, _ := st.GetJob(ctx, b.Job.ID)
-	if job.Status != "awaiting_review" || job.PlanID == nil {
-		t.Fatalf("with items the model could not settle the task waits for a human: %+v", job)
-	}
-	pending, _ := st.GetPlan(ctx, *job.PlanID)
-	if pending.Status != "awaiting_review" || len(pending.Items) != 2 {
-		t.Fatalf("pending plan: %+v", pending)
-	}
-	for _, it := range pending.Items {
-		if !it.ReviewRequired || (it.OriginalName != "不明.pdf" && it.OriginalName != "缺日期.pdf") {
-			t.Fatalf("only undetermined items stay pending, nothing is fabricated: %+v", it)
-		}
-		if _, err := os.Stat(filepath.Join(arch, filepath.FromSlash(it.DestinationPath))); err == nil {
-			t.Fatalf("pending item %s was archived", it.OriginalName)
-		}
+	if job.Status != "completed" || job.PlanID == nil {
+		t.Fatalf("automatic mode leaves nothing pending: every file is archived, undetermined fields get placeholders: %+v", job)
 	}
 	rows, total, _ := st.Ledger(ctx, store.Page{}, store.LedgerFilter{})
-	if total != 2 {
-		t.Fatalf("ledger rows = %d, want 2", total)
+	if total != 4 {
+		t.Fatalf("ledger rows = %d, want 4", total)
 	}
+	placeholder := 0
 	for _, r := range rows {
 		if r.Decision != "ai_auto" || r.DecisionModel != "g-model" || r.Status != "archived" {
 			t.Fatalf("ledger decision: %+v", r)
@@ -252,9 +240,15 @@ func TestAutomaticTaskArchivesDeterminedItemsAndLeavesTheRestPending(t *testing.
 		if got, err := os.ReadFile(filepath.Join(arch, filepath.FromSlash(r.ArchivePath))); err != nil || len(got) != 3 {
 			t.Fatalf("archived file %s: %v", r.ArchivePath, err)
 		}
+		if r.Department == "其他" || r.DocumentType == "其他" {
+			placeholder++
+		}
+	}
+	if placeholder != 2 {
+		t.Fatalf("the two undetermined files are archived under the placeholder 其他 (to be corrected afterwards in the ledger), got %d", placeholder)
 	}
 	exec := auditHas(t, st, "ai.auto_archive.executed", "ai-auto:alice")
-	if !strings.Contains(exec.Summary, "g-model") || !strings.Contains(exec.Summary, "2 / 2") || strings.Contains(strings.ToLower(exec.Summary), "key") {
+	if !strings.Contains(exec.Summary, "g-model") || !strings.Contains(exec.Summary, "4 / 4") || strings.Contains(strings.ToLower(exec.Summary), "key") {
 		t.Fatalf("audit summary: %q", exec.Summary)
 	}
 	auditHas(t, st, "plan.execute", "ai-auto:alice")
@@ -271,11 +265,6 @@ func TestAutomaticTaskArchivesDeterminedItemsAndLeavesTheRestPending(t *testing.
 		if !seen[typ] {
 			t.Errorf("event %s missing", typ)
 		}
-	}
-
-	// the user can still review and finish the leftovers: those are manual decisions
-	if _, err := st.ApprovePlan(ctx, pending.ID, pending.Version, "human"); !errors.Is(err, store.ErrReviewRequired) {
-		t.Fatalf("approval stays blocked until the leftovers are fixed: %v", err)
 	}
 
 	// rollback of the automatic operation works and is audited as before
@@ -302,7 +291,7 @@ func TestAutomaticTaskArchivesDeterminedItemsAndLeavesTheRestPending(t *testing.
 	if refs, _ := st.RecoverAutoPlans(ctx); len(refs) != 0 {
 		t.Fatalf("rollback must stay rolled back: %+v", refs)
 	}
-	if j, _ := st.GetJob(ctx, b.Job.ID); j.Status != "awaiting_review" {
+	if j, _ := st.GetJob(ctx, b.Job.ID); j.Status != "approved" {
 		t.Fatalf("task after rollback: %s", j.Status)
 	}
 }
@@ -341,30 +330,30 @@ func TestAutomaticTaskWithEverythingDeterminedCompletes(t *testing.T) {
 	}
 }
 
-func TestAutomaticModeNeverArchivesWhenNothingIsDetermined(t *testing.T) {
+func TestAutomaticModeArchivesEvenWhenNothingIsDetermined(t *testing.T) {
 	st := testStore(t)
 	svc, spool, arch := newAISvc(t, st, &fakeAnalyzer{results: map[string]harness.Result{"不明.pdf": {ReviewRequired: true, Evidence: []string{}}}}, &fakeModels{})
 	b := importAI(t, st, spool, map[string]string{"不明.pdf": "X"}, autoJob("g-model"))
 	runJob(t, st, svc)
 	ctx := context.Background()
 	job, _ := st.GetJob(ctx, b.Job.ID)
-	plan, _ := st.GetPlan(ctx, *job.PlanID)
-	if job.Status != "awaiting_review" || plan.Status != "awaiting_review" || !plan.RequiresApproval || plan.Items[0].ReviewRequired == false {
-		t.Fatalf("%+v %+v", job, plan)
+	if job.Status != "completed" {
+		t.Fatalf("no review step before completion: %+v", job)
 	}
-	if _, total, _ := st.Ledger(ctx, store.Page{}, store.LedgerFilter{}); total != 0 {
-		t.Fatal("nothing may be archived")
+	rows, total, _ := st.Ledger(ctx, store.Page{}, store.LedgerFilter{})
+	if total != 1 || rows[0].Department != "其他" || rows[0].DocumentType != "其他" || rows[0].Decision != "ai_auto" {
+		t.Fatalf("archived under the placeholders, marked as an automatic decision: %+v", rows)
 	}
-	if ents, _ := os.ReadDir(arch); len(ents) != 0 {
-		t.Fatalf("archive root must stay empty: %v", ents)
+	if ents, _ := os.ReadDir(arch); len(ents) == 0 {
+		t.Fatal("the file must be in the archive")
 	}
 	evs, _ := st.Events(ctx, b.Job.ID, 0, 100)
 	found := false
 	for _, e := range evs {
-		found = found || e.EventType == "auto_nothing_ready"
+		found = found || (e.EventType == "auto_plan_ready" && strings.Contains(e.Summary, "占位"))
 	}
 	if !found {
-		t.Error("the trace must explain why nothing ran automatically")
+		t.Error("the trace must say that placeholders were used")
 	}
 }
 

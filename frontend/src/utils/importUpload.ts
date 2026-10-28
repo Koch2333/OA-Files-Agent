@@ -23,7 +23,11 @@ export interface ImportProgress {
   copy: PathImportStatus | null
 }
 
-export interface ImportOpts { templateId?: string | null; options?: ImportOptions; idempotencyKey?: string }
+export interface ImportOpts {
+  templateId?: string | null; options?: ImportOptions; idempotencyKey?: string
+  /** 分片上传期间返回“上传开始后新加入、还没交给上传器的文件”；首批传完后这些文件并入同一个批次，再一起提交。 */
+  drain?: () => PickedFile[]
+}
 export interface ImportDeps { api?: Api; desktop?: () => DesktopBridge | null; resume?: ResumeStore | null; uploader?: UploaderOptions; pollMs?: number; sleep?: (ms: number) => Promise<void> }
 
 const uuid = () => uuidV4().toLowerCase()
@@ -99,6 +103,17 @@ export function runImport(picked: PickedFile[], opts: ImportOpts, onProgress: (p
       if (!res.allComplete) {
         const first = res.failed[0]
         throw new Error(`${res.failed.length} 个文件上传失败（${first?.name}：${first?.error ?? '未知错误'}）。再次点击提交会从中断处继续。`)
+      }
+      // 上传期间用户又加了文件：并入同一个批次继续传，全部传完后再一起提交
+      for (let more = opts.drain?.() ?? []; more.length && !cancelled; more = opts.drain?.() ?? []) {
+        uploader.add(more)
+        const r2 = await uploader.start(batchId ?? undefined)
+        batchId = r2.batchId
+        if (cancelled) throw new Error('已取消')
+        if (!r2.allComplete) {
+          const first = r2.failed[0]
+          throw new Error(`${r2.failed.length} 个文件上传失败（${first?.name}：${first?.error ?? '未知错误'}）。再次点击提交会从中断处继续。`)
+        }
       }
     }
     emit('committing', uploader.snapshot(), null)

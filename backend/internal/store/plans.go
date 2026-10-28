@@ -204,10 +204,7 @@ func (s *Store) PatchPlan(ctx context.Context, id string, version int, patches [
 		if pt.DestinationPath != nil {
 			it.DestinationPath = *pt.DestinationPath
 		}
-		it.ReviewRequired = it.Department == nil || it.DocumentType == nil || it.DocumentDate == nil || len(it.FallbackFields) > 0
-		if it.DocumentDate == nil {
-			it.Warnings = append(it.Warnings, "字段仍不完整，需人工确认")
-		}
+		it.ReviewRequired = it.Department == nil || it.DocumentType == nil || len(it.FallbackFields) > 0
 		it.Warnings = stripFallbackWarnings(it.Warnings)
 		ApplyFallbackPlaceholder(it)
 		w, _ := json.Marshal(nonNil(it.Warnings))

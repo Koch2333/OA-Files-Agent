@@ -40,7 +40,7 @@ func TestPromptInjectionCannotAlterToolsOrPermissions(t *testing.T) {
 	if res.Department != nil && *res.Department != "采购部" {
 		t.Errorf("department = %s", *res.Department)
 	}
-	if !res.ReviewRequired && (res.Department == nil || res.DocumentType == nil || res.DocumentDate == nil) {
+	if !res.ReviewRequired && (res.Department == nil || res.DocumentType == nil) {
 		t.Error("incomplete result without review")
 	}
 	for _, e := range events {

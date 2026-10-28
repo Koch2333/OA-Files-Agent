@@ -113,6 +113,6 @@ async function loadOptions() {
       <Pager v-model:page="page" v-model:page-size="size" :total="r.data.value?.total ?? 0" />
     </StateView>
   </div>
-  <Drawer v-if="sel" title="归档详情" @close="sel = null"><LedgerDetail :entry="sel" /></Drawer>
+  <Drawer v-if="sel" title="归档详情" @close="sel = null"><LedgerDetail :entry="sel" @updated="(e) => { sel = e; void r.run() }" /></Drawer>
 </template>
 <style scoped>:deep(mark) { background: var(--c-warn-container); color: var(--c-on-warn-container); border-radius: 2px; padding: 0 1px; }</style>
