@@ -295,12 +295,20 @@ func (s *Server) fromLoopback(r *http.Request) bool {
 	return true
 }
 
-// isSecure: TLS, or an HTTPS-terminating trusted proxy.
+// isSecure: TLS, or an HTTPS-terminating trusted proxy. Behind a trusted proxy that sends no X-Forwarded-Proto (some CDNs only do
+// when a rule adds it), an https:// OA_PUBLIC_URL is the operator's statement that users reach the site over HTTPS; an explicit
+// X-Forwarded-Proto always wins.
 func (s *Server) isSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	return s.d.TrustedProxy && strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
+	if !s.d.TrustedProxy {
+		return false
+	}
+	if p := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); p != "" {
+		return strings.EqualFold(p, "https")
+	}
+	return strings.HasPrefix(strings.ToLower(s.d.PublicURL), "https://")
 }
 
 // fresh enforces the "recent authentication" window: 403 FORBIDDEN with details.reason=reauth_required.
