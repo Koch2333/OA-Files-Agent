@@ -89,7 +89,7 @@ type QueueEntry struct {
 func (s *Store) ReviewQueue(ctx context.Context) ([]QueueEntry, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT p.id::text, p.task_id::text, p.updated_at, j.status, CASE WHEN j.plan_id IS NULL OR j.plan_id <> p.id THEN 1 ELSE 0 END,
 		(SELECT count(*) FROM archive_plan_items i WHERE i.plan_id=p.id),
-		(SELECT count(*) FROM archive_plan_items i WHERE i.plan_id=p.id AND i.review_required),
+		(SELECT count(*) FROM archive_plan_items i WHERE i.plan_id=p.id AND i.review_required=true),
 		COALESCE((SELECT min(i.original_name) FROM archive_plan_items i WHERE i.plan_id=p.id),'')
 		FROM archive_plans p JOIN import_jobs j ON j.id=p.task_id WHERE p.status='awaiting_review' ORDER BY p.updated_at DESC LIMIT 200`)
 	if err != nil {
