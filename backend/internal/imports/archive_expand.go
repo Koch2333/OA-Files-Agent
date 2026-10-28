@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,21 +14,60 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bodgit/sevenzip"
+	"github.com/nwaples/rardecode/v2"
 	"golang.org/x/text/encoding/simplifiedchinese"
 
 	"oa-agent/backend/internal/formats"
 )
 
-// Limits for expanding a ZIP at intake. A ZIP is attacker-controlled input: entry names are re-validated, sizes are enforced while
-// copying (the declared size is never trusted), and nothing is ever executed or written outside the batch directory.
+// Limits for expanding an archive (ZIP, 7z, RAR) at intake. An archive is attacker-controlled input: entry names are re-validated, sizes are
+// enforced while copying (a declared size is never trusted), and nothing is ever executed or written outside the batch directory.
 const (
 	maxArchiveEntries  = 20000    // entries read from one archive
 	maxArchiveBytes    = 20 << 30 // total expanded bytes per archive (20 GiB)
-	suspiciousRatio    = 200      // an entry this much bigger than its compressed size ...
-	suspiciousMinBytes = 64 << 20 // ... and bigger than this is treated as a zip bomb and skipped
+	suspiciousRatio    = 200      // expanded data this much bigger than the archive itself ...
+	suspiciousMinBytes = 64 << 20 // ... and bigger than this is treated as a bomb
 )
 
-func isZipName(name string) bool { return strings.EqualFold(path.Ext(name), ".zip") }
+// archiveKind returns "zip", "7z" or "rar" for a file name, "" for anything else. Archives inside an archive are not expanded again:
+// they stay plain files and are classified from their name.
+func archiveKind(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".zip":
+		return "zip"
+	case ".7z":
+		return "7z"
+	case ".rar":
+		return "rar"
+	}
+	return ""
+}
+
+// entry is one item of an archive as the walkers report it; size is -1 when the archive does not say.
+type entry struct {
+	name                    string
+	size                    int64
+	csize                   int64 // compressed size when known (0 = unknown)
+	dir, regular, encrypted bool
+}
+
+// errStop makes a walker stop and the whole archive be left alone (too many entries, too big, a bomb, no space ...).
+var errStop = errors.New("archive left as it is")
+
+type walkFn func(e entry, open func() (io.ReadCloser, error)) error
+
+func walkArchive(kind, file string, fn walkFn) error {
+	switch kind {
+	case "zip":
+		return walkZip(file, fn)
+	case "7z":
+		return walk7z(file, fn)
+	case "rar":
+		return walkRar(file, fn)
+	}
+	return errStop
+}
 
 // zipEntryName returns the entry name as UTF-8: Windows tools write GBK names without the UTF-8 flag.
 func zipEntryName(f *zip.File) string {
@@ -40,8 +80,75 @@ func zipEntryName(f *zip.File) string {
 	return strings.ReplaceAll(n, "\\", "/")
 }
 
-// cleanEntryPath turns an entry name into a safe relative path, or "" when it must be skipped (absolute, drive letter, "..", control
-// characters, reserved names ...). Directories are not entries here.
+func walkZip(file string, fn walkFn) error {
+	zr, err := zip.OpenReader(file)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	if len(zr.File) == 0 || len(zr.File) > maxArchiveEntries {
+		return errStop
+	}
+	for _, zf := range zr.File {
+		e := entry{name: zipEntryName(zf), size: int64(zf.UncompressedSize64), csize: int64(zf.CompressedSize64),
+			dir: zf.FileInfo().IsDir(), regular: zf.Mode().IsRegular(), encrypted: zf.Flags&0x1 != 0}
+		if err := fn(e, zf.Open); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func walk7z(file string, fn walkFn) error {
+	r, err := sevenzip.OpenReader(file) // no password: encrypted headers or contents fail here or on Open, and the archive is left alone
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	if len(r.File) == 0 || len(r.File) > maxArchiveEntries {
+		return errStop
+	}
+	for _, f := range r.File {
+		m := f.Mode()
+		e := entry{name: strings.ReplaceAll(f.Name, "\\", "/"), size: int64(f.UncompressedSize), dir: m.IsDir(), regular: m.IsRegular()}
+		if err := fn(e, f.Open); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func walkRar(file string, fn walkFn) error {
+	rr, err := rardecode.OpenReader(file) // no password: encrypted headers fail here, encrypted files are flagged below
+	if err != nil {
+		return err
+	}
+	defer rr.Close()
+	n := 0
+	for {
+		h, err := rr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if n++; n > maxArchiveEntries {
+			return errStop
+		}
+		size := h.UnPackedSize
+		if h.UnKnownSize {
+			size = -1
+		}
+		e := entry{name: strings.ReplaceAll(h.Name, "\\", "/"), size: size, csize: h.PackedSize, dir: h.IsDir, regular: h.LinkType == 0, encrypted: h.Encrypted}
+		if err := fn(e, func() (io.ReadCloser, error) { return io.NopCloser(rr), nil }); err != nil {
+			return err
+		}
+	}
+}
+
+// cleanEntryPath turns an entry name into a safe relative path, or "" when it must be skipped (drive letter, "..", control characters,
+// reserved names ...). A leading "/" is stripped like common unzip tools do; directories are not entries here.
 func cleanEntryPath(name string) string {
 	name = strings.TrimLeft(name, "/")
 	if name == "" || strings.HasSuffix(name, "/") {
@@ -53,10 +160,10 @@ func cleanEntryPath(name string) string {
 	return name
 }
 
-// expandArchives replaces every readable ZIP in the batch by the files inside it (their source path is "<zip name without .zip>/<path inside>",
-// so the folder structure survives). A ZIP that cannot be expanded (damaged, encrypted, too large, a bomb) is left as an ordinary file and
-// is then classified from its name like any other unreadable file; entries that are unsafe, encrypted or too large are reported as failures
-// of the task instead of failing the whole upload. dir is the batch's spool directory (files are written there with fresh ids).
+// expandArchives replaces every readable archive in the batch by the files inside it (their source path is "<archive name without extension>/<path
+// inside>", so the folder structure survives). An archive that cannot be expanded (damaged, encrypted, too large, a bomb) is left as an ordinary
+// file and is then classified from its name like any other unreadable file; entries that are unsafe, encrypted or too large are reported as
+// failures of the task instead of failing the whole upload. dir is the batch's spool directory (files are written there with fresh ids).
 // It returns the stored paths of the archives that were replaced; remove them only after the task has been saved (a failed save puts the
 // uploaded files back so the client can retry).
 func (s *Service) expandArchives(dir string, b *Batch) (consumed []string) {
@@ -64,11 +171,12 @@ func (s *Service) expandArchives(dir string, b *Batch) (consumed []string) {
 	out := make([]File, 0, len(b.Files))
 	expandedAny := false
 	for _, f := range b.Files {
-		if !isZipName(f.SourceName) || f.StoredPath == "" {
+		kind := archiveKind(f.SourceName)
+		if kind == "" || f.StoredPath == "" {
 			out = append(out, f)
 			continue
 		}
-		files, fails, ok := s.expandZip(dir, b.Job.ID, f, now)
+		files, fails, ok := s.expandArchive(kind, dir, b.Job.ID, f, now)
 		if !ok {
 			out = append(out, f)
 			continue
@@ -91,101 +199,113 @@ func (s *Service) expandArchives(dir string, b *Batch) (consumed []string) {
 	return consumed
 }
 
-func (s *Service) expandZip(dir, taskID string, arc File, now time.Time) (files []File, fails []Failure, ok bool) {
-	zr, err := zip.OpenReader(arc.StoredPath)
-	if err != nil || len(zr.File) == 0 || len(zr.File) > maxArchiveEntries {
+func (s *Service) expandArchive(kind, dir, taskID string, arc File, now time.Time) (files []File, fails []Failure, ok bool) {
+	fi, err := os.Stat(arc.StoredPath)
+	if err != nil {
 		return nil, nil, false
 	}
-	defer zr.Close()
-	var total int64
-	for _, zf := range zr.File {
-		if zf.FileInfo().IsDir() {
-			continue
-		}
-		total += int64(zf.UncompressedSize64)
-		if total > maxArchiveBytes {
-			return nil, nil, false
-		}
-	}
-	if err := s.Limits.CheckSpace(dir, total); err != nil {
-		return nil, nil, false
-	}
+	arcSize := fi.Size()
 	stem := strings.TrimSuffix(arc.SourcePath, path.Ext(arc.SourcePath))
 	failed := func(rel, code, msg string) {
 		fails = append(fails, Failure{SourcePath: stem + "/" + rel, Code: code, Message: msg, MIMEType: "application/octet-stream"})
 	}
 	var written []string
-	cleanup := func() {
-		for _, p := range written {
-			_ = os.Remove(p)
+	var declared, wrote int64
+	err = walkArchive(kind, arc.StoredPath, func(e entry, open func() (io.ReadCloser, error)) error {
+		if e.dir {
+			return nil
 		}
-	}
-	for _, zf := range zr.File {
-		if zf.FileInfo().IsDir() {
-			continue
-		}
-		name := zipEntryName(zf)
-		rel := cleanEntryPath(name)
+		rel := cleanEntryPath(e.name)
 		switch {
 		case rel == "":
-			failed(path.Base(name), "ARCHIVE_UNSAFE_PATH", "压缩包内的路径不安全或无效，已跳过")
-			continue
-		case !zf.Mode().IsRegular():
+			failed(path.Base(e.name), "ARCHIVE_UNSAFE_PATH", "压缩包内的路径不安全或无效，已跳过")
+			return nil
+		case !e.regular:
 			failed(rel, "ARCHIVE_SPECIAL_FILE", "压缩包内的链接或特殊文件，已跳过")
-			continue
-		case zf.Flags&0x1 != 0:
+			return nil
+		case e.encrypted:
 			failed(rel, "ARCHIVE_ENCRYPTED", "压缩包内的文件已加密，无法读取，已跳过")
-			continue
-		case s.Limits.TooLarge(int64(zf.UncompressedSize64)):
+			return nil
+		case e.size >= 0 && s.Limits.TooLarge(e.size):
 			failed(rel, "FILE_TOO_LARGE", "超过管理员设置的单文件上限 "+HumanBytes(s.Limits.MaxUploadBytes))
-			continue
-		case zf.CompressedSize64 > 0 && zf.UncompressedSize64 > suspiciousMinBytes && zf.UncompressedSize64/zf.CompressedSize64 > suspiciousRatio:
+			return nil
+		case e.csize > 0 && e.size > suspiciousMinBytes && e.size/e.csize > suspiciousRatio:
 			failed(rel, "ARCHIVE_SUSPICIOUS", "压缩比异常（疑似压缩炸弹），已跳过")
-			continue
+			return nil
+		}
+		if e.size > 0 {
+			if declared += e.size; declared > maxArchiveBytes {
+				return errStop
+			}
+			if s.Limits.CheckSpace(dir, e.size) != nil {
+				return errStop
+			}
 		}
 		id, err := NewID()
 		if err != nil {
-			cleanup()
-			return nil, nil, false
+			return errStop
 		}
-		ext := safeExt(rel)
-		stored := filepath.Join(dir, id+ext)
-		sum, size, err := copyEntry(zf, stored)
+		stored := filepath.Join(dir, id+safeExt(rel))
+		rc, err := open()
+		if err != nil {
+			failed(rel, "ARCHIVE_ENTRY_UNREADABLE", "压缩包内的文件损坏或无法读取，已跳过")
+			return nil
+		}
+		sum, size, err := copyEntry(rc, e.size, stored, maxArchiveBytes-wrote)
+		rc.Close()
 		if err != nil {
 			_ = os.Remove(stored)
+			if errors.Is(err, errBudget) {
+				return errStop
+			}
 			failed(rel, "ARCHIVE_ENTRY_UNREADABLE", "压缩包内的文件损坏或无法读取，已跳过")
-			continue
+			return nil
 		}
 		written = append(written, stored)
+		// the archive as a whole must not unpack to far more than it weighs, whatever the entries claim
+		if wrote += size; wrote > suspiciousMinBytes && arcSize > 0 && wrote/arcSize > suspiciousRatio {
+			return errStop
+		}
 		files = append(files, File{ID: id, TaskID: taskID, SourceName: path.Base(rel), SourcePath: stem + "/" + rel, MIMEType: formats.MIME(rel), SHA256: sum, SizeBytes: size,
 			Evidence: []string{}, ReviewRequired: true, ArchiveStatus: "pending", CreatedAt: now, StoredPath: stored})
-	}
-	if len(files) == 0 {
-		cleanup()
-		return nil, nil, false // nothing usable inside: keep the archive itself
+		return nil
+	})
+	if err != nil || len(files) == 0 {
+		for _, p := range written {
+			_ = os.Remove(p)
+		}
+		return nil, nil, false // damaged, encrypted, too big, a bomb, or nothing usable inside: keep the archive itself
 	}
 	return files, fails, true
 }
 
-// copyEntry writes one entry, enforcing the declared size as a hard limit (a lying header cannot make us write more).
-func copyEntry(zf *zip.File, dst string) (sum string, size int64, err error) {
-	rc, err := zf.Open()
-	if err != nil {
-		return "", 0, err
-	}
-	defer rc.Close()
+var errBudget = errors.New("archive exceeds the expansion budget")
+
+// copyEntry writes one entry, enforcing the declared size as a hard limit (a lying header cannot make us write more). declared < 0 means the
+// archive does not say; then only the remaining budget limits it.
+func copyEntry(r io.Reader, declared int64, dst string, budget int64) (sum string, size int64, err error) {
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", 0, err
 	}
 	h := sha256.New()
-	limit := int64(zf.UncompressedSize64)
-	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(rc, limit+1))
+	limit := budget
+	if declared >= 0 && declared < budget {
+		limit = declared
+	}
+	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(r, limit+1))
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil && n != limit {
+	switch {
+	case err != nil:
+	case declared >= 0 && n != declared:
 		err = fmt.Errorf("entry size does not match its header")
+		if n > budget {
+			err = errBudget
+		}
+	case declared < 0 && n > budget:
+		err = errBudget
 	}
 	if err != nil {
 		return "", 0, err

@@ -8,7 +8,10 @@ import { useDiag } from './stores/diag'
 import { useAi } from './stores/ai'
 import { useAttention } from './stores/attention'
 import { badgeText } from './utils/diagnostics'
+import type { Role } from './utils/authz'
 import { ROLE_LABEL } from './utils/authz'
+import { markTourSeen, tourAutoShow, tourSteps } from './utils/onboarding'
+import OnboardingTour from './components/OnboardingTour.vue'
 import { buildNav, groupBadge, inSettingsGroup, SETTINGS_GROUP_LABEL, settingsExpanded, type NavItem } from './utils/navModel'
 import Icon from './components/Icon.vue'
 import { desktop } from './utils/desktop'
@@ -59,6 +62,12 @@ watch(() => route.fullPath, () => { if (auth.canWrite && !restricted.value) void
 watch(() => auth.user?.id, () => ai.reset())
 onBeforeUnmount(() => { diag.stop(); attention.stop() })
 function go(p: string) { menuOpen.value = false; void router.push(p) }
+/** 新手引导：首次登录自动出现一次（本浏览器），关闭即视为看过；用户菜单里可以重新打开 */
+const tour = ref(false)
+const tourList = computed(() => tourSteps(auth.role as Role | null, auth.canWrite))
+watch(() => [auth.user?.id, restricted.value, bare.value] as const, ([id, r, b]) => { if (id && !r && !b && tourAutoShow() && tourList.value.length) tour.value = true }, { immediate: true })
+function closeTour() { tour.value = false; markTourSeen() }
+function openTour() { menuOpen.value = false; tour.value = true }
 const desk = desktop()
 function openDesktopSettings() { menuOpen.value = false; void desk?.openSettings() }
 
@@ -108,6 +117,7 @@ function badgeTest(n: NavItem): string | undefined { return n.badge === 'diag' ?
           <div v-if="menuOpen" class="menu" role="menu" aria-label="用户菜单" @keydown.esc="menuOpen = false">
             <div class="mhead"><div class="t-title-m ellipsis">{{ auth.user.display_name }}</div><div class="muted t-label ellipsis">{{ auth.user.username }}</div><span class="chip" :class="auth.user.role === 'admin' ? 'progress' : ''" data-testid="role-chip">{{ ROLE_LABEL[auth.user.role] }}</span></div>
             <button class="mi" role="menuitem" @click="go('/account/security')"><Icon name="manage_accounts" sm />账号安全</button>
+            <button class="mi" role="menuitem" data-testid="open-tour" @click="openTour"><Icon name="help" sm />新手引导</button>
             <button v-if="desk" class="mi" role="menuitem" data-testid="desktop-settings" @click="openDesktopSettings"><Icon name="settings" sm />桌面版设置…</button>
             <button class="mi" role="menuitem" @click="cycleTheme"><Icon name="contrast" sm />配色：{{ themeLabel }}</button>
             <button class="mi" role="menuitem" data-testid="density-toggle" @click="toggleDensity"><Icon name="density_small" sm />表格行高：{{ ui.density === 'compact' ? '紧凑' : '舒适' }}</button>
@@ -128,6 +138,7 @@ function badgeTest(n: NavItem): string | undefined { return n.badge === 'diag' ?
     </div>
     <Toasts />
     <ReauthDialog v-if="auth.reauthPrompt" />
+    <OnboardingTour v-if="tour && tourList.length" :steps="tourList" @close="closeTour" />
   </template>
 </template>
 

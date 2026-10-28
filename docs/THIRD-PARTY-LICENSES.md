@@ -21,10 +21,15 @@
 | pkg/sftp、x/crypto/ssh | SFTP | BSD-2/3-Clause |
 | jlaffaye/ftp | FTP/FTPS | ISC |
 | cloudsoda/go-smb2 | SMB | BSD-2-Clause |
+| nwaples/rardecode/v2 | RAR 压缩包只读解压（导入时展开） | ISC |
+| bodgit/sevenzip、bodgit/plumbing、bodgit/windows | 7z 压缩包只读解压（导入时展开） | BSD-3-Clause |
+| ulikunitz/xz、andybalholm/brotli、stangelandcl/ppmd | 7z 的 LZMA / Brotli / PPMd 解压算法 | BSD-3-Clause 类 / MIT / MIT |
+| go4.org | 7z 读取的辅助库 | Apache-2.0 |
+| **hashicorp/golang-lru/v2** | 7z 读取的内部缓存 | **MPL-2.0**（文件级弱 copyleft；本项目未修改它，随程序分发时保留其许可证文本，并可按要求提供其源码；与 AGPL-3.0 兼容） |
 | **OpenList**（部分云盘 API 调用逻辑改编，见 `backend/internal/cloud/*` 中带 “Adapted from OpenList” 头注释的文件） | 云盘/私有云存储提供方 | **AGPL-3.0** |
 
 ## 本项目许可证
 
-本项目以 **AGPL-3.0** 发布（见仓库根目录 `LICENSE`）：改编自 OpenList（AGPL-3.0）的代码要求整体采用兼容的 AGPL-3.0；PyMuPDF 同为 AGPL-3.0，与之一致。对外提供网络服务时须向用户提供对应源码。依赖库的许可证（MIT/BSD/Apache-2.0/ISC）与 AGPL-3.0 兼容。
+本项目以 **AGPL-3.0** 发布（见仓库根目录 `LICENSE`）：改编自 OpenList（AGPL-3.0）的代码要求整体采用兼容的 AGPL-3.0；PyMuPDF 同为 AGPL-3.0，与之一致。对外提供网络服务时须向用户提供对应源码。依赖库的许可证（MIT/BSD/Apache-2.0/ISC/MPL-2.0）与 AGPL-3.0 兼容。
 
 此清单为人工整理，正式交付前请用许可证扫描工具复核。

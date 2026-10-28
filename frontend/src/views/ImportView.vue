@@ -97,7 +97,7 @@ const allExts = FORMAT_EXTS.join(' ')
       <section class="card outlined col">
         <h2 class="t-title-m">支持的格式</h2>
         <div class="row wrap" data-testid="format-chips"><span v-for="g in groups" :key="g.label" class="chip" :title="g.exts.join(' ')"><Icon :name="g.icon" sm />{{ g.label }}</span></div>
-        <p class="muted">识别内容：{{ allExts }}。旧版 Office（.doc / .xls / .ppt）可直接导入，无需转换；ZIP 压缩包会自动展开成里面的文件（加密或损坏的按普通文件处理）；加密、损坏、超大或其他格式的文件也会接收，只依据文件名判断并进入人工审核（原件不会被修改）。</p>
+        <p class="muted">识别内容：{{ allExts }}。旧版 Office（.doc / .xls / .ppt）可直接导入，无需转换；ZIP / 7z / RAR 压缩包会自动展开成里面的文件（加密或损坏的按普通文件处理）；加密、损坏、超大或其他格式的文件也会接收，只依据文件名判断并进入人工审核（原件不会被修改）。</p>
         <p class="muted">图片与扫描 PDF 通过 OCR 识别，并与文件名联合判断部门、类型和日期。无法确认的字段会标为“待审核”，不会被虚构。</p>
         <div class="banner info"><Icon name="info" sm /><div>文件大小和数量不受限制：大文件自动分块上传，网络中断后可从断点继续。Windows 桌面版还可以直接选择本机文件/文件夹，免上传。超大文件只做元数据判断（不做全文识别），并标记为待人工审核。</div></div>
       </section>

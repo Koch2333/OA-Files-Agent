@@ -60,7 +60,7 @@ const chip = (f: File) => { const v = verdict(f); return v === 'ok' ? 'success' 
     <div v-else-if="!picked.length" class="empty">
       <Icon :name="flow.scanning.value ? 'progress_activity' : 'cloud_upload'" class="big" :class="{ spin: flow.scanning.value }" />
       <div class="t-title" data-testid="dz-title" aria-live="polite">{{ flow.scanning.value ? `正在读取文件${flow.found.value ? `（已发现 ${flow.found.value} 个）` : ''}…` : dragging ? '松开即可上传' : '把文件或文件夹拖到这里，AI 自动识别并归档' }}</div>
-      <p class="muted">支持 Word / Excel / PPT（含旧版 .doc .xls .ppt）、PDF、图片（含扫描件 OCR）、文本、网页、邮件；ZIP 压缩包会自动展开成里面的文件（加密或损坏的压缩包按普通文件处理）；其他格式也会接收，只按文件名处理。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
+      <p class="muted">支持 Word / Excel / PPT（含旧版 .doc .xls .ppt）、PDF、图片（含扫描件 OCR）、文本、网页、邮件；ZIP / 7z / RAR 压缩包会自动展开成里面的文件（加密或损坏的压缩包按普通文件处理）；其他格式也会接收，只按文件名处理。也可以直接粘贴文件。归档前一定会先让你预览并审批。</p>
       <div class="row wrap" style="justify-content: center">
         <label class="btn filled has-icon"><Icon name="note_add" sm />选择文件<input type="file" multiple hidden data-testid="dz-files" @change="onPick" /></label>
         <label class="btn tonal has-icon"><Icon name="folder_open" sm />选择文件夹<input type="file" hidden webkitdirectory data-testid="dz-folder" @change="onPick" /></label>

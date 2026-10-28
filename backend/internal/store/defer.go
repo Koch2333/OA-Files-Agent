@@ -87,7 +87,7 @@ type QueueEntry struct {
 
 // ReviewQueue lists every plan still awaiting review, newest first (bounded).
 func (s *Store) ReviewQueue(ctx context.Context) ([]QueueEntry, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT p.id::text, p.task_id::text, p.updated_at, j.status, COALESCE(j.plan_id::text,'') <> p.id::text,
+	rows, err := s.Pool.Query(ctx, `SELECT p.id::text, p.task_id::text, p.updated_at, j.status, CASE WHEN j.plan_id IS NULL OR j.plan_id <> p.id THEN 1 ELSE 0 END,
 		(SELECT count(*) FROM archive_plan_items i WHERE i.plan_id=p.id),
 		(SELECT count(*) FROM archive_plan_items i WHERE i.plan_id=p.id AND i.review_required),
 		COALESCE((SELECT min(i.original_name) FROM archive_plan_items i WHERE i.plan_id=p.id),'')
@@ -99,9 +99,11 @@ func (s *Store) ReviewQueue(ctx context.Context) ([]QueueEntry, error) {
 	out := []QueueEntry{}
 	for rows.Next() {
 		var e QueueEntry
-		if err := rows.Scan(&e.PlanID, &e.TaskID, &e.UpdatedAt, &e.TaskState, &e.Deferred, &e.Items, &e.NeedsEdit, &e.FirstName); err != nil {
+		var deferred int
+		if err := rows.Scan(&e.PlanID, &e.TaskID, &e.UpdatedAt, &e.TaskState, &deferred, &e.Items, &e.NeedsEdit, &e.FirstName); err != nil {
 			return nil, err
 		}
+		e.Deferred = deferred != 0
 		if e.Items > 0 {
 			out = append(out, e)
 		}

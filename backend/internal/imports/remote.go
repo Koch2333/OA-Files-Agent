@@ -129,6 +129,7 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 			batch.Files = append(batch.Files, File{ID: fileID, TaskID: id, SourceName: path.Base(rel), SourcePath: rel, MIMEType: contentType, SHA256: sum, SizeBytes: size, Evidence: []string{}, ReviewRequired: true, ArchiveStatus: "pending", CreatedAt: now, StoredPath: stored})
 		}
 	}
+	consumed := s.expandArchives(dir, &batch) // ZIPs are replaced by the files inside them (see archive_expand.go)
 	batch.Job.FailureCount = len(batch.Failures)
 	batch.Job.ProcessedFiles = len(batch.Failures)
 	if len(batch.Files) == 0 {
@@ -140,6 +141,11 @@ func (s *Service) ImportRemote(ctx context.Context, files []RemoteFile, key, tem
 		return batch, fmt.Errorf("save import: %w", saveErr)
 	}
 	committed = !replay
+	if committed {
+		for _, p := range consumed {
+			_ = os.Remove(p) // the expanded archives (the request is already saved)
+		}
+	}
 	saved.Replay = replay
 	return saved, nil
 }

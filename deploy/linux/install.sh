@@ -1919,7 +1919,10 @@ mirror_sample_path() {
     local id='' cn='' arch='' b p
     [ -r "$OS_RELEASE" ] || return 0
     have_cmd gzip || return 0
-    id="$(. "$OS_RELEASE"; printf '%s' "${ID:-}")"; cn="$(. "$OS_RELEASE"; printf '%s' "${VERSION_CODENAME:-}")"
+    # shellcheck disable=SC1090  # os-release is a runtime path (tests point OS_RELEASE at a fixture)
+    id="$(. "$OS_RELEASE"; printf '%s' "${ID:-}")"
+    # shellcheck disable=SC1090
+    cn="$(. "$OS_RELEASE"; printf '%s' "${VERSION_CODENAME:-}")"
     case "$id" in debian | ubuntu) ;; *) return 0 ;; esac
     [ -n "$cn" ] || return 0
     arch="$(dpkg --print-architecture 2>/dev/null || true)"; [ -n "$arch" ] || return 0
